@@ -2005,7 +2005,8 @@ def _fallback_qa_from_raw(qa_blocks: list) -> str:
 
 
 def _normalize_survey_qa_markdown(text: str) -> str:
-    """Normalize 4.5 survey Q/A so Q and A render on separate lines."""
+    """Normalize 4.5 survey Q/A so Q and A render on separate lines.
+    v1.2.8-R1: 强化 A：前强制换行，确保每个回答独立成行。"""
     if not text:
         return ""
     t = str(text).strip()
@@ -2019,6 +2020,10 @@ def _normalize_survey_qa_markdown(text: str) -> str:
     t = re.sub(r'(?<!\n)(\*\*Q[:：]\*\*)', r'\n\1', t)
     t = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', t)
     t = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', t)
+    # v1.2.8-R1: 正文中松散 "A：" 前补换行（如 "A：xxx" 不在行首时）
+    t = re.sub(r'(?<=[。；])\s*A[:：](?=\s*\S)', r'\n**A：** ', t)
+    # v1.2.8-R1: 行内 "A：xxx" 且前面有中文标点 → 换行
+    t = re.sub(r'([。；？?！!\n])\s*\bA[:：](?=\s*\S)', r'\1\n**A：** ', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
     return t.strip()
 
@@ -4323,14 +4328,46 @@ def _normalize_section1_recent_format(md_text: str) -> str:
     return md_text[:start] + "\n".join(fixed_lines) + md_text[end:]
 
 
+def _dedent_body_paragraphs(md_text: str) -> str:
+    """v1.2.8-R1: 去除正文段落的前导缩进空格。
+
+    保留 markdown 构造行（标题/表格/列表/代码/图片/引用/分隔线）不做处理，
+    仅去除普通正文行的前导空白字符。
+    """
+    if not md_text:
+        return md_text
+    lines = md_text.split('\n')
+    result = []
+    for line in lines:
+        s = line.strip()
+        if not s:
+            result.append(line)
+            continue
+        # 保留 markdown 构造行：标题、表格、无序列表、有序列表、代码、图片、引用、分隔线
+        first_char = s[0]
+        if first_char in '#|-*>![`' or s.startswith('```') or s.startswith('---'):
+            result.append(line)
+            continue
+        # 有序列表：数字开头 + 点号/顿号
+        if re.match(r'^\d+[\.\、\)]', s):
+            result.append(line)
+            continue
+        # 普通正文行 → 去前导空白
+        result.append(line.lstrip())
+    return '\n'.join(result)
+
+
 def _normalize_final_markdown_format(md_text: str) -> str:
-    """Final format guardrails for LLM markdown drift."""
+    """Final format guardrails for LLM markdown drift.
+    v1.2.8-R1: 正则正文段落去除前导缩进空格，Q/A 换行强化。"""
     if not md_text:
         return md_text
     md_text = _strip_bold_from_markdown_headings(md_text)
     md_text = _normalize_section1_recent_format(md_text)
     md_text = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', md_text)
     md_text = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', md_text)
+    # v1.2.8-R1: 去除正文段落前导缩进（非标题/非表格/非列表/非代码/非图片行）
+    md_text = _dedent_body_paragraphs(md_text)
     return md_text
 
 
