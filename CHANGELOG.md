@@ -1,5 +1,33 @@
 # Changelog
 
+## v1.2.7
+
+Status: Title generation refactored — full-context post-generation across all markets.
+
+### Title generation (A-share + HK/US)
+
+1. **A 股标题后置生成**：LLM context 从 s1+s2(800字) → s1+s2+s5(1300字)，全文生成后再出标题；修正误将 s3(催化表格)当作投资逻辑喂 LLM 的 bug。
+2. **港美股标题后置生成**：新增 `_gen_full_context_title()`，收集 s12+s34+s57(≤1800字) 全文生成标题。删除旧降级链 `_derive_title_conclusion` / `_repair_title_from_verified_sections`，移除 §§1&2 JSON 中的 `title_conclusion` 字段。
+3. **移除硬编码兜底**：A 股 `_fallback_title_conclusion` 清空中际旭创特例及 "核心主业稳健，盈利修复可期" 通用字符串。
+4. **统一降级策略**：两边统一为 `LLM → _build_deterministic_fallback_title` (从生成章节提取关键词拼接)，0 层硬编码。
+
+### Bug fixes
+
+5. **港美股引用全角修复**：`normalize_refs` 入口新增 `re.sub(r'【(\d+)】', r'[\1]', text)`，修复 DeepSeek-V4 产出全角 `【N】` 导致的 §5 内联-尾部双套引用。
+6. **A 股 `None` 防护**：`_compact_reports`(line 1276) / `gen_peer_table`(line 2644) 中 `r['abstract']` / `r['text']` 为 `None` 时加 `or ''`，修复宁德时代(300750)因同行研报摘要缺失导致的崩溃。
+
+### Verification
+
+- 6/6 跨市场验证通过：茅台/宁德(A)、腾讯/美团(HK)、Apple/Tesla(US)，全部由 LLM 全文生成标题，0 篇落入兜底。
+
+### Files changed
+
+- `scripts/a_share_report_writer.py`: 标题逻辑重构 + `None` 防护 ×3
+- `scripts/hk_us_report_writer.py`: 标题逻辑重构 + `normalize_refs` 全角修复
+- `SKILL.md`: 版本号 + Appendix A 新增 v1.2.7
+- `README.md`: 版本号 + 变更表 + 验证状态
+- `CHANGELOG.md`: this entry
+
 ## v1.2.5
 
 Status: Auto-repair pipeline + HK-US automation enhancement.

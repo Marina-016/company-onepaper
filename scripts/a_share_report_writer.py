@@ -1273,7 +1273,7 @@ def _compact_reports(reports: list, n: int = 5) -> str:
     parts = []
     for r in reports[:n]:
         src = f"[{r['id']}]机构:{r['org']} 日期:{r['date']} 评级:{r['rating']} 目标价:{r['target']}"
-        parts.append(f"{src}\n摘要:{r['abstract'][:1500]}\n正文:\n{r['text'][:3500]}")
+        parts.append(f"{src}\n摘要:{(r.get('abstract') or '')[:1500]}\n正文:\n{(r.get('text') or '')[:3500]}")
     return "\n\n---\n\n".join(parts)
 
 
@@ -2641,8 +2641,8 @@ def gen_peer_table(client, key_data: dict) -> str:
     # 研报摘要（兜底）
     peer_reports_text = "\n\n---\n\n".join(
         f"[{r['id']}]{r['org']} {r['date']}\n"
-        f"研报摘要：{(r.get('detail_text') or r['abstract'])[:2000]}\n"
-        f"正文：\n{r['text'][:2000]}"
+        f"研报摘要：{(r.get('detail_text') or r.get('abstract') or '')[:2000]}\n"
+        f"正文：\n{(r.get('text') or '')[:2000]}"
         for r in reports[:4]
     )
 
@@ -2743,10 +2743,8 @@ def _title_zh_len(text: str) -> int:
 
 
 def _fallback_title_conclusion(short_name: str, ticker: str) -> str:
-    name = short_name or ""
-    if ticker == "300308" or "中际旭创" in name:
-        return "AI算力需求驱动，光模块龙头受益"
-    return "核心主业稳健，盈利修复可期"
+    """REMOVED in v1.2.6-R3: hardcoded fallbacks replaced by _build_deterministic_fallback_title."""
+    return ""
 
 
 def _valid_title_conclusion(text: str, short_name: str = "") -> bool:
@@ -2779,8 +2777,56 @@ def _sanitize_title_conclusion(raw: str, short_name: str, ticker: str) -> str:
         text = text.replace(short_name, "")
     text = re.sub(r'\s+', '', text).strip("：:，,。.、；;")
     if not _valid_title_conclusion(text, short_name):
-        return _fallback_title_conclusion(short_name, ticker)
+        return ""
     return text
+
+
+def _build_deterministic_fallback_title(sections: dict, short_name: str, ticker: str) -> str:
+    """Build title conclusion from already-generated sections (v1.2.6-R3: no hardcoded strings).
+
+    A-share section layout: s1=近况跟踪, s2=核心投资逻辑, s3=催化事件时间表.
+    §2 is the richest source for investment thesis titles.
+    """
+    s1 = str(sections.get("s1", ""))
+    s2 = str(sections.get("s2", ""))  # ← A-share: 核心投资逻辑
+    s3 = str(sections.get("s3", ""))  # ← A-share: 催化事件时间表 (table, skip)
+    judgment_terms = (
+        "驱动", "受益", "稳健", "韧性", "延续", "打开", "修复", "改善", "支撑", "增量",
+        "商业化", "变现", "渗透", "增速", "加速", "提升", "放量", "超预期",
+        "增长", "成长", "领先", "优势", "布局", "落地", "兑现", "验证",
+        "承压", "风险", "扩张", "拓展", "回购", "分红", "利润率",
+        "提价", "定价", "改革", "回报", "品牌", "渠道", "旺季", "弹性",
+    )
+    # 1) A-share §2 核心投资逻辑: **加粗子标题**
+    bold_titles = re.findall(r'\*\*([^*]{4,22})\*\*', s2[:2500])
+    for h in bold_titles:
+        h = h.strip()
+        zh_len = len(re.findall(r'[一-鿿]', h))
+        if 8 <= zh_len <= 25 and any(t in h for t in judgment_terms):
+            return h
+    # 2) A-share §2 的 H2/H3 子标题
+    logic_h = re.findall(r'#{2,3}\s*\d*\.?\d*\s*(.+?)(?:[（(]|$)', s2[:2000], re.M)
+    for h in logic_h:
+        h = re.sub(r'\*\*|[\[\]\d+]', '', h).strip()
+        zh_len = len(re.findall(r'[一-鿿]', h))
+        if 8 <= zh_len <= 25 and any(t in h for t in judgment_terms):
+            return h
+    # 3) §1 近况跟踪 bullet 首句
+    bullets = re.findall(r'^[•\*\-]\s*(.+)$', s1[:800], re.M)
+    for b in bullets:
+        b = re.sub(r'\[\d+\]|\*\*', '', b).strip()
+        core = re.split(r'[，,。；;]', b)[0].strip()
+        zh_len = len(re.findall(r'[一-鿿]', core))
+        if 8 <= zh_len <= 25 and any(t in core for t in judgment_terms):
+            return core
+    # 4) 兜底：拼接加粗关键词
+    kp_matches = re.findall(r'\*\*([^*]{4,15})\*\*', s2 + s1)
+    kws = [m.strip() for m in kp_matches if any(t in m for t in judgment_terms)][:2]
+    if len(kws) >= 2:
+        return "与".join(kws[:2]) + "双轮驱动"
+    if kws:
+        return kws[0]
+    return ""
 
 
 def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) -> dict:
@@ -2904,7 +2950,9 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     ticker = meta.get("ticker", "")
     date = TODAY
     conclusion = _sanitize_title_conclusion(sections.get("title_conclusion", ""), short_name, ticker)
-    title_line = f"# {short_name}（{ticker}）公司一页纸：{conclusion}"
+    if not conclusion:
+        conclusion = _build_deterministic_fallback_title(sections, short_name, ticker)
+    title_line = f"# {short_name}（{ticker}）公司一页纸：{conclusion}" if conclusion else f"# {short_name}（{ticker}）公司一页纸"
 
     pe_val = sections["valuation"]["items"].get("市盈率PE", {}).get("val")
     pb_val = sections["valuation"]["items"].get("市净率PB", {}).get("val")
@@ -3747,9 +3795,8 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
     main_ref = f"[{main_ref_no}]" if main_ref_no else "[3]"
 
     # Remove LLM short-error leakage from the title and body.
-    fallback_title = _fallback_title_conclusion(short_name, ticker)
     md_content = re.sub(r'^(# .+?公司一页纸：)User Points Not Enough\s*$',
-                        rf'\1{fallback_title}', md_content, flags=re.M)
+                        r'\1', md_content, flags=re.M)
     md_content = md_content.replace("User Points Not Enough", "")
 
     # A-share header metadata line intentionally removed (v1.2.5+).
@@ -5179,17 +5226,20 @@ def main():
 
     print(f"[{time.time()-t0:.1f}s] 所有章节生成完毕")
 
-    # 生成标题一句话结论（基于 s1/s2 提炼核心投资判断）
-    _s1_preview = sections.get("s1", "")[:400]
-    _s2_preview = sections.get("s2", "")[:400]
+    # v1.2.6-R3: 读全文关键章节后生成标题结论
+    _s1 = str(sections.get("s1", ""))[:500]
+    _s2 = str(sections.get("s2", ""))[:500]
+    _s5 = str(sections.get("s5", ""))[:300]
+    _full_ctx = f"近况跟踪：{_s1}\n\n核心投资逻辑：{_s2}"
+    if _s5.strip():
+        _full_ctx += f"\n\n业务概况：{_s5}"
     _tc_prompt = (
         f"为{name}（{ticker}）研究报告生成标题副标题：一句话投资结论，要求：\n"
         "1. 字数控制在20字左右，可超但不超过25字，必须在语义完整处自然结尾，禁止句子中断\n"
         "2. 直接给出结论，无前缀、无引号、无标点符号结尾\n"
         "3. 有明确观点导向，体现最核心驱动力或最重要投资判断\n"
         "4. 示例风格：直销占比跃升，分红回购支撑估值修复\n\n"
-        f"近况摘要：{_s1_preview}\n\n"
-        f"核心逻辑：{_s2_preview}\n\n"
+        f"报告核心内容：\n{_full_ctx}\n\n"
         "一句话结论（直接输出，语义完整）："
     )
     _title_conclusion = call_claude(client, _tc_prompt, max_tokens=80).strip()
@@ -5198,6 +5248,8 @@ def main():
         _title_conclusion = _title_conclusion.lstrip(_pfx)
     _title_conclusion = _title_conclusion.strip().rstrip("。").strip()
     _title_conclusion = _sanitize_title_conclusion(_title_conclusion, meta.get("short_name", name), ticker)
+    if not _title_conclusion:
+        _title_conclusion = _build_deterministic_fallback_title(sections, meta.get("short_name", name), ticker)
     sections["title_conclusion"] = _title_conclusion
     print(f"[{time.time()-t0:.1f}s] 标题结论: {_title_conclusion}")
 
