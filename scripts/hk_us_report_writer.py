@@ -1053,10 +1053,12 @@ def _clean_source_fragment(text: str, limit: int = 0) -> str:
 
 def normalize_refs(text: str, refs: list[int]) -> str:
     """Put merged, de-duplicated refs at the end of a single cell."""
-    base = _clean_source_fragment(re.sub(r'\[\d+\]', '', str(text or ""))).strip()
+    # Normalize full-width citation brackets 【N】→[N] (LLM output variability)
+    text = re.sub(r'【(\d+)】', r'[\1]', str(text or ""))
+    base = _clean_source_fragment(re.sub(r'\[\d+\]', '', text)).strip()
     base = re.sub(r'[\s,，;；:：、]+$', '', base)
     merged: list[int] = []
-    for n in re.findall(r'\[(\d+)\]', str(text or "")):
+    for n in re.findall(r'\[(\d+)\]', text):
         v = int(n)
         if v not in merged:
             merged.append(v)
@@ -1086,7 +1088,7 @@ def _section_1_2_json_prompt(key_data: dict, schema_issues: list[str] | None = N
         ctx = ctx[:5000]
     return f"""Return ONLY JSON for HK/US company one-pager sections 1 and 2.
 Schema:
-{{"title_conclusion": "...", "section_1": {{"key_points": [{{"keyword": "...", "text": "...", "source_ids": [1]}}]}}, "section_2": {{"recent_updates": [{{"keyword": "...", "date": "YYYY-MM-DD or YYYY-Qx", "fact": "...", "implication": "...", "source_ids": [1]}}]}}}}
+{{"section_1": {{"key_points": [{{"keyword": "...", "text": "...", "source_ids": [1]}}]}}, "section_2": {{"recent_updates": [{{"keyword": "...", "date": "YYYY-MM-DD or YYYY-Qx", "fact": "...", "implication": "...", "source_ids": [1]}}]}}}}
 Rules: section_1 has exactly 4 investment conclusions; section_2 has exactly 4 recent concrete updates, each update's fact+implication combined must be 80-120 Chinese characters (total §2 within 600 characters); every item cites valid source_ids; no Markdown.
 Context:
 {ctx}
@@ -1095,9 +1097,6 @@ Context:
 
 def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: str = "", ticker: str = "") -> tuple[dict[str, str], list[str]]:
     issues: list[str] = []
-    title_conclusion = _sanitize_title_conclusion(str(payload.get("title_conclusion") or ""), company_name, ticker, "")
-    if not title_conclusion:
-        issues.append("title_conclusion.invalid_or_missing")
     s1 = payload.get("section_1") if isinstance(payload.get("section_1"), dict) else {}
     points = s1.get("key_points") if isinstance(s1.get("key_points"), list) else []
     s1_issue_start = len(issues)
@@ -1135,7 +1134,7 @@ def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: st
             lines2.append(f"- **{keyword}**：{normalize_refs(f'{fact}；{implication}', refs)}")
             valid_updates += 1
     section_2_valid = valid_updates == 4 and len(issues) == s2_issue_start
-    rendered: dict[str, str] = {"_title_conclusion": title_conclusion}
+    rendered: dict[str, str] = {}
     parts = []
     if section_1_valid:
         parts.append("\n".join(lines))
@@ -1178,7 +1177,6 @@ def gen_hkus_sections_1_2(key_data: dict, ref_map: dict | None = None) -> tuple[
                 "schema_issues": render_issues[:40],
                 "section_1_valid": section_1_valid,
                 "section_2_valid": section_2_valid,
-                "title_valid": bool(rendered.get("_title_conclusion")),
             }
         issues.extend(f"{call_name}:{x}" for x in render_issues)
     return {}, False, {"call_mode": "failed_schema", "parse_attempts": parse_attempts, "schema_issues": issues[:40]}
@@ -2294,20 +2292,7 @@ def _run_section_12_task(key_data: dict, ref_map: dict) -> dict:
     return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
 
 
-def _repair_title_from_verified_sections(texts: dict, company_name: str, ticker: str, market_cn: str) -> str:
-    verified = "\n\n".join(x for x in (texts.get("s12", ""), texts.get("s34", "")) if x).strip()
-    if not verified:
-        return ""
-    prompt = (
-        "请根据以下研报内容，生成一句10-25个中文字的投资结论，作为报告标题后半部分。"
-        "要求：不含公司名称、股票代码、冒号、书名号；必须包含明确的投资判断词（如：驱动/受益/加速/商业化/增长/布局/验证/落地/变现等）；直接输出结论文字，不加任何前缀或解释。\n\n"
-        f"{verified[:1500]}"
-    )
-    text, ok = _call_llm(prompt, max_tokens=120, timeout=min(45, _hkus_llm_task_budget_seconds()),
-                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="title_repair")
-    if not ok:
-        return ""
-    return _sanitize_title_conclusion(text, company_name, ticker, market_cn)
+# _repair_title_from_verified_sections removed in v1.2.6-R3: replaced by _gen_full_context_title
 
 
 def _run_target_price_basis_task(records: list[dict]) -> dict:
@@ -3322,13 +3307,12 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
             status["12_schema_issues"] = r12.content.get("issues", [])[:30]
         failed.append("12")
 
-    # 5. Extract title conclusion: JSON _title_conclusion first, then §1 text fallback
+    # 5. v1.2.6-R3: generate title from full generated sections
     mkt_cn = "港股" if mkt == "HK" else "美股"
-    conclusion = texts.get("_title_conclusion", "")
-    if not conclusion:
-        conclusion = _derive_title_conclusion(texts.get("s12", ""), company_name, mkt_cn, ticker)
-    if not conclusion and key:
-        conclusion = _repair_title_from_verified_sections(texts, company_name, ticker, mkt_cn)
+    if key:
+        conclusion = _gen_full_context_title(texts, company_name, ticker, mkt_cn)
+    else:
+        conclusion = ""
     if not conclusion:
         conclusion = _build_deterministic_fallback_title(texts, company_name, ticker)
     title = _build_report_title(company_name, ticker, mkt_cn, conclusion)
@@ -4879,50 +4863,42 @@ def _build_report_title(company_name: str, ticker: str, market_cn: str, conclusi
     return f"# {company_name}（{ticker}）{market_cn}公司一页纸：{safe_conclusion}"
 
 
-def _derive_title_conclusion(section12_text: str, company_name: str, market_cn: str, ticker: str = "") -> str:
-    """Extract a 15-25 char investment conclusion from §1 content bullet points.
+# _derive_title_conclusion removed in v1.2.6-R3: replaced by _gen_full_context_title
 
-    Returns an empty string if no usable conclusion is found; callers must fail closed.
+
+def _gen_full_context_title(texts: dict, company_name: str, ticker: str, mkt_cn: str) -> str:
+    """v1.2.6-R3: Generate title conclusion from all generated sections (not just §§1&2).
+
+    Collects key sections after full report generation, feeds them to LLM for a
+    one-sentence investment conclusion based on the complete report context.
     """
-    if not section12_text:
+    s12 = texts.get("s12", "")
+    s34 = texts.get("s34", "")
+    s57 = texts.get("s57", "")
+
+    # Build context from cross-section highlights
+    parts = []
+    if s12:
+        sec1 = s12.split("近况跟踪")[0] if "近况跟踪" in s12 else s12[:600]
+        parts.append(sec1[:600])
+    if s34:
+        parts.append(s34[:500])
+    if s57:
+        parts.append(s57[:400])
+    context = "\n\n".join(parts)[:1800]
+
+    prompt = (
+        f"为{company_name}（{ticker}）{mkt_cn}研究报告生成标题副标题：一句话投资结论。\n"
+        "要求：10-25个中文字，不含公司名/代码/冒号/书名号，必须有明确投资判断词"
+        "（如驱动/受益/增长/加速/超预期/商业化/渗透/利润率/布局/验证/承压等），语义完整。\n\n"
+        f"报告核心内容：\n{context}\n\n"
+        "一句话投资结论："
+    )
+    text, ok = _call_llm(prompt, max_tokens=120, timeout=min(60, _hkus_llm_task_budget_seconds()),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="full_context_title")
+    if not ok or not text:
         return ""
-
-    # Extract bullet points from §1 area (key takeaways, before §2 近况跟踪)
-    sec1_end = section12_text.find("近况跟踪")
-    sec1_text = section12_text[:sec1_end] if sec1_end > 0 else section12_text[:500]
-
-    bullets = [x.strip() for x in re.findall(r'^[\*\-•]\s*(.+)$', sec1_text, re.M) if x.strip()]
-
-    if bullets:
-        # Take first bullet, strip bold markers, and condense to conclusion
-        first = bullets[0].strip()
-        first = re.sub(r'\[\d+\]', '', first).strip()
-        first = re.sub(r'^\*\*[^*]+\*\*\s*[：:]\s*', '', first).strip()
-        first = re.sub(r'\*\*', '', first).strip()
-        # Remove leading/trailing punctuation
-        first = first.strip('：:，,。.、')
-        # Try to condense: take first clause before ：or，
-        core = re.split(r'[：:，,。]', first)[0]
-        # Remove common prefixes that aren't investment conclusions
-        core = re.sub(r'^(?:FY\d{4}Q\d|CY\d{4}|FY\d{4})\s*', '', core)
-        core = core.strip()
-        if 10 <= len(core) <= 28:
-            return _sanitize_title_conclusion(core, company_name, ticker, market_cn)
-        elif len(core) > 28:
-            return _sanitize_title_conclusion(core[:25], company_name, ticker, market_cn)
-        # If too brief, try next bullet or use longer form
-        if len(core) < 10 and len(first) >= 10:
-            trimmed = first[:25].rstrip('，,。.')
-            return _sanitize_title_conclusion(trimmed, company_name, ticker, market_cn)
-
-    # Fallback: try to find a meaningful sentence
-    sentences = re.split(r'[。；\n]', section12_text[:600])
-    for s in sentences:
-        s = re.sub(r'\*\*|#|\[|\]', '', s).strip()
-        if 15 <= len(s) <= 28 and any(kw in s for kw in ['增长', '驱动', '估值', '修复', '超预期', '改善', '加速', '提升', '放量', '领先']):
-            return _sanitize_title_conclusion(s[:25], company_name, ticker, market_cn)
-
-    return ""
+    return _sanitize_title_conclusion(text, company_name, ticker, mkt_cn)
 
 
 def _walk_values(obj: Any):
