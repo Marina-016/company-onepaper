@@ -1,13 +1,13 @@
 ﻿---
 name: datayes-company-onepaper
-version: v1.2.7
+version: v1.2.8
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径通过 Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
   当前版本强调真实数据、引用闭环、目标公司一致性、结构化质量门禁和自动修复。
   当用户要求生成“一页纸”“公司一页纸”“股票研究报告”“公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.7）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.8）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
@@ -16,7 +16,7 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.7 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
+当前文档只描述 **v1.2.8 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
 运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
@@ -320,12 +320,15 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 
 ## Appendix A. Version History
 
-### v1.2.7
+### v1.2.8
 - 标题生成重构：A 股和港美股统一为全文生成后读全文产出标题，移除 §§1&2 内嵌 title_conclusion。
 - 移除所有硬编码公司级兜底（中际旭创等），统一降级为关键词拼接。
 - 港美股 `normalize_refs` 全角括号 `【N】` 归一化修复，消除重复引用。
 - A 股标题上下文从 s1+s2 扩展为 s1+s2+s5，s3(表格)不再误喂 LLM。
 - A 股 `_compact_reports` / `gen_peer_table` 加 `None` 防护。
+- v1.2.8-R1: 正文段落去前导缩进 `_dedent_body_paragraphs`（§2/§4.4/§4.5 等章正文首字符顶格）。
+- v1.2.8-R1: §4.5 调研问答 "A：" 前强制换行 `_normalize_survey_qa_markdown` 强化。
+- v1.2.8-R1: `a-share-report-structure.md` 新增正文缩进规范与 QA 换行规范条目。
 
 ### v1.2.3
 - 收敛章节编号规则，强制 H2/H3 编号一致。
