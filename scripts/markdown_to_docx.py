@@ -720,13 +720,14 @@ def convert_markdown_to_docx(md_content: str, output_path: str):
             i += 1
             continue
 
-        # ── 无序列表 ──
-        ul_match = re.match(r'^(\s*)[-*+]\s+(.*)', stripped)
+        # ── 无序列表（markdown -/* 和 unicode •） ──
+        ul_match = re.match(r'^(\s*)(?:[-*+]|•)\s+(.*)', stripped)
         if ul_match:
             indent_level = len(ul_match.group(1)) // 2
             text = ul_match.group(2)
             para = doc.add_paragraph(style="Normal")
-            para.paragraph_format.left_indent = Inches(0.2 + indent_level * 0.25)
+            # v1.2.9: • 行无缩进
+            para.paragraph_format.left_indent = Inches(0)
             set_para_spacing(para, 1, 2)
             def run_adder(t, b, itl):
                 r = para.add_run(t)
