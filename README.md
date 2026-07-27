@@ -30,7 +30,7 @@ skills/v1.2.8/
 │   ├── hk-us-quality-checklist.md            # 港美股质量自检清单（含 v1.2.5 新增项）
 │   └── hk-us-api-playbook.md                 # 港美股 API 编排手册
 └── scripts/
-    ├── a_share_fetch_data.py                         # A股数据采集（含 resolve-only 模式）
+    ├── a_share_fetch_data.py                         # A股数据采集
     ├── a_share_report_writer.py                      # A股报告生成（含 v1.2.5 自动修复）
     ├── fetch_materials.py                    # 港美股素材采集
     ├── hk_us_report_writer.py                # 港美股自动化全流程 Writer

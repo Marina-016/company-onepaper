@@ -1,5 +1,65 @@
 # Changelog
 
+## v1.2.9
+
+Status: Bullet normalization + §4.5 Q&A extraction rewrite + doc cleanup.
+
+### P0: 列表标记统一（`•`）
+
+所有 LLM prompt 正文列举项统一改为 `•` 无序符号，替换遗留的 `1）2）3）` / `-` / `*` 混用：
+
+- **`_normalize_bullet_markers`**（新增）：后处理正则归一化，将 `-/*/1)/2)/3)/1）/2）/3）` → 顶格 `•`，覆盖 LLM 格式漂移兜底。
+- **`markdown_to_docx.py`**：扩展无序列表正则匹配 `•`，渲染为零缩进，与 prompt 输出对齐。
+- **LLM prompt 集中修复**：`gen_section2`、`gen_section3`、`gen_section4_deep`（含 §4.4，上次遗漏）、`_a_share_profile` long_term 模板等全部替换。
+- **`a-share-report-structure.md`**：列表标记规范从"避免中文序号"升级为"统一 `•`"，所有示例同步更新。
+
+### P0: §4.5 调研问答生成重写
+
+旧版 `_fallback_qa_from_raw` 依赖单层正则直接拼装 Markdown，对异构格式（`question:/answer:`、`N、...答:`、同行多对 Q/A、纪要/报告体无标记文本）覆盖率不足，输出质量不稳定。
+
+方案：**分层管线的确定性生产架构**——正则提取候选结构化列表 → LLM 精选+压缩 → 代码排版：
+
+- **`_extract_qa_candidates`**（重写）：双路径正则引擎：
+  - 路径 A：归一化 `**Q：**`/`Q1、`/`question:` → 按 Q/A 双向拆分，递归处理同行多对
+  - 路径 B：中文序号 `N、...答:...` 格式解析
+  - 返回 `[{"q", "a", "ref"}, ...]` 结构化列表（上限 10 条），不含 Markdown
+- **`_format_qa_markdown`**（新增）：确定性排版——Q 末尾补 `？`、A 截断至 400 字（句号自然断句）、引用末尾去重追加 → 输出 `**Q：**` / `**A：**` 两行格式
+- **`_llm_fallback_extract_qa`**（新增）：正则完全无法提取时，LLM 从任意格式（纪要/报告体）提取 Q&A 对，支持 compact retry
+- **`_normalize_survey_qa_markdown`**（精简）：从 17 行堆砌 regex 精简为 7 行核心兜底，只处理 `Q:/A:` → `**Q：**`/`**A：**` 加粗归一化
+- **`gen_section4`** 重构：§4.1 + §4.5 合并调用中，§4.5 走新管线生成；候选不足时自动从 `surveys` 的 `ref_map` 补齐引用
+- **LLM select prompt**：从候选人中选 3-4 组最有基本面价值的问答，判断标准为业绩驱动 > 一般行业展望，回答超 200 字压缩至 200 字内
+- **调研引用溯源**：`build_ref_map` + 参考资料格式化新增 `"调研"` 类型，为 `institution_research_detail` 提供独立引用编号
+
+### P1: 格式与占位清洗
+
+- **`_normalize_final_markdown_format`**：新增占位文本正则 `第X节：…` 移除，消除 LLM 泄漏的章节标注
+- **`_fix_truncated_chinese`**（新增）：修正截断处残留的半角字符
+- **§2.1 标题强制检测**：`_enforce_v124_a_share_blocks` 增加兜底——`## 2` 后无 `### 2.1` 子标题时自动插入
+- **§9.4 核心变量加冒号**：prompt `• **[变量]**：[数值]`（变量名与数值间补冒号）
+- **§10 风险标题去双写**：enforcer `split('风险')[0]` → `split('：')[0]`，消除 `"风险**：风险：**"` 双写
+- **关注事项 prompt 换行显式化**：Q&A 两行格式要求写入 prompt，非仅后处理
+
+### 移除
+
+- **图表本地化回退**：v1.2.9 初期尝试的 `_download_chart_images` 已移除，图表保留远程 URL，由 `markdown_to_docx.py` 的 `try_insert_image` 负责 DOCX 嵌入。
+- **§3.2 Resolve Before Fetch**：`--resolve-only` 参数在脚本中未实现，SKILL.md §3.2 整节删除，§3.3-3.5 重编号为 §3.2-3.4。README + a-share-api-interfaces.md 同步清理引用。
+
+### Files changed
+
+- `scripts/a_share_report_writer.py`：列表统一 + §4.5 重写 + 格式清洗（~777 行 diff）
+- `scripts/markdown_to_docx.py`：`•` 零缩进渲染
+- `references/a-share-report-structure.md`：列表规范 + §4.5 节新增 + 全量示例更新
+- `references/a-share-api-interfaces.md`：`--resolve-only` 引用清理
+- `SKILL.md`：§3.2 移除（重编号 §3.2-3.4）+ Appendix A 更新
+- `README.md`：`--resolve-only` 描述清理
+- `CHANGELOG.md`：this entry
+
+### Unchanged scripts
+
+- `a_share_fetch_data.py`：与 v1.2.8 完全一致
+- `hk_us_report_writer.py`、`fetch_materials.py`、`fetch_materials_v2.py`、`gen_charts.py`、`build_docx.py`、`llm_adapter.py`：与 v1.2.8 完全一致
+- 所有港美股 reference 文件：无变化
+
 ## v1.2.8
 
 Status: Title generation refactored — full-context post-generation across all markets.
