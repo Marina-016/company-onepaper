@@ -2751,77 +2751,349 @@ X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多�
     return call_claude(client, prompt, max_tokens=1800)
 
 
+_A_SHARE_RISK_BULLET_RE = re.compile(r'^\s*[-*•]\s+', re.M)
+_A_SHARE_RISK_SIGNAL_RE = re.compile(
+    r'风险|不及预期|承压|下滑|下降|减值|回款|应收|库存|价格|批价|毛利率|净利率|'
+    r'现金流|客户集中|客户依赖|订单|需求|原材料|汇率|产能|延期|延迟|诉讼|合规|'
+    r'监管|政策|审批|版号|竞争加剧|波动|不确定'
+)
+_A_SHARE_GENERIC_RISK_PATTERNS = (
+    r'核心业务需求若放缓',
+    r'行业竞争加剧可能压缩',
+    r'原材料.*渠道.*费用投入',
+    r'宏观环境和政策变化可能影响',
+    r'收入增长可能低于预期',
+    r'关键假设不及预期的风险',
+    r'数据缺失风险',
+    r'模型不确定性风险',
+    r'本报告不构成投资建议',
+    r'\*\*(?:宏观经济|宏观政策|行业竞争|市场竞争|核心业务需求|市场需求)风险?\*\*',
+)
+
+
+def _risk_ref_no(ref_map: dict, key: str) -> int:
+    try:
+        return int((ref_map.get(key) or {}).get("n") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _risk_sentences(text: str) -> list:
+    clean = re.sub(r'<[^>]+>', ' ', str(text or ""))
+    clean = re.sub(r'[ \t\r\f\v]+', ' ', clean)
+    return [
+        s.strip(" \t\r\n•*-：:")
+        for s in re.split(r'[。\n；;]', clean)
+        if 12 <= len(s.strip()) <= 180
+    ]
+
+
+def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
+    """Collect source-backed, target-company risk evidence for §10."""
+    ref_map = key_data.get("ref_map", {}) or {}
+    evidence = []
+    seen = set()
+
+    def add(text: str, ref_no: int, source: str) -> None:
+        if ref_no <= 0:
+            return
+        for sentence in _risk_sentences(text):
+            if not _A_SHARE_RISK_SIGNAL_RE.search(sentence):
+                continue
+            normalized = re.sub(r'\W+', '', sentence)
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            evidence.append({"text": sentence, "ref": ref_no, "source": source})
+            if len(evidence) >= max_items:
+                return
+
+    for report in (key_data.get("reports", []) or [])[:8]:
+        report_ref = _risk_ref_no(ref_map, "report_" + str(report.get("id", "")))
+        report_text = "\n".join(
+            str(report.get(field) or "")
+            for field in ("title", "detail_text", "abstract", "text")
+        )
+        add(report_text, report_ref, "研报")
+        if len(evidence) >= max_items:
+            return evidence
+
+    for meeting in (key_data.get("meetings", []) or [])[:4]:
+        meeting_key = "meeting_" + str(meeting.get("date", "")) + "_" + str(meeting.get("title", ""))[:20]
+        meeting_ref = _risk_ref_no(ref_map, meeting_key)
+        meeting_text = "\n".join(
+            str(meeting.get(field) or "")
+            for field in ("title", "overview", "qa", "text")
+        )
+        add(meeting_text, meeting_ref, "纪要")
+        if len(evidence) >= max_items:
+            return evidence
+
+    for survey in (key_data.get("surveys", []) or [])[:4]:
+        survey_ref = _risk_ref_no(ref_map, "survey_" + str(survey.get("event_id", "")))
+        add(str(survey.get("content") or ""), survey_ref, "调研")
+        if len(evidence) >= max_items:
+            return evidence
+
+    return evidence
+
+
+def _build_a_share_event_context(key_data: dict, max_items: int = 5) -> str:
+    """Build source-backed recent-event context without relying on a parallel section result."""
+    ref_map = key_data.get("ref_map", {}) or {}
+    lines = []
+
+    for report in (key_data.get("reports", []) or [])[:4]:
+        ref_no = _risk_ref_no(ref_map, "report_" + str(report.get("id", "")))
+        title = re.sub(r'\s+', ' ', str(report.get("title") or "")).strip()
+        if ref_no and title:
+            lines.append(f"- {title[:80]}[{ref_no}]")
+
+    for meeting in (key_data.get("meetings", []) or [])[:3]:
+        key = "meeting_" + str(meeting.get("date", "")) + "_" + str(meeting.get("title", ""))[:20]
+        ref_no = _risk_ref_no(ref_map, key)
+        summary = str(meeting.get("overview") or meeting.get("title") or "").strip()
+        if ref_no and summary:
+            clean_summary = re.sub(r'\s+', ' ', summary)
+            lines.append(f"- {clean_summary[:100]}[{ref_no}]")
+
+    for survey in (key_data.get("surveys", []) or [])[:2]:
+        ref_no = _risk_ref_no(ref_map, "survey_" + str(survey.get("event_id", "")))
+        content = str(survey.get("content") or "").strip()
+        if ref_no and content:
+            clean_content = re.sub(r'\s+', ' ', content)
+            lines.append(f"- {clean_content[:100]}[{ref_no}]")
+
+    return "\n".join(lines[:max_items])
+
+
+def _latest_a_share_financial_snapshot(fin: dict, ref_map: dict) -> str:
+    """Render the latest available A-share financial values with the fdmtNew citation."""
+    latest = fin.get("latest_data") if isinstance(fin.get("latest_data"), dict) else None
+    label = (fin.get("latest") or {}).get("label", "") if isinstance(fin.get("latest"), dict) else ""
+    if not latest:
+        years = [y for y in (fin.get("years") or []) if isinstance(fin.get(y), dict)]
+        if years:
+            year = max(years)
+            latest = fin.get(year) or {}
+            label = f"{year}A"
+    if not latest:
+        return ""
+
+    ref_no = _risk_ref_no(ref_map, "fdmtNew")
+    cite = f"[{ref_no}]" if ref_no else ""
+    items = []
+    amount_fields = (("tRevenue", "营业收入"), ("NPAttrP", "归母净利润"), ("operCashFlow", "经营现金流"))
+    pct_fields = (
+        ("revenueYOY", "营收同比"), ("NPAttrPYOY", "归母净利润同比"),
+        ("grossMargin", "毛利率"), ("netMargin", "净利率"),
+        ("ROE", "ROE"), ("liabRatio", "资产负债率"),
+    )
+    for key, label_cn in amount_fields:
+        value = latest.get(key)
+        if isinstance(value, (int, float)):
+            items.append(f"{label_cn}{value / 1e8:.2f}亿元{cite}")
+    for key, label_cn in pct_fields:
+        value = latest.get(key)
+        if isinstance(value, (int, float)):
+            items.append(f"{label_cn}{value:.2f}%{cite}")
+
+    prefix = f"{label}：" if label else ""
+    return prefix + "；".join(items[:8])
+
+
+def _derive_a_share_risk_title(sentence: str, company_name: str = "") -> str:
+    clean = re.sub(r'\[\d+\]|\*\*', '', str(sentence or ""))
+    clean = re.sub(r'^(?:主要)?风险(?:提示)?[:：]?', '', clean).strip()
+    if company_name:
+        clean = clean.replace(company_name, "").strip()
+    clean = re.sub(r'^(?:公司|我们认为|我们预计|预计|若|如果)', '', clean).strip()
+    candidate = re.split(r'可能|或将|若|如果|导致|影响|存在', clean, maxsplit=1)[0].strip("，,：:；; ")
+    if len(candidate) < 4:
+        candidate = clean
+    candidate = re.sub(r'[，,。；;：:].*$', '', candidate).strip()
+    return candidate[:20].rstrip("的") or "公司特有风险"
+
+
+def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
+    """Build a cited fallback only from real report/meeting/survey risk evidence."""
+    name = str(key_data.get("short_name") or key_data.get("name") or "")
+    lines = []
+    titles = set()
+    for item in _collect_a_share_risk_evidence(key_data, max_items=12):
+        title = _derive_a_share_risk_title(item["text"], name)
+        if title in titles:
+            continue
+        titles.add(title)
+        body = re.sub(r'\[\d+\]|\s+', ' ', item["text"]).strip()
+        if len(body) > 42:
+            body = body[:42].rstrip("，,；;：:") + "…"
+        lines.append(f"• **{title}**：{body}[{item['ref']}]")
+        if len(lines) >= max_items:
+            break
+    return "\n".join(lines) if len(lines) >= 3 else ""
+
+
+def _validate_a_share_risk_body(body: str) -> tuple:
+    issues = []
+    lines = [line.strip() for line in str(body or "").splitlines() if _A_SHARE_RISK_BULLET_RE.match(line)]
+    if not 3 <= len(lines) <= 5:
+        issues.append(f"risk_bullet_count:{len(lines)}")
+    if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
+        issues.append("generic_risk_template")
+    titles = []
+    for idx, line in enumerate(lines):
+        title_match = re.search(r'\*\*([^*]{4,20})\*\*', line)
+        if not title_match:
+            issues.append(f"risk[{idx}].missing_bold_title")
+        else:
+            titles.append(title_match.group(1).strip())
+        if not re.search(r'\*\*[^*]+\*\*\s*[：:]\s*.{8,}', line):
+            issues.append(f"risk[{idx}].missing_explanation")
+        if not re.search(r'\[\d+\]', line):
+            issues.append(f"risk[{idx}].missing_citation")
+        plain_len = len(re.sub(r'\[\d+\]|\*\*|\s+', '', line))
+        if plain_len > 120:
+            issues.append(f"risk[{idx}].too_long:{plain_len}")
+    if len(set(titles)) != len(titles):
+        issues.append("duplicate_risk_titles")
+    return not issues, issues
+
+
+def _enforce_a_share_risk_section(md_content: str, key_data: dict) -> str:
+    risk_pat = r'(## 10 风险提示\n\n)(.*?)(?=\n## 参考资料|\n---\n\n## 参考资料)'
+    match = re.search(risk_pat, md_content, re.DOTALL)
+    if not match:
+        return md_content
+    valid, issues = _validate_a_share_risk_body(match.group(2))
+    if valid:
+        return md_content
+    fallback = _build_a_share_risk_fallback(key_data)
+    if fallback:
+        print(f"  ⚠ v1.2.10: §10 风险提示校验失败，使用带引用的公司证据重建：{issues}")
+        return re.sub(risk_pat, lambda m: m.group(1) + fallback, md_content, count=1, flags=re.DOTALL)
+    print(f"  ⚠ v1.2.10: §10 风险提示校验失败且证据不足，交由最终自检阻断：{issues}")
+    return md_content
+
+
+def _valid_ref_numbers(ref_map: dict) -> set:
+    """从 ref_map 提取所有合法引用编号（即各 entry 的 'n' 值）。"""
+    nums = set()
+    for v in (ref_map or {}).values():
+        if isinstance(v, dict):
+            n = v.get("n")
+            if isinstance(n, int) and n > 0:
+                nums.add(n)
+    return nums
+
+
+def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
+    """从 JSON payload 校验并渲染 A 股 §10 风险提示。返回 (markdown, issues)。"""
+    issues = []
+    valid_nums = _valid_ref_numbers(ref_map)
+    risks = payload.get("risks") if isinstance(payload, dict) else None
+    if not isinstance(risks, list) or not (3 <= len(risks) <= 5):
+        return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
+    lines = []
+    for i, risk in enumerate(risks):
+        if not isinstance(risk, dict):
+            issues.append(f"risk[{i}].not_object")
+            continue
+        title = str(risk.get("title") or "").strip()
+        if len(title) < 4 or len(title) > 24:
+            issues.append(f"risk[{i}].title_len:{len(title)}")
+        explanation = str(risk.get("explanation") or risk.get("body") or "").strip()
+        if len(explanation) < 8:
+            issues.append(f"risk[{i}].explanation_len:{len(explanation)}")
+        refs = risk.get("source_refs")
+        if not isinstance(refs, list) or not refs or not all(isinstance(n, int) and n > 0 for n in refs):
+            issues.append(f"risk[{i}].invalid_refs")
+            refs = []
+        else:
+            # v1.2.10+: 清洗无效引用而非整条丢弃——保留合法引用编号
+            clean_refs = [n for n in refs if n in valid_nums]
+            if not clean_refs:
+                issues.append(f"risk[{i}].no_valid_refs")
+            refs = clean_refs
+        combined = title + explanation
+        if any(re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS):
+            issues.append(f"risk[{i}].generic")
+        if title and explanation and refs and not any(
+            re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS
+        ):
+            ref_str = "".join(f"[{n}]" for n in refs)
+            lines.append(f"• **{title}**：{explanation}{ref_str}")
+    if len(lines) < 3:
+        issues.append(f"valid_lines:{len(lines)}")
+    return ("\n".join(lines), []) if lines and not issues else ("", issues)
+
+
 def gen_section10(client, key_data: dict) -> str:
-    """10 风险提示（v1.2.9: 注入公司特有上下文，杜绝通用模板）"""
+    """10 风险提示（JSON schema，3-5条；失败则交 fallback 证据重建）。"""
     reports = key_data["reports"]
     fin = key_data["fin"]
     name = key_data["name"]
     ref_map = key_data["ref_map"]
+    risk_evidence = _collect_a_share_risk_evidence(key_data)
+    risk_context = "\n".join(f"- {item['text']}[{item['ref']}]" for item in risk_evidence[:8])
+    event_context = _build_a_share_event_context(key_data)
+    fin_snapshot = _latest_a_share_financial_snapshot(fin, ref_map)
 
-    # v1.2.9: 提取公司特有的催化剂/事件/业务变化作为风险生成上下文
-    surveys = key_data.get("surveys", [])
-    meetings = key_data.get("meetings", [])
-    mc = key_data.get("mc", {})
-    catalysts_ctx = key_data.get("catalyst_table_ctx", "")
+    issues = []
+    for call_name in ("risk_json", "risk_json_repair"):
+        prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
+Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "explanation": "一句话说明触发条件及对收入/利润/现金流/估值的影响", "source_refs": [1]}}]}}
+Rules: output 3-5 company-specific risks (no more than 5); title ≤20 Chinese chars; explanation is exactly one sentence; use only the context refs below; no generic macro/market-competition-only risk title.
 
-    # 近况摘要：研报中最新的公司特有事件
-    recent_lines = []
-    for r in reports[:6]:
-        text = (r.get("content") or r.get("summary") or "")[:600]
-        # 提取含公司名的句子作为近况
-        for sent in re.split(r'[。\n]', text):
-            if name[:4] in sent and len(sent) > 15:
-                recent_lines.append(sent.strip())
-                if len(recent_lines) >= 3:
-                    break
-        if len(recent_lines) >= 3:
-            break
-    recent_context = "；".join(recent_lines[:3]) if recent_lines else ""
+⚠️ FORBIDDEN generic risk patterns:
+  - "核心业务需求若放缓"
+  - "行业竞争加剧可能压缩"
+  - "原材料、渠道或费用投入"
+  - "宏观环境和政策变化"
 
-    # 财务核心指标摘要
-    fin_snapshot = ""
-    if fin.get("latest"):
-        fl = fin["latest"]
-        fin_items = []
-        for k in ["total_revenue", "net_profit", "roe", "gross_margin", "net_margin",
-                   "debt_to_asset", "ocf_to_np"]:
-            v = fl.get(k)
-            if v is not None:
-                fin_items.append(f"{k}={v}")
-        fin_snapshot = " | ".join(fin_items[:6])
+Risk evidence (cite only real refs here):
+{risk_context or "（no risk evidence extracted — do not fabricate）"}
 
-    prompt = f"""为 {name} 撰写"风险提示"章节（第10节）。
+Recent events:
+{event_context or "（no events）"}
 
-⚠️ 铁则：必须针对 {name} 当前真实面临的、可验证的具体风险，禁止输出以下通用模板句式：
-  - "核心业务需求若放缓，收入增长可能低于预期"
-  - "行业竞争加剧可能压缩价格和利润率"
-  - "原材料、渠道或费用投入变化可能影响现金流"
-  - "宏观环境和政策变化可能影响估值与业绩兑现"
-  以上四条已被标记为无效模板，任何变体重述都视为失败。
+Financial snapshot:
+{fin_snapshot or "（no financial data）"}
 
-【公司近况摘要（必须从中提炼至少2条具体风险）】
-{recent_context}
-
-【催化事件】
-{catalysts_ctx[:600]}
-
-【财务数据核心指标】
-{fin_snapshot}
-
-【研报风险提示原文（提取具体风险点）】
+Report excerpts:
 {_compact_reports(reports[:4])}
 
-【引用映射】
+VALID REF NUMBERS (only these integers may appear in source_refs):
+{sorted(_valid_ref_numbers(ref_map))}
+
+Citation map:
 {_refs_str(reports, ref_map, 4)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
-
-【格式要求】**全节严格控制在250字以内**，输出3-4条风险（不要5条），每条1-2句话，每条格式：
-• **风险标题**：用 {name} 当前真实面临的具名风险（如"XX政策落地不及预期""XX产品批价承压"），禁止泛称"行业竞争""宏观政策" + 量化影响（标注引用或注明"基于[N]推算"）
-
-**重要**：每条风险合计不超过60字，宁可少写一条也不要超字数。风险标题中必须出现 {name} 当下的具体业务/产品/渠道/政策名称，不能笼统。
 """
-    return call_claude(client, prompt, max_tokens=600)
+        if call_name.endswith("repair") and issues:
+            prompt += f"\nSchema issues to fix:\n" + "\n".join(issues)
 
+        raw = call_claude(client, prompt, max_tokens=1000)
+        payload = None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            m = re.search(r'\{[\s\S]*\}', raw)
+            if m:
+                try:
+                    payload = json.loads(m.group(0))
+                except json.JSONDecodeError:
+                    pass
+        if not isinstance(payload, dict):
+            issues.append(f"{call_name}:json_parse_failed")
+            continue
+        rendered, render_issues = _validate_render_section_10(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+
+    # JSON 路径失败，返回空字符串，由 _enforce_a_share_risk_section 走 fallback
+    return ""
 
 def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
     """移除Markdown表格中数据不足的列（保留表头不变）。
@@ -3132,12 +3404,6 @@ def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) ->
             ("2026-Q2（预期）", "季度经营数据或业绩更新", "验证收入与利润率趋势"),
             ("2026-Q3（预期）", "核心产品或业务进展披露", "影响增长预期"),
             ("2026-Q4（预期）", "年度经营指引更新", "影响估值倍数"),
-        ],
-        "risks": [
-            "关键假设不及预期的风险：盈利预测依赖核心产品量价、费用率等假设，若实际值与假设偏差较大可能影响估值判断。",
-            "数据缺失风险：部分结构化接口未能返回完整财务或业务数据，结论基于已获取数据，需持续跟踪后续披露。",
-            "模型不确定性风险：基于当前可得信息的分析存在固有局限，市场环境或公司战略的重大变化可能导致结论失效。",
-            "本报告不构成投资建议：所有分析基于公开数据和合理推演，投资者应独立判断并承担投资风险。",
         ],
         "chain": "- **上游**：关注关键原材料、技术和服务供给。\n- **中游**：关注公司制造、服务和运营效率。\n- **下游**：关注客户需求、渠道库存和价格变化。",
         "questions": "- 核心业务收入和订单趋势如何？\n- 毛利率和费用率变化是否可持续？\n- 行业竞争格局是否影响价格？\n- 现金流和资本开支是否匹配增长节奏？",
@@ -4130,23 +4396,8 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
                 1
             )
 
-    # Ensure risk section contains publishable bullets if LLM returned a short error.
-    risk_pat = r'(## 10 风险提示\n\n)(.*?)(?=\n## 参考资料|\n---\n\n## 参考资料)'
-    risk = re.search(risk_pat, md_content, re.DOTALL)
-    # v1.2.9: 通用模板关键词，命中任一即判定为无效风险
-    _generic_risk_patterns = [
-        r'核心业务需求若放缓', r'行业竞争加剧可能压缩', r'原材料.*渠道.*费用投入',
-        r'宏观环境和政策变化可能影响', r'收入增长可能低于预期',
-    ]
-    if risk:
-        risk_body_text = risk.group(2)
-        bullet_count = len(re.findall(r'^\s*[-*]\s+', risk_body_text, re.M))
-        has_generic = any(re.search(p, risk_body_text) for p in _generic_risk_patterns)
-        if bullet_count < 3 or has_generic:
-            if has_generic:
-                print(f"  ⚠ v1.2.9: §10 风险提示含通用模板，替换为摘要")
-            risk_body = "\n".join(f"• **{r.split('：')[0]}**：{r.split('：', 1)[1] if '：' in r else r}" for r in profile["risks"][:4])
-            md_content = re.sub(risk_pat, rf'\1{risk_body}', md_content, count=1, flags=re.DOTALL)
+    # v1.2.10: preserve valid •/-/* bullets; otherwise rebuild only from cited company evidence.
+    md_content = _enforce_a_share_risk_section(md_content, key_data)
 
     def _fill_empty(pattern: str, replacement: str) -> None:
         nonlocal md_content
@@ -4750,7 +5001,7 @@ def _normalize_bullet_markers(md_text: str) -> str:
 def _normalize_final_markdown_format(md_text: str) -> str:
     """Final format guardrails for LLM markdown drift.
     v1.2.8-R1: 正则正文段落去除前导缩进空格，Q/A 换行强化。
-    v1.2.9: 增加中文截断检测。"""
+    v1.2.9: 增加中文截断检测；v1.2.10: 风险列表统一识别 •/-/*。"""
     if not md_text:
         return md_text
     md_text = _strip_bold_from_markdown_headings(md_text)
@@ -4785,6 +5036,7 @@ def _final_self_check_v123(md_content: str, ref_map: dict) -> list:
     12. 标题与正文主题一致性
     13. Q/A 真实来源
     14. 正文引用与参考资料闭环
+    15. 风险提示条数、格式、引用与去模板化
     """
     import re
     blockers = []
@@ -4954,6 +5206,18 @@ def _final_self_check_v123(md_content: str, ref_map: dict) -> list:
             if not re.search(r'\[\d+\]', nearby):
                 blockers.append(f"13.Q/A无引用来源: 位置{pos}附近的Q&A未标注引用")
 
+    # ── 15. 风险提示质量门禁 ──
+    risk_match = re.search(
+        r'## 10 风险提示\n\n(.*?)(?=\n## 参考资料|\n---\n\n## 参考资料)',
+        md_content,
+        re.DOTALL,
+    )
+    if not risk_match:
+        blockers.append("15.缺少风险提示章节")
+    else:
+        risk_valid, risk_issues = _validate_a_share_risk_body(risk_match.group(1))
+        if not risk_valid:
+            blockers.append(f"15.风险提示不合格: {', '.join(risk_issues)}")
     # ── 14. 正文引用与参考资料闭环 ──
     ref_section_match = re.search(r'##\s*参考资料\n', md_content)
     if ref_section_match:
@@ -5689,6 +5953,9 @@ def main():
     # ── 5. 组装并写文件 ────────────────────────────────────────────────────────
     print(f"[{time.time()-t0:.1f}s] 组装报告...")
     md_content = assemble_report(meta, sections, ref_map)
+
+    # v1.2.10: 风险 fallback 必须在死引用清理前运行，确保新引用对应的参考资料被保留。
+    md_content = _enforce_a_share_risk_section(md_content, key_data)
 
     # ── v1.2.3 后处理: 移除死引用并重新编号 ──────────────────────────────────────
     md_content = _postprocess_v123(md_content, ref_map)
