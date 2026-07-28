@@ -1,5 +1,32 @@
 # Changelog
 
+## v1.2.10
+
+Status: A-share §10 risk evidence and validation repair.
+
+### P0: A 股风险提示生成修复
+
+- 风险项目符号校验由 `^\s*[-*]\s+` 改为统一识别 `•/-/*`，修复 v1.2.9 合规 `•` 输出被计为 0 条并覆盖的问题。
+- 研报上下文改读真实字段 `title/detail_text/abstract/text`；最新财务快照改读 `latest_data` 或最近年报的真实字段。
+- 移除未赋值的 `catalyst_table_ctx` 依赖，直接注入带引用的研报、会议纪要和机构调研事件。
+- 删除 `_a_share_profile` 的“关键假设/数据缺失/模型不确定性/不构成投资建议”四条静态风险。
+- 新增 source-backed fallback：仅从目标公司的研报、纪要和调研风险句生成 3-4 条带引用风险。
+- 风险 fallback 前置到死引用清理之前，保证新引用的参考资料不会被提前删除。
+- 新增最终质量门禁：3-4 条、加粗标题、每条有 `[N]`、标题不重复、单条不超过 70 字且不得命中通用模板；修复失败时 fail closed。
+
+### Tests
+
+- 新增 `tests/datayes-company-onepaper/test_a_share_risk_logic.py`，覆盖 `•/-/*`、模板拦截、证据提取、财务快照、fallback 与整章修复。
+
+### Files changed
+
+- `scripts/a_share_report_writer.py`
+- `tests/datayes-company-onepaper/test_a_share_risk_logic.py`
+- `references/a-share-quality-checklist.md`
+- `SKILL.md`
+- `README.md`
+- `CHANGELOG.md`
+
 ## v1.2.9
 
 Status: Bullet normalization + §4.5 Q&A extraction rewrite + doc cleanup.
