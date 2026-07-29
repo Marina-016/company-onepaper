@@ -79,22 +79,7 @@ metadata:
   6. 公开网页补充
 - 不得因为前一级没有数据就直接结束，必须逐级降级到最低优先级。
 
-### 3.2 Resolve Before Fetch
-- 当 A 股公司名或代码存在歧义时，先运行：
-
-```bash
-python3 -X utf8 <skill_root>/scripts/a_share_fetch_data.py \
-  --ticker "{用户输入}" \
-  --token "{DATAYES_TOKEN}" \
-  --resolve-only
-```
-
-- 只读取脚本输出的 `RESOLVED_CODE`、`RESOLVED_NAME`、`RESOLVED_PERIOD`、`RESOLVED_AMBIGUOUS`。
-- `RESOLVED_AMBIGUOUS=1` 时，先把候选列表交给用户确认，再继续。
-- `RESOLVED_CODE` 为空时立即停止，请用户给出更准确的公司名或 6 位代码。
-- 不要自己 curl `stock_search` 后再手动解析嵌套 JSON。
-
-### 3.3 Fetch and Write
+### 3.2 Fetch and Write
 - 本节命令仅限 A 股；港股/美股不要套用这里的 `--data` / `--output` / `--docx` 参数。
 - 运行数据采集脚本时，`entity_id` 只允许使用 6 位纯数字，不加 `.SH` / `.SZ`，也不使用其他响应字段替代。
 
@@ -116,12 +101,12 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
 
 - `a_share_report_writer.py` 负责生成正文、自动修复和 DOCX 导出；不要把对话窗口当成正文输出区。
 
-### 3.4 A-Share Adapters
+### 3.3 A-Share Adapters
 - 特殊行业必须使用各自适配的指标体系，不要强行套用通用消费品模板。
 - 保险、银行、科技、平台、资源周期、REITs、生物医药等行业的指标应以对应参考文件为准。
 - 材料不足时允许减少表格数量，但不得用不适用指标硬填。
 
-### 3.5 A-Share Fallback
+### 3.4 A-Share Fallback
 - 若自动 writer 失败，按 `references/a-share-report-structure.md` 手工组织内容，并按 `references/a-share-quality-checklist.md` 自检。
 - 手工降级不等于放宽标准，所有质量门禁仍然有效。
 

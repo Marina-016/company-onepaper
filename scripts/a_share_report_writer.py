@@ -750,6 +750,20 @@ def build_ref_map(data: dict) -> dict:
             }
             idx += 1
 
+    # 机构调研详情（为 §4.5 Q&A 提供引用溯源）
+    for sv in extract_surveys_detail(data):
+        if sv.get("event_id"):
+            key = "survey_" + sv["event_id"]
+            refs[key] = {
+                "n": idx,
+                "type": "调研",
+                "id": sv["event_id"],
+                "date": sv["date"],
+                "org": "机构调研",
+                "title": f"{sv['type'] or '投资者关系活动'}（{sv['date']}）",
+            }
+            idx += 1
+
     # 结构化数据来源
     meta_info = data.get("__meta__", {})
     ticker = meta_info.get("ticker", data.get("ticker", ""))
@@ -819,6 +833,10 @@ def refs_to_markdown(ref_map: dict) -> str:
         elif ref_type == "纪要":
             lines.append(
                 f"[{n}]Datayes纪要 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：getMeetingSummaryDetail（会议纪要详情）"
+            )
+        elif ref_type == "调研":
+            lines.append(
+                f"[{n}]Datayes调研 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：institution_research_detail（机构调研详情）"
             )
         else:
             lines.append(
@@ -1988,6 +2006,8 @@ def _extract_qa_candidates(qa_blocks: list) -> list:
         normalized = _re.sub(r'\*\*([AQ])([:：])\*\*', r'\1\2', normalized)
         normalized = _re.sub(r'([AQ])([:：])\*\*', r'\1\2', normalized)
         normalized = _re.sub(r'\*\*([AQ])([:：])', r'\1\2', normalized)
+        # Q1、→ Q1：归一化（格力电器2024年格式）
+        normalized = _re.sub(r'(?:^|\n)\s*Q(\d+)[、]\s*', r'\nQ\1：', normalized, flags=_re.MULTILINE)
 
         # 尝试按 Q：/A：拆分成单独的 QA 对
         qa_segments = _re.split(r'(?:^|\n)\s*(?:Q|问)(?:\d*)\s*[:：]\s*', normalized, flags=_re.MULTILINE | _re.IGNORECASE)
@@ -1996,15 +2016,39 @@ def _extract_qa_candidates(qa_blocks: list) -> list:
                 seg = seg.strip()
                 if len(seg) < 15:
                     continue
-                a_parts = _re.split(r'(?:^|\n)\s*(?:A|答)(?:\d*)\s*[:：]\s*', seg, maxsplit=1, flags=_re.MULTILINE | _re.IGNORECASE)
+                # A：/答：可能在同行（无换行），所以不要求 ^|\n 锚定——只匹配首个分隔符
+                a_parts = _re.split(r'(?:A|答)(?:\d*)\s*[:：]\s*', seg, maxsplit=1, flags=_re.IGNORECASE)
                 if len(a_parts) >= 2:
                     q = a_parts[0].strip()
-                    a = a_parts[1].strip()
-                    if q and a:
-                        candidates.append({"q": q, "a": a, "ref": ref_tag})
-                        extracted = True
-                        if len(candidates) >= 10:
-                            return candidates
+                    a_remainder = a_parts[1].strip()
+                    # 同行内可能还有后续 Q/A 对：递归提取
+                    while a_remainder:
+                        next_q = _re.split(r'(?:Q|问)\s*[:：]\s*', a_remainder, maxsplit=1, flags=_re.IGNORECASE)
+                        if len(next_q) >= 2:
+                            a = next_q[0].strip()
+                            if q and a:
+                                candidates.append({"q": q, "a": a, "ref": ref_tag})
+                                extracted = True
+                                if len(candidates) >= 10:
+                                    return candidates
+                            # 下一个 Q/A
+                            q = next_q[1].strip()
+                            next_a = _re.split(r'(?:A|答)(?:\d*)\s*[:：]\s*', q, maxsplit=1, flags=_re.IGNORECASE)
+                            if len(next_a) >= 2:
+                                q = next_a[0].strip()
+                                a_remainder = next_a[1].strip()
+                            else:
+                                # 最后一段没有 A 配对，丢弃
+                                a_remainder = ""
+                        else:
+                            # 只剩最后一个 A 段
+                            a = a_remainder
+                            if q and a:
+                                candidates.append({"q": q, "a": a, "ref": ref_tag})
+                                extracted = True
+                                if len(candidates) >= 10:
+                                    return candidates
+                            a_remainder = ""
 
         if extracted:
             continue
@@ -2062,30 +2106,117 @@ def _extract_qa_candidates(qa_blocks: list) -> list:
                         if len(candidates) >= 10:
                             return candidates
 
+        # ── 路径E: 序号罗列体（"1. 公司规划? \n 回答段落" 无答/回标记）──
+        # 格力电器典型格式：数字序号 + 问句 + 连续段落回答，无换行
+        # 序数词前锚点：行首/句号（覆盖"。 2.格力钛..."等嵌入式边界）
+        items_e = _re.split(r'(?:(?:^|\n|。)\s*)\d+[、.]\s*', text)
+        if len(items_e) >= 3:  # 第一段是导语/空段，至少2组Q&A
+            for item in items_e[1:]:
+                item = item.strip()
+                if len(item) < 30:
+                    continue
+                # Q = 第一个?/？之前的内容；A = 之后到下一题或段落结尾
+                m = _re.match(r'(.+?[?？])\s*(.*)', item, _re.DOTALL)
+                if not m or len(m.group(1)) < 5:
+                    continue
+                q = m.group(1).strip()
+                a = m.group(2).strip()
+                # A 截断到合理长度并控制在500字以内
+                if len(a) > 500:
+                    cut = a[:500].rfind('。')
+                    a = a[:cut + 1] if cut > 100 else a[:500] + '…'
+                if len(a) > 10 and len(q) < 200:
+                    candidates.append({"q": q, "a": a, "ref": ref_tag})
+                    if len(candidates) >= 10:
+                        return candidates
+
     return candidates
 
 
 def _format_qa_markdown(selected: list, ref_tags: list) -> str:
     """v1.2.9: 确定性排版 Q&A 为 Markdown。LLM 完全不参与格式。
 
-    selected: [{"q": str, "a": str}, ...]
-    ref_tags: ["[N1]", "[N2]", ...] 附加到每条 A 末尾做引用
+    selected: [{"q": str, "a": str, "ref": str (可选)}, ...]
+    ref_tags: ["[N1]", "[N2]", ...] fallback—仅当 item 无 ref 时使用
+    「已有 [N]」保护：若 A 末尾 30 字符内已有引用标记，不再追加。
     """
     import re as _re
-    ref_str = "".join(ref_tags[:3]) if ref_tags else ""
+    global_ref = "".join(ref_tags[:3]) if ref_tags else ""
     lines = []
     for item in selected:
         q = item["q"].strip()
-        # 兜底：Q 以中文字结尾无标点 → 自动补？
         if q and _re.search(r'[一-鿿]$', q):
             q += '？'
         a = item["a"].strip()
         if len(a) > 400:
             cut = a[:400].rfind('。')
             a = a[:cut + 1] if cut > 150 else a[:400] + '…'
+        # 引用：优先用 item 自带 ref，无则用全局 fallback
+        item_ref = item.get("ref", "")
+        ref = item_ref if item_ref else global_ref
+        # 避免重复：末尾已含 [N] 则不再追加
+        if ref and not _re.search(r'\[\d+\]', a[-30:]):
+            a = a + ref
         lines.append(f"**Q：** {q}")
-        lines.append(f"**A：** {a}{ref_str}")
+        lines.append(f"**A：** {a}")
     return "\n\n".join(lines)
+
+
+def _llm_fallback_extract_qa(qa_blocks: list, name: str, ref_tags: list, client) -> str:
+    """正则提取失败时，用 LLM 从任意格式的调研文本中提取 Q&A 对。
+
+    覆盖格式：纪要/报告体（五粮液典型)——问题嵌在小标题中、回答混在正文里，
+    正则不可能理解这种语义关系，必须 LLM 处理。
+    返回已格式化的 Markdown 字符串，失败返回空串。
+    """
+    raw_text = "\n\n---\n\n".join(qa_blocks[:4])
+
+    prompt = f"""从以下{name}的机构调研/业绩说明会内容中提取 3-5 组真实问答，聚焦最有基本面投资价值的问题。
+
+【原始内容】
+{raw_text[:8000]}
+
+【提取规则】
+⚠️ 只提取原文真实存在的问答，严禁编造任何问题或回答。
+⚠️ 回答超过180字需压缩到180字以内，保留核心数据与结论。
+⚠️ 不要在回答中输出 [N] 等引用编号——引用由系统自动添加。
+
+不同格式按以下方式处理：
+• 若有 Q:/A: 标记 → 直接提取，压缩长回答
+• 若为"1. 问题? ..."序号体 → 序号标题作 Q，紧跟段落作 A
+• 若为"董事长讲话... (一)行业前景..."纪要体 → 从"投资者互动交流"部分提炼：小标题作 Q，正文压缩作 A
+
+输出严格 JSON 数组（不要任何其他文字）：
+[{{"q": "问题文本", "a": "压缩后回答（≤180字）"}}, ...]"""
+    from datetime import datetime
+    t0 = datetime.now()
+    try:
+        result = call_claude(client, prompt, max_tokens=800)
+        json_match = re.search(r'\[[\s\S]*\]', result)
+        if json_match:
+            qa_list = json.loads(json_match.group(0))
+            if isinstance(qa_list, list) and len(qa_list) >= 1:
+                formatted = []
+                for item in qa_list:
+                    q = str(item.get("q", "")).strip()
+                    a = str(item.get("a", "")).strip()
+                    if q and a:
+                        formatted.append({"q": q, "a": a})
+                if formatted:
+                    return _format_qa_markdown(formatted, ref_tags[:3] if ref_tags else [])
+        # LLM 返回不可解析时，做一次 compact retry
+        if not json_match or not formatted:
+            retry = call_claude(client, prompt + "\n\n⚠️ 上次未返回有效JSON。请严格只输出 JSON 数组。", max_tokens=500)
+            jm2 = re.search(r'\[[\s\S]*\]', retry)
+            if jm2:
+                qa2 = json.loads(jm2.group(0))
+                if isinstance(qa2, list):
+                    fmt2 = [{"q": str(x.get("q","")).strip(), "a": str(x.get("a","")).strip()} for x in qa2 if x.get("q") and x.get("a")]
+                    if fmt2:
+                        return _format_qa_markdown(fmt2, ref_tags[:3] if ref_tags else [])
+        return ""
+    except Exception:
+        return ""
 
 
 def _normalize_survey_qa_markdown(text: str) -> str:
@@ -2136,7 +2267,14 @@ def gen_section4(client, key_data: dict) -> dict:
     qa_blocks = []
     for sv in surveys[:5]:
         if sv.get("content"):
-            qa_blocks.append(f"【{sv['date']} {sv['type']}（机构调研）】\n{sv['content'][:3000]}")
+            # 从 ref_map 回查该调研记录的引用编号
+            sv_ref = ""
+            eid = sv.get("event_id", "")
+            if eid:
+                sv_key = "survey_" + eid
+                sv_n = ref_map.get(sv_key, {}).get("n", "")
+                sv_ref = f"[{sv_n}]" if sv_n else ""
+            qa_blocks.append(f"【{sv['date']} {sv['type']}（机构调研）】{sv_ref}\n{sv['content'][:3000]}")
     if len(qa_blocks) < 3:
         for m in meetings[:5]:
             if m.get("qa"):
@@ -2149,13 +2287,14 @@ def gen_section4(client, key_data: dict) -> dict:
     # 确定性提取所有 Q&A 候选
     candidates = _extract_qa_candidates(qa_blocks) if has_qa else []
     all_refs = list({c["ref"] for c in candidates if c["ref"]})
-    # 候选人 ref 为空时，从 meetings ref_map 补齐
+    # 候选人 ref 为空时，从参与 qa_blocks 的 survey 的 ref_map 补齐
     if not all_refs:
-        for m in meetings[:5]:
-            key = "meeting_" + m["date"] + "_" + m["title"][:20]
-            n_val = str(ref_map.get(key, {}).get("n", ""))
-            if n_val and f"[{n_val}]" not in all_refs:
-                all_refs.append(f"[{n_val}]")
+        for sv in surveys[:5]:
+            eid = sv.get("event_id", "")
+            if eid:
+                sv_n = str(ref_map.get("survey_" + eid, {}).get("n", ""))
+                if sv_n and f"[{sv_n}]" not in all_refs:
+                    all_refs.append(f"[{sv_n}]")
 
     # ── 4.1 盈利方式（始终独立生成）──
     profit_prompt = f"""为 {name} 撰写第4章 4.1 盈利方式。
@@ -2218,6 +2357,7 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
                         formatted.append({
                             "q": candidates[idx]["q"],
                             "a": sel.get("a", candidates[idx]["a"])[:400],
+                            "ref": candidates[idx].get("ref", ""),
                         })
                 if 1 <= len(formatted) <= 5:
                     s45 = _format_qa_markdown(formatted, all_refs)
@@ -2226,13 +2366,17 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
 
         # 兜底：LLM 失败时直接取前 4 个候选
         if not s45:
-            top4 = [{"q": c["q"], "a": c["a"]} for c in candidates[:4]]
+            top4 = [{"q": c["q"], "a": c["a"], "ref": c.get("ref", "")} for c in candidates[:4]]
             s45 = _format_qa_markdown(top4, all_refs)
 
     elif has_qa:
-        first = re.sub(r'^【.*?】\n?', '', qa_blocks[0], flags=re.MULTILINE) if qa_blocks else ""
-        if first.strip():
-            s45 = first.strip()[:500]
+        # 正则未提取到足够候选 → LLM 通用提取（覆盖纪要/报告体等无标记格式）
+        s45 = _llm_fallback_extract_qa(qa_blocks, name, all_refs, client)
+        if not s45:
+            # LLM 也失败 → 最后兜底取首段原文（至少不丢数据）
+            first = re.sub(r'^【.*?】\n?', '', qa_blocks[0], flags=re.MULTILINE) if qa_blocks else ""
+            if first.strip():
+                s45 = first.strip()[:500]
 
     s45 = _normalize_survey_qa_markdown(s45)
     return {"s4_profit_model": s41, "s4_survey_qa": s45}
@@ -4612,7 +4756,8 @@ def _normalize_final_markdown_format(md_text: str) -> str:
     md_text = _strip_bold_from_markdown_headings(md_text)
     md_text = _normalize_section1_recent_format(md_text)
     # v1.2.9: 清理 LLM 输出的 "第X节：..." 占位文本（prompt 要求不输出但 LLM 仍可能泄漏）
-    md_text = re.sub(r'(?m)^第\d节：[一-龥A-Za-z]+…?\s*$', '', md_text)
+    # 覆盖两种变体：纯文本 "第1节：公司近况跟踪"/"第1节：公司近况跟踪…" 和加粗 "**第1节：公司近况跟踪**"
+    md_text = re.sub(r'(?m)^\*{0,2}第\d节：[一-龥A-Za-z]+…?\*{0,2}\s*$', '', md_text)
     # v1.2.9: 列表标记归一化（-/*/1）2）3）→ • 无缩进）——必须在 dedent 之前，保证 • 行被后续去缩进处理
     md_text = _normalize_bullet_markers(md_text)
     # v1.2.8-R1: 去除正文段落前导缩进（非标题/非表格/非列表/非代码/非图片行）
