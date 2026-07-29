@@ -1,0 +1,77 @@
+# Local credentials and environment overrides
+.env
+.env.*
+!.env.example
+token.txt
+.datayes_token
+credentials*.json
+secrets*.json
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Python bytecode, environments, and test/tool caches
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Input data, fetched materials, and runtime caches
+data/
+input/
+inputs/
+materials/
+cache/
+caches/
+*_data.json
+*_cache.json
+cache*.json
+source_trace.json
+*.vmerge.json
+*.jsonl
+
+# Generated reports and analysis results
+live/
+output/
+outputs/
+reports/
+charts/
+*_debug.md
+*.docx
+*.pdf
+*.xlsx
+*.xls
+*.csv
+*.tsv
+
+# Logs, temporary files, and local archives
+logs/
+tmp/
+temp/
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*.zip
+*.tar
+*.gz
+
+# Editor, OS, and local agent metadata
+.idea/
+.vscode/
+.codex/
+.claude/
+.DS_Store
+Thumbs.db
+Desktop.ini
+~$*

@@ -1,13 +1,14 @@
-﻿---
+---
 name: datayes-company-onepaper
-version: v1.2.9
+version: v1.2.10
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
-  主路径通过 Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
+  主路径依赖 DATAYES_TOKEN、python3、Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
   当前版本强调真实数据、引用闭环、目标公司一致性、结构化质量门禁和自动修复。
-  当用户要求生成”一页纸””公司一页纸””股票研究报告””公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
+  当用户要求生成“一页纸”“公司一页纸”“股票研究报告”“公司研究报告”或输入上市公司名称/代码要求分析时触发。
+  不处理非上市主体、非金融研究任务或无法取得可验证来源的公司分析，不在证据不足时编造报告。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.9）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.10）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
@@ -16,7 +17,7 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.9 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
+当前文档只描述 **v1.2.10 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
 运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
@@ -44,6 +45,36 @@ metadata:
 - 找到 Token 后，后续所有 API 调用都使用 `Authorization: Bearer {DATAYES_TOKEN}`。
 - 所有脚本调用都使用 `python3 -X utf8`，不要改用 `python` 或 `py`。
 
+### 1.1 获取与配置 Datayes Token
+
+访问 https://r.datayes.com/auth/token/login 获取可撤销的 API token。
+
+macOS / Linux：
+
+```bash
+export DATAYES_TOKEN='your-token'
+```
+
+Windows CMD：
+
+```cmd
+set DATAYES_TOKEN=your-token
+```
+
+Windows PowerShell：
+
+```powershell
+$env:DATAYES_TOKEN = "your-token"
+```
+
+### 1.2 执行边界与跨平台约束
+
+- **禁止对话侧网页搜索**：主流程不使用 WebSearch/WebFetch；公开网页补充只能通过已配置的数据采集接口进入 materials/source trace 后使用。
+- **减少探索**：优先使用 `references/` 中已知接口与元信息网关，不重复猜测接口 URL 或参数。
+- **明确边界**：不处理非上市主体、非金融查询；目标公司或市场不明确时先确认；可验证证据不足时 fail closed。
+- **UTF-8**：所有平台统一使用 `python3 -X utf8`；Windows 终端若仍出现 GBK 乱码，先将终端切换为 UTF-8。
+- **路径**：输出路径由调用方传入，脚本使用 `pathlib` / `os.path`，不得硬编码平台路径分隔符。
+- **字体**：DOCX 中文字体依赖微软雅黑，英文字体依赖 Calibri；运行环境缺少字体时允许字体替代，但不得改变数据内容。
 ## 2. Market Routing
 - 先按输入特征判断市场，再进入对应子流程。
 - A 股识别：
@@ -109,6 +140,13 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
 ### 3.4 A-Share Fallback
 - 若自动 writer 失败，按 `references/a-share-report-structure.md` 手工组织内容，并按 `references/a-share-quality-checklist.md` 自检。
 - 手工降级不等于放宽标准，所有质量门禁仍然有效。
+
+### 3.5 A-Share Risk Guard (v1.2.10)
+- §10 风险提示固定输出 3-4 条，每条使用 `• **公司特有风险标题**：触发条件/影响[N]`，必须有真实行内引用。
+- 风险上下文从目标公司研报的 `title/detail_text/abstract/text`、会议纪要、机构调研及最新 `fdmtNew` 财务数据构建；不得读取不存在的 `content/summary` 字段，也不得依赖并行章节尚未生成的 `catalyst_table_ctx`。
+- 后处理统一识别 `•`、`-`、`*` 三种项目符号；合规的 `•` 输出不得再被误判为 0 条。
+- LLM 输出不合格时，只允许从带引用的目标公司风险证据重建；禁止使用“数据缺失风险”“模型不确定性风险”“不构成投资建议”等静态模板凑数。
+- 重建后仍不足 3 条、存在无引用条目或命中通用模板时，最终自检必须 fail closed，不输出可发布报告。
 
 ## 4. HK/US Pipeline
 
@@ -326,6 +364,13 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 
 ## Appendix A. Version History
 
+### v1.2.10
+- **A 股 §10 项目符号回归修复**：风险校验从仅识别 `-/*` 改为统一识别 `•/-/*`，避免合规 `•` 输出被误判为空。
+- **风险上下文字段修复**：研报改读真实字段 `title/detail_text/abstract/text`；财务快照改读 `latest_data` 或最近年报，不再读取不存在的字段。
+- **纪要/调研事件注入**：风险 Prompt 直接从研报、纪要和调研构建带引用事件上下文，不再依赖从未赋值且与 §10 并行的 `catalyst_table_ctx`。
+- **证据型 fallback**：删除 `_a_share_profile` 中四条静态通用风险，只允许从目标公司带引用风险句重建 3-4 条。
+- **最终风险门禁**：新增条数、标题、引用、长度、重复标题及通用模板检查；修复失败时 fail closed。
+- **测试**：新增 `tests/datayes-company-onepaper/test_a_share_risk_logic.py`，覆盖三种项目符号、通用模板拦截、证据 fallback、财务快照与整章修复。
 ### v1.2.9
 - **列表标记统一**：所有 LLM prompt 统一使用 `•`；新增 `_normalize_bullet_markers` 后处理，将 `-`/`*`/`1)`/`2)`/`3)`/`1）`/`2）`/`3）` 归一化为无缩进 `•`；`markdown_to_docx.py` 同步适配 `•` 行零缩进渲染。
 - **§2.1 标题强制检测**：`_enforce_v124_a_share_blocks` 增加 LLM 格式漂移兜底——若 `## 2` 后无 `### 2.1` 子标题，自动插入。
