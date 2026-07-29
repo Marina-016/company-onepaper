@@ -232,7 +232,16 @@ Authorization: Bearer {DATAYES_TOKEN}
   - `pageSize`: 建议传 `20`
 - **用途**: 盈利预测与估值章节的核心数据来源
 
-### 30. 会议纪要搜索
+### 30. 盈利预测历史数据（注：A股专用，港美股已停用）
+- **nameEn**: `research_sec_foredata`
+- **用途**: 获取机构对目标股票的历史盈利预测数据（预测值 vs 实际值），用于评估机构预测准确性
+- **ticker格式**: **6位纯数字代码**（如 `600030`），**不带** `.SH`/`.SZ` 后缀
+- **⚠️ 日期格式**: 该接口使用 `yyyy-MM-dd` 格式（不同于其他接口的 `yyyyMMdd`）
+- **⚠️ 参数名称**: 股票代码参数为 `tickers`（**不是** `ticker`）
+- **用途**: 供 `fetch_data.py` 采集盈利预测历史对比数据，存入 JSON 的 `profit_forecast` 字段
+- **⚠️ 注意**: 该接口仅 A 股可用；港美股已将其列入停用接口列表
+
+### 31. 会议纪要搜索
 - **nameEn**: `meeting_search`
 - **用途**: 搜索与目标股票相关的路演、业绩说明会、投资者调研会等会议纪要列表，从结果中优先选近一个月的高相关纪要。
 - **HTTP方法**: POST（以元信息接口返回为准）
@@ -249,7 +258,7 @@ Authorization: Bearer {DATAYES_TOKEN}
   - `stockInfo[].pe`, `stockInfo[].marketCap` 等市场指标
 - **⛔ 重要**: 此接口只返回会议列表索引，**不含会议实质内容**，必须用 id 调用 getMeetingSummaryDetail 获取全文
 
-### 31. 会议纪要详情
+### 32. 会议纪要详情
 - **nameEn**: `getMeetingSummaryDetail`
 - **用途**: 获取单条会议纪要的完整内容（AI整理摘要 + 原始转写全文）
 - **HTTP方法**: GET
@@ -260,26 +269,38 @@ Authorization: Bearer {DATAYES_TOKEN}
   3. `text[]`: 原始发言逐句转写（按说话人和句子拆分），必要时作为补充验证
 - **⚠️ 注意**: 不要将目录、标题等结构性文字误当正文；aiSummary 是最高效的阅读路径，text 是原文备查
 
-### 32. AI搜索-同业素材召回
+### 33. AI搜索-同业素材召回
 - **nameEn**: `getMaterialsV2`
-- **用途**: 输入自然语言问题，召回相关的研报/会议纪要/研报图表素材。**专用于同业对比表格**：用目标公司与可比同业的财务指标对比问题召回有效素材，解决同业数据靠模型估算的问题。
+- **用途**: 萝卜AI投研搜索，输入用户 Query，召回研报、会议纪要、市场点评、资讯、公众号、指标库等素材，返回相关的搜索片段和溯源URL。**专用于同业对比表格**：用目标公司与可比同业的财务指标对比问题召回有效素材，解决同业数据靠模型估算的问题。
 - **HTTP方法**: POST
-- **URL**: 通过元信息接口 `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api?nameEn=gptMaterials` 获取，禁止硬编码业务 URL。
+- **URL**: 通过元信息接口 `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api?nameEn=getMaterialsV2` 获取，禁止硬编码业务 URL（元信息返回的 httpUrl 格式为 `https://gw.datayes.com/aladdin_proxy/aladdin_info/web/gptMaterials/v2`）。
 - **请求体参数**:
-  - `question` (String): 自然语言问题，**直接传入，不改写**。示例："对比{company_name}与主要可比同业公司在营收、净利润、PE、PB、ROE等核心财务指标的最新数据"
-  - `queryScope` (String, 可选): 素材范围，**仅用** `"research,researchTable,meetingSummary"`（研报、研报图表、会议纪要）；默认值相同，可省略
-  - `rewriteQuestion` (Boolean): **必须传 `false`**，禁止改写（改写会增加延迟且不需要）
-  - `size` (Integer, 可选): 召回素材数量，建议 `8`，默认 `18`
-- **返回结构**: 数组，每条素材包含：
-  - `dataType`: 素材类型（`research`/`meetingSummary`/`researchTable`）
-  - `title`: 素材标题
-  - `text`: 素材文本内容（核心字段，含原始数据）
-  - `metadata`: 元数据（analyst, id, organization, publishTime, reportType 等）
-  - `score`: 相关性分数
-  - `url`: 素材链接
+  - `queryScope` (String, 可选, 默认 `"research"`): 素材范围，多值用英文逗号分隔。枚举：`news`（资讯）/ `research`（研报）/ `researchTable`（研报图表）/ `announcement`（公告）/ `meetingSummary`（会议纪要）/ `indicator`（数据指标）/ `marketView`（市场点评）/ `wechat`（微信公众号）；**同业比对取 `"research,researchTable,meetingSummary"`**
+  - `question` (String, **必填**): 自然语言问题。示例："对比{company_name}与主要可比同业公司在营收、净利润、PE、PB、ROE等核心财务指标的最新数据"
+  - `rewriteQuestion` (Boolean, 可选, 默认 `true`): 是否对问题优化后再搜索；`true` 提升精准度但响应稍慢，`false` 直接使用原问题
+  - `size` (Integer, 可选, 默认 `10`, 范围 1-20): 召回素材数量，超出按上限20返回
+  - `startTime` (String, 可选): 素材起始时间，格式 `yyyyMMdd` 或 `yyyyMMddHHmmss`
+  - `endTime` (String, 可选): 素材截止时间，格式同上
+  - `rewriteModel` (String, 可选, 默认 `"FLAGSHIP"`): 改写问题模型。枚举：`FLAGSHIP`（旗舰）/ `STANDARD`（标准）/ `DATAYES`（通联自研）
+- **返回结构**: `data` 数组，每条素材包含：
+  - `dataType` (String): 数据类型（`research`/`meetingsummary`/`researchtable`/`news`/`indicator`/`announcement`/`other`）
+  - `title` (String): 素材标题
+  - `resource` (String): 素材引用信息（含内部ID、类型、页码等）
+  - `text` (String): 素材相关片段（核心字段，含原始数据）
+  - `score` (Number): 相关性得分（0-1，越接近1越相关）
+  - `url` (String): 素材前端网页地址
+  - `metadata` (Object): 元数据
+    - `id` (String): 素材唯一ID
+    - `reportType` (String): 研报类型（仅 research 类返回）
+    - `publishTime` (String): 发布日期
+    - `organization` (String): 研究机构
+    - `analyst` (String): 分析师
+    - `source` (String): 资讯来源或公众号ID（仅 news 类返回）
+    - `category` (String): 公告类型（仅 announcement 类返回）
+    - `industry` (String): 行业类型
 - **调用时机**: 在 fetch_data.py 的 Phase 3 并行采集阶段调用，结果存入 JSON 的 `peer_materials` 字段
 - **使用方式**: report_writer.py 的 `gen_peer_table()` 读取 `key_data["peer_materials"]`，将 `text` 字段传入 LLM prompt 作为同业数据来源
-- **⚠️ 注意**: 超时30s；若失败静默跳过，gen_peer_table 降级到研报摘要作为数据来源
+- **⚠️ 注意**: 超时60s；若失败静默跳过，gen_peer_table 降级到研报摘要作为数据来源
 
 ---
 

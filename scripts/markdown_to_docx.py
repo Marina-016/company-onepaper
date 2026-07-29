@@ -576,6 +576,19 @@ def convert_markdown_to_docx(md_content: str, output_path: str):
 
         # ── 水平线 ──
         if re.match(r'^-{3,}$|^\*{3,}$|^_{3,}$', stripped):
+            # 渲染为分隔段落（浅灰细线底边框）
+            hr_para = doc.add_paragraph()
+            hr_para.paragraph_format.space_before = Pt(6)
+            hr_para.paragraph_format.space_after = Pt(6)
+            pPr = hr_para._p.get_or_add_pPr()
+            pBdr = OxmlElement('w:pBdr')
+            bottom = OxmlElement('w:bottom')
+            bottom.set(qn('w:val'), 'single')
+            bottom.set(qn('w:sz'), '4')
+            bottom.set(qn('w:space'), '1')
+            bottom.set(qn('w:color'), 'B0B8C4')
+            pBdr.append(bottom)
+            pPr.append(pBdr)
             i += 1
             continue
 
@@ -593,7 +606,7 @@ def convert_markdown_to_docx(md_content: str, output_path: str):
                 para.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 set_para_spacing(para, 0, 12)
                 run = para.add_run(title_text)
-                set_run_font(run, 16, bold=True, color=COLOR_TITLE)
+                set_run_font(run, 16, bold=True, color=COLOR_H1)
             elif level == 2:
                 para = doc.add_paragraph(style="Heading 1")
                 set_para_spacing(para, 10, 6)

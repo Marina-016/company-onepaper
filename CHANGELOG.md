@@ -1,5 +1,55 @@
 # Changelog
 
+## v1.2.4
+
+Status: Auto-repair pipeline + HK-US automation enhancement.
+
+### P0: 港美股自动化 post-repair
+
+1. **`hk_us_post_repair_v124.py`**：港美股独立 post-repair 脚本，8 项修复能力：
+   - 参考资料 ID 修复（100% real ID，禁止 SRC-NN / missing_from_source_trace）
+   - 稀疏行列自动清理
+   - §11.2 空机构预测表自动省略
+   - 催化事件表补齐检测
+   - 情景推演补齐检测
+   - 同业比较表补齐
+   - 内部 pipeline 话术清除
+   - 港美股最小结构检查 + 参考资料时效性检查
+   - 支持 `--materials` 和 `--id-audit` 双输入源
+
+2. **`hk_financials.py`**：港美股 PIT 三表数据聚合函数：
+   - 从 getHkFdmtIsPit / getHkFdmtBsPit / getHkFdmtCfPit 聚合 FY2023/FY2024/FY2025 主要指标
+   - 映射收入、毛利、经营利润、归母净利润、EPS、经营现金流、资产负债率等
+   - 缺失项保留 None，不硬造
+   - 输出 source_api、id_field、id_value、payload_hash
+   - 支持 `--dry-run` 最小测试
+
+### P1: A股 report_writer.py 增强
+
+3. **催化事件表自动补写**：组装报告后自动扫描 §3 催化事件时间表，若表格行数 <3 或为空壳，自动调用 LLM 从研报/纪要/公告素材提取事件并生成 ≥6 行完整表格。
+4. **情景推演自动替换**：若 §9.5 含模板话术（"基于核心变量乐观假设""基于EPS×PE=目标价"等），自动调用 LLM 用基准财务数据生成含 EPS×PE=目标价的三档可计算情景。
+5. **修复日志输出**：完成修复后打印摘要，方便排查（如 `v1.2.4 自动修复: ['催化事件表不足3行→LLM补写 ✅']`）。
+
+### 规范与 checker 补齐
+
+6. **近况跟踪句首加粗规范**：§1/§2 每条 bullet 必须以 `**加粗关键词**` 开头 + 具体数字/事实 + `[N]` 引用。checker 新增 check 39。
+7. **参考资料时效性约束**：Materials V2 检索优先近 1 个月；超 6 个月来源须标注 `old_source_reason`；估值/预测/催化过旧引用不可接受。checker 新增 check 37。
+8. **§11.2 整节省略规则**：空预测表→P1，应整节省略。checker 新增 check 38，post-repair 可自动删除。
+9. **港美股特殊行业适配**：保险/银行/科技互联网/资源周期/REITs/生物医药指标体系已在 `hk-us-report-structure.md` 补齐。
+
+### Files changed (本轮 v1.2.4 补充):
+- `scripts/hk_us_post_repair_v124.py`: +`--id-audit` 参数支持，双输入源
+- `scripts/hk_financials.py`: 新建，PIT 三表聚合函数
+- `scripts/check_report_quality_v123.py`: +check 37（时效性）、check 38（§11.2省略）、check 39（加粗规范）
+- `references/hk-us-report-structure.md`: +近况跟踪§2加粗规范
+- `references/hk-us-quality-checklist.md`: +v1.2.4 检查项（加粗、时效性、§11.2省略、PIT聚合）
+- `references/a-share-quality-checklist.md`: +v1.2.4 检查项
+- `SKILL.md`: +v1.2.4 港美股 post-repair、PIT 聚合、加粗规范、时效性约束、§11.2 省略规则
+- `CHANGELOG.md`: this entry (updated)
+
+### Already present (A股 pipeline):
+- `scripts/report_writer.py`: `_v124_post_repair()`, `_extract_section()`, `_gen_catalyst_table()`, `_gen_scenario_table()`
+
 ## v1.2.3
 
 Status: Skill rule optimization — no pipeline or regression changes.

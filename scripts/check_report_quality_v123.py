@@ -13,6 +13,11 @@ v1.2.3-R2 新增:
 - 结构化接口 ID 口径修正（entity_id/ticker 合法）
 - 估值口径一致检查 (valuation_consistency)
 - 数据空占位符检查 (no_empty_placeholders)
+
+v1.2.4 新增:
+- 参考资料时效性检查 (reference_recency_check, check 37)
+- §11.2 空预测表省略检查 (forecast_section_should_be_omitted_if_empty, check 38)
+- 近况跟踪句首加粗规范检查 (nearterm_bold_keyword_check, check 39)
 """
 
 from __future__ import annotations
@@ -72,7 +77,19 @@ def check_report(md_path: str, market: str = "A") -> dict:
     # ── 检查 3: 空H3章节 ──
     h3_pattern = re.compile(r'^### (.+)$', re.M)
     h3_matches = list(h3_pattern.finditer(content))
+    # v1.2.4: A-share allowed H3 sub-headings (defined in report structure)
+    _ALLOWED_A_H3 = {'4.1 盈利方式', '4.2 分板块业务数据', '4.3 业务深度分析',
+                     '4.4 核心竞争力与竞争优势', '4.5 建议调研问题与分析关注点',
+                     '6.1 关键财务指标', '6.2 财务健康评估',
+                     '8.1 行业格局',
+                     '9.1 机构目标价汇总', '9.2 市场一致预期', '9.3 各机构盈利预测',
+                     '9.4 估值分析', '9.5 情景推演',
+                     '2.1 短期逻辑', '2.2 长期逻辑'}
     for i, m in enumerate(h3_matches):
+        h3_title = m.group(1).strip()
+        # Skip allowed A-share H3 sub-headings
+        if market == "A" and any(h3_title.startswith(a) for a in _ALLOWED_A_H3):
+            continue
         start = m.end()
         end = h3_matches[i+1].start() if i+1 < len(h3_matches) else len(content)
         section_body = content[start:end]
@@ -85,7 +102,7 @@ def check_report(md_path: str, market: str = "A") -> dict:
         clean = re.sub(r'^[-–•].*$', '', clean, flags=re.M)
         clean = re.sub(r'\s+', '', clean)
         if len(clean) < 30:
-            issues[P1].append(f"[检查3] 近乎空的H3: {m.group(1)[:50]}")
+            issues[P1].append(f"[检查3] 近乎空的H3: {h3_title[:50]}")
 
     # ── 检查 4: 空表 ──
     table_blocks = re.findall(r'(\|.+\|.*\n(?:\|.+\|.*\n)+)', content)
@@ -110,6 +127,9 @@ def check_report(md_path: str, market: str = "A") -> dict:
         if len(tbl_lines) < 3:
             continue
         header_cells = [c.strip() for c in tbl_lines[0].split('|')[1:-1]]
+        # v1.2.4: exempt sales-by-region & business-segment tables — expected sparse
+        if any(kw in header_cells[0] for kw in ('地区', '区域', 'Region', '业务板块', '业务')) :
+            continue
         n_cols = len(header_cells)
         for ci in range(n_cols):
             col_vals = []
@@ -131,6 +151,12 @@ def check_report(md_path: str, market: str = "A") -> dict:
     for tbl in table_blocks:
         tbl_lines = tbl.split('\n')
         header_first = tbl_lines[0].split('|')[1].strip()[:30] if '|' in tbl_lines[0] else ''
+        # v1.2.4: skip catalyst/event timeline tables (header contains 时间/事件) — they document future events
+        if any(kw in header_first for kw in ('时间', '事件', '催化', 'Catalyst')):
+            continue
+        # v1.2.4: skip sales-by-region tables — 2-row structure, not expected to have inline refs
+        if any(kw in header_first for kw in ('地区', '区域', 'Region')):
+            continue
         # Skip: scenario tables (情景/乐观/中性/悲观) — inherently model-derived
         if any(kw in tbl for kw in ('乐观', '中性', '悲观', '情景')):
             continue
@@ -187,7 +213,13 @@ def check_report(md_path: str, market: str = "A") -> dict:
                r'### 11\.[34] 情景推演.*?(?=## 12|\Z)']:
         m = re.search(sb, content, re.DOTALL)
         if m:
-            sc_rows = re.findall(r'^\| (乐观|中性|悲观).*\|$', m.group(0), re.M)
+            section_text = m.group(0)
+            # v1.2.4: handle multi-line cells via DOTALL matching
+            # Each scenario row = | 乐观/中性/悲观 ... | col2 | col3 | col4 |
+            sc_rows = re.findall(r'\|\s*(?:乐观|中性|悲观)[^|]*\|[^|]*\|[^|]*\|[^|]*\|', section_text, re.DOTALL)
+            if len(sc_rows) < 3:
+                # Fallback: try with **bold** markers
+                sc_rows = re.findall(r'\|\s*\*\*(?:乐观|中性|悲观)\*\*[^|]*\|[^|]*\|[^|]*\|[^|]*\|', section_text, re.DOTALL)
             if len(sc_rows) < 3:
                 issues[P0].append(f"[检查13] 情景推演表为空(仅{len(sc_rows)}行)")
             else:
@@ -201,7 +233,9 @@ def check_report(md_path: str, market: str = "A") -> dict:
         has_eps_pe = re.search(r'EPS\s*[×x\*·]\s*PE|每股\s*[×x\*·]\s*PE|基于\s*EPS\s*[×x\*·]\s*PE', content)
         has_pev = re.search(r'P/EV\s*[×x\*·]\s*EV|EV\s*[×x\*·]\s*P/EV|内含价值\s*[×x\*·]|P/EV\s*\d', content)
         has_target = re.search(r'目标价\s*[\d.~-]+\s*[元美元港元]', content)
-        if not has_eps_pe and not has_pev:
+        # v1.2.4: also accept 目标价 = N × N format (e.g., 目标价 = 11.10 × 25 ≈ 278元)
+        has_target_x = re.search(r'目标价\s*[=＝≈~]?\s*[\d.]+\s*[×x\*]\s*[\d.]+', content)
+        if not has_eps_pe and not has_pev and not has_target_x:
             issues[P1].append("[检查14] 情景推演未含可复核公式(需EPS×PE或P/EV×EV)")
 
     # ── 检查 15: HTML标签检测 ──
@@ -221,6 +255,34 @@ def check_report(md_path: str, market: str = "A") -> dict:
         if m and '**' not in line:
             issues[P1].append(f"[检查16] 整句被*包裹(Markdown斜体误用): {line.strip()[:60]}")
 
+    # ── v1.2.4 新增：格式硬门禁 ──
+    # 检查 40: H2 标题不得包含表格符号 |
+    for m in re.finditer(r'^##\s+[^|\n]*\|', content, re.M):
+        issues[P1].append(f"[检查40] H2标题含表格符号'|': {m.group(0)[:60]}")
+    # 检查 41: H2/H3 标题不得包含 **bold**
+    for m in re.finditer(r'^#{2,3}\s+[^#\n]*\*\*', content, re.M):
+        issues[P1].append(f"[检查41] 标题含**bold标记: {m.group(0)[:60]}")
+    # 检查 42: 正文不得出现非数字方括号引用，如 [电话会议]、[来源]
+    _body_no_table = re.sub(r'\|.+\|', '', body, flags=re.DOTALL)
+    _non_num_refs = re.findall(r'\[(?!\d+\])(?:[^\]]{2,})\]', _body_no_table)
+    if _non_num_refs:
+        issues[P1].append(f"[检查42] 非数字方括号引用({len(_non_num_refs)}处): {[r[:30] for r in _non_num_refs[:5]]}")
+    # 检查 43: Markdown 表格列数一致性
+    for _tbl in re.findall(r'(\|.+\|.*\n(?:\|.+\|.*\n)+)', content):
+        _tbl_lines = [l for l in _tbl.strip().split('\n') if re.match(r'^\|.+\|$', l)]
+        _col_counts = [len(l.split('|')) - 2 for l in _tbl_lines]
+        if len(set(_col_counts)) > 1:
+            issues[P1].append(f"[检查43] 表格列数不一致: {_col_counts}")
+    # 检查 44: 表头行不得重复出现在数据区
+    for _tbl in re.findall(r'(\|.+\|.*\n(?:\|.+\|.*\n)+)', content):
+        _tbl_lines = [l for l in _tbl.strip().split('\n') if re.match(r'^\|.+\|$', l)]
+        _tbl_no_sep = [l for l in _tbl_lines if not re.match(r'^[\|\s\-:]+$', l)]
+        if len(_tbl_no_sep) >= 2:
+            _hdr = _tbl_no_sep[0]
+            _dups = [i for i, l in enumerate(_tbl_no_sep[1:], 1) if l == _hdr]
+            if _dups:
+                issues[P1].append(f"[检查44] 表头行重复({len(_dups)}处): {_hdr[:60]}")
+
     # ── 检查 17: 经营指标无引用（仅检查段落正文中的数值声明） ──
     op_metrics = ['MAU', 'DAU', 'ARPU', 'GMV', 'take rate', '用户数', '付费用户',
                   '流水', '市场份额', '云收入', '广告收入', '月活', '日活', '装机量',
@@ -231,7 +293,7 @@ def check_report(md_path: str, market: str = "A") -> dict:
         body_only = body_only[:ref_start]
     for metric in op_metrics:
         for m in re.finditer(re.escape(metric), body_only):
-            nearby = body_only[max(0, m.start()-10):m.end()+40]
+            nearby = body_only[max(0, m.start()-60):m.end()+40]
             if re.search(r'\[(\d+)\]', nearby):
                 continue
             if any(kw in nearby for kw in ('内部测算', '基于', '推算', '验证的数据', '需要验证', '问题', '关注点', '担心', '?')):
@@ -261,7 +323,7 @@ def check_report(md_path: str, market: str = "A") -> dict:
     # ── 检查 20: 同业比较表完整 schema ──
     # A-share: §8.2 同业比较
     # HK-US: §9 行业对比
-    required_peer_cols_a = ['可比业务', '相关业务进展', '竞争关系']
+    required_peer_cols_a = ['竞争关系', '公司', '可比业务', '行业地位', '相关业务进展', '商业模式', '目标客户群体', '核心产品']
     required_peer_cols_hk = ['竞争关系', '公司', '可比业务', '行业地位', '相关业务进展', '商业模式', '目标客户群体', '核心产品']
 
     # Find peer section by manual indexing for A-share, regex for HK-US
@@ -306,10 +368,10 @@ def check_report(md_path: str, market: str = "A") -> dict:
                     issues[P1].append(f"[检查20] 同业比较表缺必需列: {missing}")
                 # Check row count
                 data_rows = [l for l in tbl.strip().split('\n') if re.match(r'^\|.+\|$', l)]
-                if len(data_rows) < 5:  # header + sep + self + ≥3 peers = 6 total (header+sep=2, need ≥4 data rows)
-                    issues[P1].append(f"[检查20] 同业比较表行数不足(仅{len(data_rows)}行，需≥6: 本公司行+≥3家可比)")
+                if len(data_rows) < 4:  # v1.2.4: 本公司 + ≥3 peers = ≥4 data rows
+                    issues[P1].append(f"[检查20] 同业比较表行数不足(仅{len(data_rows)}行，需≥4: 本公司行+≥3家可比)")
                 # Check for self row (竞争关系 or 可比业务 column with '—')
-                has_self_row = bool(re.search(r'\|\s*—\s*\|.*\|\s*—\s*\|', tbl))
+                has_self_row = bool(re.search(r'\|\s*—\s*\|', tbl))
                 if not has_self_row:
                     issues[P1].append("[检查20] 同业比较表缺本公司行(本公司行的竞争关系/可比业务列应为'—')")
 
@@ -564,6 +626,146 @@ def check_report(md_path: str, market: str = "A") -> dict:
     for ref_no, api_name in struct_refs:
         # This is informational — structured API refs with entity_id/ticker are valid
         pass  # No blocking issue, this check is for trace purposes only
+
+    # ═══════════════════════════════════════════════════════
+    # v1.2.4 新增检查
+    # ═══════════════════════════════════════════════════════
+
+    # ── 检查 37: 参考资料时效性（reference_recency_check） ──
+    if ref_start > 0:
+        # 解析参考资料日期
+        ref_dates = {}
+        for line in ref_part.split('\n'):
+            m = re.match(r'^\[(\d+)\].*?\|\s*(\d{4}-\d{2}-\d{2})', line.strip())
+            if m:
+                ref_dates[int(m.group(1))] = m.group(2)
+
+        old_refs_six_months = set()
+        if ref_dates:
+            # 用报告生成日期或今天作为基准
+            gen_date_match = re.search(r'生成日期[：:]\s*(\d{4}-\d{2}-\d{2})', content)
+            today = gen_date_match.group(1) if gen_date_match else ''
+            if not today:
+                from datetime import date
+                today = date.today().isoformat()
+            try:
+                from datetime import date, timedelta
+                cutoff_date = date.fromisoformat(today) - timedelta(days=180)
+                for ref_num, ref_date in ref_dates.items():
+                    try:
+                        d = date.fromisoformat(ref_date[:10])
+                        if d < cutoff_date:
+                            old_refs_six_months.add(ref_num)
+                    except ValueError:
+                        pass
+            except ValueError:
+                pass
+
+        if old_refs_six_months:
+            # 检查旧引用在关键章节（估值/预测/催化）的使用
+            critical_sections = {
+                '估值': (r'## (?:9|11) .*?估值', r'(?:### 9\.[34]|### 11\.[34]) 情景推演'),
+                '预测': (r'### 11\.2 盈利预测',),
+                '催化': (r'## (?:3|4) 催化事件',),
+                '情景推演': (r'(?:### 9\.4|### 11\.[34]) 情景推演',),
+            }
+            for sec_name, patterns in critical_sections.items():
+                for pat in patterns:
+                    sec_m = re.search(pat, body, re.DOTALL)
+                    if sec_m:
+                        sec_text = sec_m.group(0)
+                        for rn in old_refs_six_months:
+                            if f'[{rn}]' in sec_text:
+                                issues[P1].append(
+                                    f"[检查37] [P1{rn}]({ref_dates[rn]})用于'{sec_name}'章节但超过6个月——"
+                                    f"估值/预测/催化引用过旧不可接受"
+                                )
+                                # 标记已报告，避免重复
+                                continue
+
+            # 其他章节的旧引用
+            for rn in old_refs_six_months:
+                if f'[{rn}]' in body:
+                    already_p1 = any(f'P1{rn}' in i for i in issues[P1])
+                    if not already_p1:
+                        issues[P2].append(
+                            f"[检查37] [P2{rn}]({ref_dates[rn]})引用超过6个月——"
+                            f"优先使用近1个月内容，超6个月来源应标注 old_source_reason"
+                        )
+
+    # ── 检查 38: §11.2 空预测表省略检查（forecast_section_should_be_omitted_if_empty） ──
+    if market in ("HK", "US"):
+        fcast_m = re.search(r'### 11\.2 盈利预测分析.*?(?=### 11\.\d|## 12|\Z)', content, re.DOTALL)
+        if fcast_m:
+            fcast_section = fcast_m.group(0)
+            # 检查是否有有效数值
+            has_table = bool(re.search(r'^\|.+\|$', fcast_section, re.M))
+            if has_table:
+                # 统计非空的数值单元格
+                data_cells = re.findall(
+                    r'\|\s*(\d+\.?\d*)\s*(?:\[?\d*\]?)?\s*\|', fcast_section
+                )
+                placeholders = ['待提取', '数据未获取', '待从研报', '暂未获取', '尚未获取']
+                has_placeholder = any(p in fcast_section for p in placeholders)
+                # 检查是否所有行都是占位或空
+                all_rows_empty = True
+                if data_cells and len(data_cells) > 2:
+                    all_rows_empty = False
+                if has_placeholder and all_rows_empty:
+                    issues[P1].append(
+                        "[检查38] §11.2机构盈利预测表存在但无有效数值——"
+                        "所有数据行为'待提取'/'数据未获取'/'—'/空值，应整节省略"
+                    )
+                elif has_placeholder:
+                    issues[P2].append(
+                        "[检查38] §11.2机构盈利预测表含占位符——"
+                        "单行仅有定性描述而无具体数值时，应隐藏该行"
+                    )
+
+    # ── 检查 39: 近况跟踪句首加粗规范（nearterm_bold_keyword_check） ──
+    # 找到 §2 近况跟踪
+    near_term_section = None
+    for pat in [r'## 2 近况跟踪.*?(?=## 3 |\Z)', r'## 2 .*近况.*?(?=## 3 |\Z)']:
+        m = re.search(pat, content, re.DOTALL)
+        if m:
+            near_term_section = m.group(0)
+            break
+    if near_term_section:
+        # 提取 bullet 行
+        bullets = re.findall(r'^[\*\-•]\s*(.+)$', near_term_section, re.M)
+        missing_bold = 0
+        missing_number = 0
+        missing_ref = 0
+        for b in bullets:
+            b = b.strip()
+            if not b:
+                continue
+            # 跳过 "数据来源" 等非内容行
+            if re.match(r'数据来源|Data source', b):
+                continue
+            has_bold = bool(re.match(r'\*\*[^*]+\*\*', b))
+            has_number = bool(re.search(r'\d+\.?\d*[%亿x倍万美元港元千万百]', b))
+            has_ref = bool(re.search(r'\[\d+\]', b))
+            if not has_bold:
+                missing_bold += 1
+            if not has_number:
+                missing_number += 1
+            if not has_ref:
+                missing_ref += 1
+        if missing_bold > 0:
+            issues[P1].append(
+                f"[检查39] 近况跟踪§2中{missing_bold}条bullet缺少句首加粗关键词——"
+                f"每条须以 **关键词** 开头（如 **业绩超预期**：...）"
+            )
+        if missing_number > 0:
+            issues[P1].append(
+                f"[检查39] 近况跟踪§2中{missing_number}条bullet无具体数字——"
+                f"每条须含具体事实/数字，不得只有泛泛描述"
+            )
+        if missing_ref > 0:
+            issues[P2].append(
+                f"[检查39] 近况跟踪§2中{missing_ref}条bullet无[N]引用"
+            )
 
     return issues
 

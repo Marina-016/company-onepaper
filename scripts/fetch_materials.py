@@ -7,6 +7,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import re
 from pathlib import Path
 import ssl
 import sys
@@ -218,12 +219,53 @@ def choose_company(args: argparse.Namespace, client: DatayesClient, errors: list
     return {"ticker": ticker, "market": market, "company": company, "exchange": exchange, "full_ticker": full_ticker}
 
 
+def _research_matches_target(row: dict, company: str, ticker: str) -> bool:
+    return _company_match_status(row, company, ticker) == "exact_target"
+
+def _company_match_status(row: dict, company: str, ticker: str) -> str:
+    t = (ticker or "").upper().replace(".HK", "")
+    aliases = {t, (ticker or "").upper()}
+    if t.isdigit():
+        aliases.add(t.lstrip("0") or t)
+    names = {company, company.lower(), company.upper()} if company else set()
+    if "META" in t or "META" in (company or "").upper():
+        names.update({"Meta", "META", "Meta Platforms", "METAPLATFORMS", "元平台", "元"})
+        aliases.add("META")
+    if "01024" in t or "1024" == t.lstrip("0") or "快手" in (company or ""):
+        names.update({"快手", "快手-W", "Kuaishou", "KUAISHOU"})
+        aliases.update({"01024", "1024"})
+    fields = [row.get("title", ""), row.get("articleTitle", ""), row.get("companyName", ""),
+              row.get("stockId", ""), row.get("secCode", ""), row.get("rrTitle", "")]
+    text = " ".join(str(x or "") for x in fields)
+    text_upper = text.upper()
+    explicit = set(re.findall(r'\(([A-Z]{1,6}|\d{3,5})(?:\.[A-Z]{1,4})?\)', text_upper))
+    allowed = {a.upper().replace(".HK", "") for a in aliases if a}
+    allowed.update(a.lstrip("0") for a in list(allowed) if a.isdigit())
+    if explicit and not any(x in allowed for x in explicit):
+        return "unrelated"
+    if any(str(a).lower() in text.lower() for a in names if a):
+        return "exact_target"
+    if any(str(a).upper() in text_upper for a in aliases if a):
+        return "exact_target"
+    peer_terms = {
+        "NVDA": ["AMD", "INTC", "Intel", "Broadcom", "AVGO", "Marvell", "MRVL", "TSMC", "TSM"],
+        "03690": ["Alibaba", "BABA", "9988", "JD", "9618", "PDD", "Kuaishou", "01024"],
+        "META": ["Alphabet", "GOOGL", "SNAP", "Pinterest", "PINS", "TikTok", "ByteDance"],
+    }
+    for key, terms in peer_terms.items():
+        if key in allowed and any(term.upper() in text_upper for term in terms):
+            return "related_peer"
+    if any(k in text_upper for k in ["INDUSTRY", "SECTOR", "AI", "CLOUD", "SEMICONDUCTOR"]):
+        return "industry_background"
+    return "unrelated"
+
+
 def collect_research(client: DatayesClient, company: str, ticker: str, market: str, errors: list[dict[str, str]], max_reports: int) -> dict[str, Any]:
     exchange_map = {"HK": "XHKG", "US": "AMXO,XNAS,XNYS", "A": "SZSE,SSE"}
     exchange = exchange_map.get(market, "XHKG")
     items: dict[str, dict[str, Any]] = {}
 
-    for days_back in (180, 365):
+    for days_back in (180, 365, 730, 1095):
         start, end = dates(days_back)
         bodies: list[dict[str, Any]] = []
         if ticker:
@@ -238,7 +280,7 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
                 "pubTimeStart": start,
                 "pubTimeEnd": end,
                 "pageNow": 1,
-                "pageSize": 20,
+                "pageSize": 50,
                 "sortOrder": "desc",
             }
             body.update(base)
@@ -248,17 +290,34 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
                 rid = str(datum.get("id") or "")
                 if rid:
                     items[rid] = datum
-        if len(items) >= 5:
+        if len(items) >= max(max_reports, 20):
             break
 
-    selected = list(items.values())[:max_reports]
+    selected = []
+    for x in items.values():
+        status = _company_match_status(x, company, ticker)
+        x["company_match"] = status
+        if status == "exact_target":
+            selected.append(x)
+    selected = selected[:max_reports]
     ids = [x.get("id") for x in selected if x.get("id")]
+    selected_by_id = {str(x.get("id")): x for x in selected}
     details = []
+    detail_ids = []
     graphs = []
     viewpoints = []
 
     for rid in ids[:max_reports]:
-        details.append(data_of(safe_call(client, errors, "getReportDetail", {"reportId": rid})))
+        detail = data_of(safe_call(client, errors, "getReportDetail", {"reportId": rid}))
+        if isinstance(detail, dict):
+            detail["company_match"] = _company_match_status(detail, company, ticker)
+            if detail["company_match"] != "exact_target":
+                src = selected_by_id.get(str(rid), {})
+                detail["company_match"] = _company_match_status(src, company, ticker)
+            if detail["company_match"] != "exact_target":
+                continue
+        details.append(detail)
+        detail_ids.append(rid)
         graphs.append({"reportId": rid, "data": data_of(safe_call(client, errors, "report_graph", {"reportId": rid}))})
         viewpoints.append({"reportId": rid, "data": data_of(safe_call(client, errors, "core_viewpoint/", {"rrId": rid}))})
         time.sleep(1.05)
@@ -267,7 +326,7 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
     # foreign (non-Chinese org name) → batchGetReportContentForeign
     domestic_ids = []
     foreign_ids = []
-    for rid, detail in zip(ids, details):
+    for rid, detail in zip(detail_ids, details):
         if not isinstance(detail, dict):
             continue
         org_name = str(detail.get("orgName") or "")
@@ -450,13 +509,32 @@ def collect_materials_v2(
                 return True
         return False
 
+    def _mark_material(item: dict) -> str:
+        meta = item.get("metadata") or {}
+        probe = {
+            "title": item.get("title", ""),
+            "articleTitle": item.get("title", ""),
+            "companyName": meta.get("companyName", ""),
+            "stockId": meta.get("stockId", ""),
+            "secCode": meta.get("secCode", ""),
+            "rrTitle": item.get("title", ""),
+        }
+        return _company_match_status(probe, company, ticker)
+
     filtered_count = 0
     for query in results:
         items = query.get("data") or []
         if not isinstance(items, list):
             continue
         before = len(items)
-        query["data"] = [it for it in items if isinstance(it, dict) and _is_relevant(it)]
+        kept = []
+        for it in items:
+            if not isinstance(it, dict) or not _is_relevant(it):
+                continue
+            it["company_match"] = _mark_material(it)
+            if it["company_match"] in ("exact_target", "industry_background", "related_peer"):
+                kept.append(it)
+        query["data"] = kept
         filtered_count += before - len(query["data"])
 
     # ── 从所有 query 结果中提取去重后的独立来源 ──
@@ -483,6 +561,7 @@ def collect_materials_v2(
                 sources[rid] = {
                     "id": rid,
                     "type": type_map.get(dtype, f"Materials V2/{dtype}"),
+                    "company_match": it.get("company_match", _mark_material(it)),
                     "dataType": dtype,
                     "title": it.get("title", ""),
                     "organization": meta.get("organization", ""),
