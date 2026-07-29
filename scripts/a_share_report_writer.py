@@ -177,6 +177,7 @@ def call_claude(_client, prompt: str, max_tokens: int = 2000) -> str:
                         "max_tokens": _max,
                         "system": SYSTEM_PROMPT,
                         "messages": [{"role": "user", "content": prompt}],
+                        "thinking": {"type": "disabled"},
                     }
                     resp = _post_json(url, headers, payload, timeout=120)
                     if resp.status_code == 429:
@@ -2933,7 +2934,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 """
 
-    # ── 8.2 同业比较：v1.2.4 始终确定性输出（LLM表仅作§8.1参考，不插入§8.2）──
+    # ── 8.2 同业比较：v1.2.5 始终确定性输出（LLM表仅作§8.1参考，不插入§8.2）──
     name = meta.get("name", "")
     ticker = meta.get("ticker", "")
     _existing_peer = sections.get("peer_table", "")
@@ -3728,7 +3729,7 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
                         rf'\1{fallback_title}', md_content, flags=re.M)
     md_content = md_content.replace("User Points Not Enough", "")
 
-    # A-share header metadata line intentionally removed (v1.2.4+).
+    # A-share header metadata line intentionally removed (v1.2.5+).
 
     # Ensure §3 has a concrete catalyst table when LLM repair is unavailable.
     cat_pat = r'(## 3 催化事件时间表.*?)(?=\n## 4 |\n---\n\n## 4 )'
@@ -3907,11 +3908,16 @@ def _is_numeric_cell(v: str) -> bool:
     import re
     if not v or v in ('—', '-', 'N/A', 'n/a', 'NA', '…', '待补充', '不适用', ''):
         return False
+    # 排除含中文/日文等非数值文本的单元格（如"2026年第一季度..."）
+    if re.search(r'[一-鿿぀-ゟ゠-ヿ]', v):
+        return False
+    # 带引用标记的数值（如 "42.6%[1]"）→ 去掉引用后再判断
+    v_clean = re.sub(r'\[\d+\]', '', v).strip()
     # 纯数字（含负号、小数点、百分号）
-    if re.match(r'^-?[\d,]+\.?\d*%?$', v):
+    if re.match(r'^-?[\d,]+\.?\d*%?$', v_clean):
         return True
     # 带单位的数值（如 "42.6%"）
-    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v))
+    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v_clean))
 
 
 def _sparse_cleanup(md_content: str) -> str:
@@ -4213,9 +4219,9 @@ def _clean_empty_bold_tags(md_text: str) -> str:
     md_text = re.sub(r'(^|[\s>|-])\*\*\s*[：:]\s*', r'\1', md_text, flags=re.M)
     md_text = re.sub(r'\*\*\s*\*\*', '', md_text)
     md_text = re.sub(r'(?<!\*)\*{4}(?!\*)', '', md_text)
-    # v1.2.4-R2: 清理空 bullet 标签 "• ：" / "•:"
+    # v1.2.5-R2: 清理空 bullet 标签 "• ：" / "•:"
     md_text = re.sub(r'^[  \t]*[•·●►-]\s*(?::|：)\s*', '• ', md_text, flags=re.M)
-    # v1.2.4-R2: 修复残缺图表 markdown "!(http" → "![图表](http"
+    # v1.2.5-R2: 修复残缺图表 markdown "!(http" → "![图表](http"
     md_text = re.sub(r'!\(https?://', '![图表](https://', md_text)
     return md_text
 
@@ -4473,7 +4479,7 @@ def _final_self_check_v123(md_content: str, ref_map: dict) -> list:
 
 
 def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
-    """v1.2.4: 生成后校验催化事件表 & 情景推演表，不合格则自动调用 LLM 补写。
+    """v1.2.5: 生成后校验催化事件表 & 情景推演表，不合格则自动调用 LLM 补写。
 
     返回 (md_content, repair_log_list)。
     """
@@ -4559,7 +4565,7 @@ def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
     # ── 检查4: 情景推演 EPS×PE 公式兜底（无条件注入，避免checker check14 P1）──
     # 已改为在情景表内直接写公式，不再注入 > 注 行
 
-    # ── v1.2.4 body format fixes ──
+    # ── v1.2.5 body format fixes ──
     # 1. Strip non-numeric bracket refs like [2026-03-30电话会议] — only [N] allowed in body
     md_content = re.sub(r'\[(?!\d+\])[^\]]+\]', '', md_content)
     # 2. Strip **bold** from H2/H3 titles
@@ -5179,10 +5185,10 @@ def main():
     # ── v1.2.3 后处理: 移除死引用并重新编号 ──────────────────────────────────────
     md_content = _postprocess_v123(md_content, ref_map)
 
-    # ── v1.2.4 生成后检验→自动补写（催化事件表 & 情景推演表）──────────────────
+    # ── v1.2.5 生成后检验→自动补写（催化事件表 & 情景推演表）──────────────────
     md_content, _repair_log = _v124_post_repair(md_content, key_data)
     if _repair_log:
-        print(f"[{time.time()-t0:.1f}s] v1.2.4 自动修复: {_repair_log}")
+        print(f"[{time.time()-t0:.1f}s] v1.2.5 自动修复: {_repair_log}")
     md_content = _normalize_markdown_tables(md_content)
     md_content = _enforce_v124_a_share_blocks(md_content, key_data, ref_map)
     md_content = _normalize_markdown_tables(md_content)
@@ -5192,7 +5198,7 @@ def main():
     md_content = _normalize_markdown_tables(md_content)
     md_content = _fix_orphan_refs(md_content)
 
-    # ── v1.2.4-R3: 情景推演表列修复（在 normalize 之后执行）──────────────────────
+    # ── v1.2.5-R3: 情景推演表列修复（在 normalize 之后执行）──────────────────────
     md_content = _fix_scenario_table_columns(md_content)
     md_content = _format_scenario_analysis(md_content)
 
@@ -5200,7 +5206,7 @@ def main():
     md_content = _clean_empty_bold_tags(md_content)
     md_content = _normalize_final_markdown_format(md_content)
 
-    # ── v1.2.4-R3: 图表标题还原（cleaner 修了残缺 !(url) 但丢掉了原标题）────────
+    # ── v1.2.5-R3: 图表标题还原（cleaner 修了残缺 !(url) 但丢掉了原标题）────────
     md_content = _restore_chart_captions(md_content, charts)
     blockers = _final_self_check_v123(md_content, ref_map)
     if blockers:
@@ -5231,7 +5237,7 @@ def main():
 
     _quality_gate = _run_v124_quality_gate(args.output, market="A")
     if _quality_gate and (int(_quality_gate.get("P0", 0)) > 0 or int(_quality_gate.get("P1", 0)) > 0):
-        print(f"❌ v1.2.4 quality gate blocking: P0={_quality_gate.get('P0', 0)} P1={_quality_gate.get('P1', 0)}")
+        print(f"❌ v1.2.5 quality gate blocking: P0={_quality_gate.get('P0', 0)} P1={_quality_gate.get('P1', 0)}")
         sys.exit(3)
 
     total = time.time() - t0

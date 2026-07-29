@@ -1,10 +1,10 @@
-# 公司一页纸 Skill v1.2.4
+# 公司一页纸 Skill v1.2.5
 
 ## 版本状态
 
 **港美股自动化 Writer 整理版**——基于 v1.2.3 规则优化版，保留 A 股生成后自动修复，港美股改为脚本内置校验、fail closed 和连续重编号。
 
-## v1.2.4 新增能力
+## v1.2.5 新增能力
 
 | # | 能力 | 说明 |
 |---|------|------|
@@ -20,20 +20,20 @@
 ## 文件结构
 
 ```
-skills/v1.2.4/
-├── SKILL.md                                  # 主 Skill 定义（含 v1.2.3 全部规则 + v1.2.4 新增）
+skills/v1.2.5/
+├── SKILL.md                                  # 主 Skill 定义（含 v1.2.3 全部规则 + v1.2.5 新增）
 ├── README.md                                 # 本文件
 ├── CHANGELOG.md                              # 版本变更记录
 ├── references/
 │   ├── a-share-report-structure.md           # A股报告结构（含 v1.2.3 规则）
-│   ├── a-share-quality-checklist.md          # A股质量自检清单（含 v1.2.4 新增项）
+│   ├── a-share-quality-checklist.md          # A股质量自检清单（含 v1.2.5 新增项）
 │   ├── a-share-api-interfaces.md             # A股 API 接口说明
-│   ├── hk-us-report-structure.md             # 港美股报告结构（含 v1.2.4 加粗规范+行业适配）
-│   ├── hk-us-quality-checklist.md            # 港美股质量自检清单（含 v1.2.4 新增项）
+│   ├── hk-us-report-structure.md             # 港美股报告结构（含 v1.2.5 加粗规范+行业适配）
+│   ├── hk-us-quality-checklist.md            # 港美股质量自检清单（含 v1.2.5 新增项）
 │   └── hk-us-api-playbook.md                 # 港美股 API 编排手册
 └── scripts/
     ├── a_share_fetch_data.py                         # A股数据采集（含 resolve-only 模式）
-    ├── a_share_report_writer.py                      # A股报告生成（含 v1.2.4 自动修复）
+    ├── a_share_report_writer.py                      # A股报告生成（含 v1.2.5 自动修复）
     ├── fetch_materials.py                    # 港美股素材采集
     ├── hk_us_report_writer.py                # 港美股自动化全流程 Writer
     ├── build_docx.py                         # MD→DOCX 转换
@@ -50,8 +50,8 @@ skills/v1.2.4/
 | v1.2.0 | 冻结 | 不修改 |
 | v1.2.1 | 锁定 RC | 不修改 |
 | v1.2.2 | Pipeline 实验版 | 保留原样 |
-| v1.2.3 | 规则优化版 | 保留原样，规则层已固化为 v1.2.4 基础 |
-| **v1.2.4** | **港美股 Writer 整理版** | **本版本**——内置校验 + fail closed + 连续重编号 |
+| v1.2.3 | 规则优化版 | 保留原样，规则层已固化为 v1.2.5 基础 |
+| **v1.2.5** | **港美股 Writer 整理版** | **本版本**——内置校验 + fail closed + 连续重编号 |
 | v1.3.0 | 规划中 | 下一阶段 |
 
 ## 验证状态
@@ -62,6 +62,6 @@ skills/v1.2.4/
 
 ## 注意事项
 
-- v1.2.4 当前脚本以实际文件结构为准，不保留已删除 post-repair/checker 占位。
+- v1.2.5 当前脚本以实际文件结构为准，不保留已删除 post-repair/checker 占位。
 - 港美股没有独立 post-repair/checker 阻断链路；质量控制集中在 writer 内置校验和 `generation_status.json`。
 - 不修改 v1.2.0、v1.2.1、v1.2.2、v1.2.3 任何文件

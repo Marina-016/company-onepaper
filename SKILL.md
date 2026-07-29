@@ -1,13 +1,13 @@
 ﻿---
 name: datayes-company-onepager
-version: v1.2.4
+version: v1.2.5
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径通过 Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
   当前版本强调真实数据、引用闭环、目标公司一致性、结构化质量门禁和自动修复。
   当用户要求生成“一页纸”“公司一页纸”“股票研究报告”“公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.4）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.5）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
@@ -16,7 +16,7 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.4 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
+当前文档只描述 **v1.2.5 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
 运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
@@ -334,7 +334,7 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 增加港美股最小结构检查、结构化接口 ID 口径修正、空占位符检查。
 - 增加内部 checker 术语泄漏检查和 pipeline 结尾内容清理。
 
-### v1.2.4
+### v1.2.5
 - 增加港股 PIT 三表聚合。
 - 增加近况跟踪句首加粗规则。
 - 增加参考资料时效性约束和空预测节省略规则。

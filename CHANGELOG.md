@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.4
+## v1.2.5
 
 Status: Auto-repair pipeline + HK-US automation enhancement.
 
@@ -28,7 +28,7 @@ Status: Auto-repair pipeline + HK-US automation enhancement.
 
 3. **催化事件表自动补写**：组装报告后自动扫描 §3 催化事件时间表，若表格行数 <3 或为空壳，自动调用 LLM 从研报/纪要/公告素材提取事件并生成 ≥6 行完整表格。
 4. **情景推演自动替换**：若 §9.5 含模板话术（"基于核心变量乐观假设""基于EPS×PE=目标价"等），自动调用 LLM 用基准财务数据生成含 EPS×PE=目标价的三档可计算情景。
-5. **修复日志输出**：完成修复后打印摘要，方便排查（如 `v1.2.4 自动修复: ['催化事件表不足3行→LLM补写 ✅']`）。
+5. **修复日志输出**：完成修复后打印摘要，方便排查（如 `v1.2.5 自动修复: ['催化事件表不足3行→LLM补写 ✅']`）。
 
 ### 规范与 checker 补齐
 
@@ -37,14 +37,14 @@ Status: Auto-repair pipeline + HK-US automation enhancement.
 8. **§11.2 整节省略规则**：空预测表→P1，应整节省略。checker 新增 check 38，post-repair 可自动删除。
 9. **港美股特殊行业适配**：保险/银行/科技互联网/资源周期/REITs/生物医药指标体系已在 `hk-us-report-structure.md` 补齐。
 
-### Files changed (本轮 v1.2.4 补充):
+### Files changed (本轮 v1.2.5 补充):
 - `scripts/hk_us_post_repair_v124.py`: +`--id-audit` 参数支持，双输入源
 - `scripts/hk_financials.py`: 新建，PIT 三表聚合函数
 - `scripts/check_report_quality_v123.py`: +check 37（时效性）、check 38（§11.2省略）、check 39（加粗规范）
 - `references/hk-us-report-structure.md`: +近况跟踪§2加粗规范
-- `references/hk-us-quality-checklist.md`: +v1.2.4 检查项（加粗、时效性、§11.2省略、PIT聚合）
-- `references/a-share-quality-checklist.md`: +v1.2.4 检查项
-- `SKILL.md`: +v1.2.4 港美股 post-repair、PIT 聚合、加粗规范、时效性约束、§11.2 省略规则
+- `references/hk-us-quality-checklist.md`: +v1.2.5 检查项（加粗、时效性、§11.2省略、PIT聚合）
+- `references/a-share-quality-checklist.md`: +v1.2.5 检查项
+- `SKILL.md`: +v1.2.5 港美股 post-repair、PIT 聚合、加粗规范、时效性约束、§11.2 省略规则
 - `CHANGELOG.md`: this entry (updated)
 
 ### Already present (A股 pipeline):

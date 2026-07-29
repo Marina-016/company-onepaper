@@ -1190,10 +1190,10 @@ def _section_3_json_prompt(key_data: dict, schema_issues: list[str] | None = Non
 Schema:
 {{"short_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}], "long_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}]}}
 Rules:
-- short_term_logic has exactly 3 rows for §3.1; long_term_logic has exactly 3 rows for §3.2.
-- title <= 14 Chinese chars; text 80-150 Chinese chars per row.
-- Each text explains one investment mechanism. Do not output a catalyst list, tables, extra tracking fields, or a 3.3 subsection.
-- Total section body should be concise; no Markdown in JSON values.
+- short_term_logic has 2-4 rows for §3.1; long_term_logic has 2-4 rows for §3.2.
+- title <= 20 Chinese chars; text 140-220 Chinese chars per row. Each part (§3.1 and §3.2) must total 400-500 Chinese chars — write substantive paragraphs with specific data, valuation metrics, growth rates, or margin analysis, not short bullet blurbs.
+- Each text must be a substantive investment-mechanism paragraph: state the driver → cite specific evidence/numbers → explain the market implication. Use data from the provided research materials (e.g., profit growth rates, valuation multiples, market share, segment revenue, margin trends). Do NOT output mere bullet points or one-liners.
+- Do not output a catalyst list, tables, extra tracking fields, or a 3.3 subsection. No Markdown in JSON values.
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
@@ -1205,7 +1205,7 @@ def _section_3_group_prompt(key_data: dict, group_key: str, schema_issues: list[
     return f"""Return ONLY JSON for HK/US company one-pager section 3 subtask: {group_name}.
 Schema:
 {{"rows": [{{"title": "...", "text": "...", "source_ids": [1]}}]}}
-Rules: produce 2-3 source-backed rows; each text must explain one investment mechanism, not a catalyst list; no Markdown.
+Rules: produce 2-4 source-backed rows; each text must explain one investment mechanism with specific data, not a catalyst list; no Markdown.
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
@@ -1216,15 +1216,15 @@ def _normalize_section_3_group_rows(payload: dict, ref_map: dict, group_key: str
     rows = payload.get("rows") if isinstance(payload, dict) else None
     if not isinstance(rows, list):
         rows = payload.get(group_key) if isinstance(payload, dict) and isinstance(payload.get(group_key), list) else []
-    if not (2 <= len(rows) <= 3):
+    if not (2 <= len(rows) <= 4):
         issues.append(f"section_3.{group_key}_count:{len(rows)}")
     clean_rows: list[dict] = []
-    for i, item in enumerate(rows[:3]):
+    for i, item in enumerate(rows[:4]):
         if not isinstance(item, dict):
             issues.append(f"section_3.{group_key}[{i}].not_object")
             continue
         title = _plain_text(item.get("title") or "", 24)
-        text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{group_key}[{i}].text", 12)
+        text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{group_key}[{i}].text", 50)
         refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_3.{group_key}[{i}]")
         if text and refs:
             clean_rows.append({"title": title, "text": text, "refs": refs})
@@ -1239,7 +1239,7 @@ def _render_section_3_groups(short_rows: list[dict], long_rows: list[dict]) -> s
         if not rows:
             continue
         lines.extend([heading, ""])
-        for item in rows[:3]:
+        for item in rows[:4]:
             prefix = f"**{item.get('title', '')}**：" if item.get("title") else ""
             lines.append(f"- {prefix}{normalize_refs(item['text'], item['refs'])}")
         lines.append("")
@@ -1255,16 +1255,16 @@ def _validate_render_section_3(payload: dict, ref_map: dict) -> tuple[str, list[
     lines = ["## 3 核心投资逻辑", ""]
     for key, heading in groups:
         rows = payload.get(key) if isinstance(payload.get(key), list) else []
-        if not (2 <= len(rows) <= 3):
+        if not (2 <= len(rows) <= 4):
             issues.append(f"section_3.{key}_count:{len(rows)}")
         lines.extend([heading, ""])
-        for i, item in enumerate(rows[:3]):
+        for i, item in enumerate(rows[:4]):
             if not isinstance(item, dict):
                 issues.append(f"section_3.{key}[{i}].not_object")
                 continue
             title = _plain_text(item.get("title") or "", 24)
-            text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{key}[{i}].text", 12)
-            text = _plain_text(text, 200)
+            text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{key}[{i}].text", 50)
+            text = _plain_text(text, 280)
             refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_3.{key}[{i}]")
             if text and refs:
                 prefix = f"**{title}**：" if title else ""
@@ -1280,7 +1280,7 @@ def gen_hkus_section_3(key_data: dict, ref_map: dict | None = None) -> tuple[str
     issues: list[str] = []
     for call_name in ("section_3", "section_3_json_repair"):
         text, ok = _call_llm(_section_3_json_prompt(key_data, issues if call_name.endswith("repair") else None),
-                             max_tokens=2200, timeout=min(90, _hkus_llm_task_budget_seconds()),
+                             max_tokens=3500, timeout=min(90, _hkus_llm_task_budget_seconds()),
                              system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
         if not ok:
             issues.append(f"{call_name}:llm_failed")
@@ -1302,7 +1302,7 @@ def gen_hkus_section_3_group(key_data: dict, ref_map: dict, group_key: str) -> t
     issues: list[str] = []
     for call_name in (f"section_3_{group_key}",):
         text, ok = _call_llm(_section_3_group_prompt(key_data, group_key, issues),
-                             max_tokens=1800, timeout=min(90, _hkus_llm_task_budget_seconds()),
+                             max_tokens=2500, timeout=min(90, _hkus_llm_task_budget_seconds()),
                              system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name,
                              max_attempts=1)
         if not ok:
@@ -1821,7 +1821,7 @@ def _render_section_10_rows(rows: list[dict]) -> str:
         "|:---|:---|:---|:---|:---|",
     ]
     for row in rows:
-        # 证据收紧到 2句/100字（v1.2.4）
+        # 证据收紧到 2句/100字（v1.2.5）
         bull_evidence = _compress_evidence_sentences(row['bull_evidence'], max_sentences=2, max_chars=100)
         bear_evidence = _compress_evidence_sentences(row['bear_evidence'], max_sentences=2, max_chars=100)
         # validation_metric + validation_window 不走 compress，直接保留原始组合字符串
@@ -4557,7 +4557,7 @@ def _drop_empty_forecast_columns_in_section_11(text: str) -> str:
         else:
             rebuilt.append("| " + " | ".join(kept) + " |")
 
-    # v1.2.4-patch: after dropping empty forecast columns, check if ALL remaining data rows
+    # v1.2.5-patch: after dropping empty forecast columns, check if ALL remaining data rows
     # are also empty (all dashes). If so, strip the entire ### 11.1 subsection block
     # (heading + table + following paragraph until next ### or ## heading).
     rebuilt_parsed = [[cell.strip() for cell in row.strip().strip("|").split("|")]
@@ -4587,7 +4587,7 @@ def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: st
                              basis_map: dict[str, dict] | None = None) -> str:
     """Build §11 via LLM from research materials.
 
-    Structure (per reference v1.2.4):
+    Structure (per reference v1.2.5):
     11.1 盈利预测分析 — per-institution forecast table + 1-para analysis
     11.2 估值分析     — 2-3 sentence overview + valuation dimensions table
     11.3 情景推演     — core variables + 3 differentiated scenario rows
@@ -4773,7 +4773,7 @@ def _post_repair_static_validation(report: str, source_trace: dict) -> list[str]
 _TITLE_FORBIDDEN_TERMS = (
     "近期研报", "持续关注", "主业韧性：", "深度分析", "投资价值分析",
     "核心业务增长", "股份有限公司",
-    # 交接文档 v1.2.4 新增：禁止通用模板结论
+    # 交接文档 v1.2.5 新增：禁止通用模板结论
     "核心主业稳健", "基本面稳健", "估值有望修复", "新业务打开成长空间",
     "深度分析", "基本面", "估值修复",
 )
@@ -5007,7 +5007,7 @@ def _collect(ticker: str, market: str, co: str, out: str, token: str) -> dict:
     return _load_json(mp)
 
 def _build_trace(materials: dict, out: str) -> dict:
-    trace = {"generated_at": TODAY_ISO, "version": "v1.2.4",
+    trace = {"generated_at": TODAY_ISO, "version": "v1.2.5",
              "input_source_count": 0, "referenceable_source_count": 0,
              "refs_total": 0, "real_id_count": 0, "missing_id_count": 0,
              "duplicate_id_count": 0,
@@ -5294,7 +5294,7 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
 # ---------------------------------------------------------------------------
 
 def main():
-    p = argparse.ArgumentParser(description="HK/US one-pager report writer v1.2.4")
+    p = argparse.ArgumentParser(description="HK/US one-pager report writer v1.2.5")
     p.add_argument("--ticker", required=True)
     p.add_argument("--market", required=True, choices=["hk", "us", "HK", "US"])
     p.add_argument("--company-name", required=True)

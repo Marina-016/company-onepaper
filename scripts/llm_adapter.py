@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified LLM adapter for HK/US v1.2.4 writers.
+"""Unified LLM adapter for HK/US v1.2.5 writers.
 
 The adapter is intentionally provider-neutral: model names do not determine the
 transport protocol. Callers provide CLI/env config and receive structured
@@ -76,7 +76,7 @@ def _skill_root() -> Path:
 
 
 def _project_root() -> Path:
-    # company-onepager-eval/skills/v1.2.4/scripts -> company-onepager-eval
+    # company-onepager-eval/skills/v1.2.5/scripts -> company-onepager-eval
     try:
         return _script_dir().parents[2]
     except IndexError:
@@ -499,7 +499,7 @@ def call_llm(
     if config.error_type or not config.api_key or not config.endpoint or not config.model:
         return LLMResult(False, "", config.error_type or "LLM_CONFIG_MISSING", config.error_message or "invalid llm config", None, 0.0, 0, config.model, config.api_format, config.endpoint)
 
-    # Writer v1.2.4 r11f splits large prompts into smaller tasks. Keep transport
+    # Writer v1.2.5 r11f splits large prompts into smaller tasks. Keep transport
     # retry bounded: the same HTTP-scale prompt should not repeat three times on
     # 504/temporary network errors. JSON repair is handled by the writer's
     # schema-aware small-task retry, not by another full HTTP attempt here.
