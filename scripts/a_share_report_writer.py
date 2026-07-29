@@ -547,9 +547,9 @@ def extract_consensus(data: dict) -> list:
     con = data.get("consensus", {})
     con_data = con.get("data", {}) if isinstance(con, dict) else {}
     lst = con_data.get("list", []) if isinstance(con_data, dict) else []
-    # 过滤出 conEpsType=2（预测值），按 conProfit 升序（近年在前）
-    forecasts = [x for x in lst if x.get("conEpsType") == 2]
-    forecasts.sort(key=lambda x: x.get("conProfit", 0))
+    # 过滤出预测值（conEpsType∈{2,3}，排除0=实际值、4=长期预测），按 foreYear 升序
+    forecasts = [x for x in lst if x.get("conEpsType") in (2, 3)]
+    forecasts.sort(key=lambda x: x.get("foreYear", 0))  # v1.2.11: 按年份升序
     return forecasts
 
 
@@ -2604,36 +2604,64 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
     return "\n".join(kept).rstrip()
 
 
-def gen_section9_valuation(client, key_data: dict) -> str:
-    """9.3/9.4 估值分析文字 + 情景推演表格"""
-    valuation = key_data["valuation"]
-    fin = key_data["fin"]
-    forecasts = key_data["consensus_forecasts"]
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
+def _has_valuation_data(valuation: dict) -> bool:
+    """检查是否有任何有效的估值维度数据，所有维度均无效时跳过 9.3"""
+    if not valuation or not isinstance(valuation.get("items"), dict):
+        return False
+    for dim_name, d in valuation["items"].items():
+        v = d.get("val")
+        if v is not None and str(v).strip() not in ("", "—", "0", "0.0"):
+            return True
+    return False
 
+
+def _has_scenario_input(key_data: dict) -> bool:
+    """检查情景推演是否有输入基础：
+    1. 有一致预期 EPS 和 PE（用于计算目标价）
+    2. 或研报/纪要中有可提取为业务驱动变量的内容
+    均不满足则跳过 9.4 整节
+    """
+    forecasts = key_data.get("consensus_forecasts", [])
+    if forecasts:
+        fc0 = forecasts[0]
+        if fc0.get("conEps") is not None and fc0.get("conPe") is not None:
+            try:
+                float(fc0["conEps"]); float(fc0["conPe"])
+                return True
+            except (TypeError, ValueError):
+                pass
+    # 检查材料中是否有可用的业务变量文本
+    for src in [key_data.get("reports", []), key_data.get("meetings", [])]:
+        for item in (src or [])[:5]:
+            txt = (item.get("detail_text") or item.get("text") or "")[:3000]
+            if re.search(
+                r'(?:出货|装机|产能|市占|单价|毛利率\b|ASP\b|开工|利用率|ARPU\b|GMV\b|take.rate|单瓦|吨|价差|净息|拨备|渗透率|量价).*?\d+',
+                txt
+            ):
+                return True
+    return False
+
+
+def _gen_section93(client, key_data: dict) -> str:
+    """仅生成 9.3 估值分析（v1.2.11 拆分：独立于 9.4）"""
+    valuation = key_data["valuation"]
     pe_data = valuation["items"].get("市盈率PE", {})
     pb_data = valuation["items"].get("市净率PB", {})
+    name = key_data["name"]
+    ref_map = key_data["ref_map"]
+    forecasts = key_data.get("consensus_forecasts", [])
 
-    fc_text = "\n".join([
-        f"2026E: 净利{_fmt(f.get('conProfit'), unit=1e4)}亿, EPS{f.get('conEps','—')}, PE{round(f.get('conPe',0),1)}x"
-        for f in forecasts[:2]
-    ])
-
-    # ── 动态构建估值维度表格行（只保留有实际数据的维度）──────────────────────
+    # ── 动态构建估值维度表格行 ──
     def _has_val(d):
         v = d.get("val")
         return v is not None and str(v).strip() not in ("", "—", "0", "0.0")
 
     val_rows = []
-    # 按优先级遍历所有已知维度，也兜底遍历接口返回的其他维度
     _dim_priority = ["市盈率PE", "市净率PB", "市销率PS", "EV/EBITDA", "市现率PCF"]
-    _seen = set()
     for dim_name in _dim_priority + [k for k in valuation["items"] if k not in _dim_priority]:
         d = valuation["items"].get(dim_name, {})
         if not _has_val(d):
             continue
-        _seen.add(dim_name)
         avg_str = f"，行业均值{d.get('avg','—')}x" if d.get("avg") else ""
         rank_str = (f"，排名{d.get('rank','—')}/{d.get('rankBase','—')}"
                     if d.get("rank") and d.get("rankBase") else "")
@@ -2642,7 +2670,7 @@ def gen_section9_valuation(client, key_data: dict) -> str:
         )
 
     if not val_rows:
-        val_rows = ["（当前无可用估值分位数据，从研报及PE/PB角度简述估值判断）"]
+        return ""  # v1.2.11: 所有估值维度无效 → 不生成 9.3
 
     val_table_str = (
         "| 估值维度 | 当前水平 | 解读 |\n"
@@ -2650,8 +2678,9 @@ def gen_section9_valuation(client, key_data: dict) -> str:
         + "\n".join(val_rows)
     )
 
+    # 9.1/9.2 表格上下文（供 LLM 参考，不重复数字）
     consensus_ctx = key_data.get("consensus_table_ctx", "")
-    forecast_ctx  = key_data.get("forecast_table_ctx", "")
+    forecast_ctx = key_data.get("forecast_table_ctx", "")
     tables_section = ""
     if consensus_ctx or forecast_ctx:
         tables_section = "\n【9.1/9.2已生成表格（9.3不重复表中数字，只做解读和判断）】\n"
@@ -2660,33 +2689,12 @@ def gen_section9_valuation(client, key_data: dict) -> str:
         if forecast_ctx:
             tables_section += f"9.2各机构预测：\n{forecast_ctx}\n"
 
-    # 预计算情景推演所需的EPS和目标价数据
-    fc_eps = None
-    fc_pe = None
-    if forecasts:
-        fc0 = forecasts[0]
-        fc_eps = fc0.get("conEps")
-        fc_pe = fc0.get("conPe")
-    # 自动计算目标价公式供Prompt使用
-    _tp_ref_text = ""
-    if fc_eps is not None and fc_pe is not None:
-        try:
-            _eps_f = float(fc_eps)
-            _pe_f = float(fc_pe)
-            _tp_neutral = round(_eps_f * _pe_f, 2)
-            _tp_optimistic = round(_eps_f * (_pe_f * 1.14), 2)  # PE +14%
-            _tp_pessimistic = round(_eps_f * (_pe_f * 0.86), 2)  # PE -14%
-            _tp_ref_text = (
-                f"\n【目标价自动计算基准】\n"
-                f"一致预期EPS={_eps_f}元，当前PE={_pe_f}x\n"
-                f"基准目标价 = {_eps_f} × {_pe_f} = {_tp_neutral}元\n"
-                f"（乐观/悲观PE由模型根据业务情景调整，但需写明计算过程）\n"
-                f"⚠️ 目标价 = EPS × PE，必须写完整公式，不得写约数。估值含义直接写算式，不加内部测算、基于推算等说明。"
-            )
-        except (TypeError, ValueError):
-            pass
+    fc_text = "\n".join([
+        f"2026E: 净利{_fmt(f.get('conProfit'), unit=1e4)}亿, EPS{f.get('conEps','—')}, PE{round(f.get('conPe',0),1)}x"
+        for f in forecasts[:2]
+    ]) if forecasts else "（无一致预期数据）"
 
-    prompt = f"""为 {name} 撰写第9节的估值分析（9.3）和情景推演（9.4）。
+    prompt = f"""为 {name} 撰写第9.3节的估值分析。
 {tables_section}
 【估值数据】
 PE(TTM): {pe_data.get('val','—')}x，行业均值{pe_data.get('avg','—')}x，排名{pe_data.get('rank','—')}/{pe_data.get('rankBase','—')}
@@ -2695,9 +2703,6 @@ PB: {pb_data.get('val','—')}x，行业均值{pb_data.get('avg','—')}x
 
 【一致预期数据】
 {fc_text}
-{_tp_ref_text}
-【财务数据（最近实际年度）】
-{_compact_fin(fin)}
 
 【引用映射】
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
@@ -2712,6 +2717,56 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 {val_table_str}
 
 **重要**：上方表格已按实际有数据的维度生成，**只填写每行的"解读"列，不新增行、不删除行、不修改前两列**。
+⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
+"""
+    return call_claude(client, prompt, max_tokens=800)
+
+
+def _gen_section94(client, key_data: dict) -> str:
+    """仅生成 9.4 情景推演（v1.2.11 拆分：独立于 9.3）"""
+    forecasts = key_data.get("consensus_forecasts", [])
+    fin = key_data["fin"]
+    name = key_data["name"]
+    ref_map = key_data["ref_map"]
+
+    fc_text = "\n".join([
+        f"2026E: 净利{_fmt(f.get('conProfit'), unit=1e4)}亿, EPS{f.get('conEps','—')}, PE{round(f.get('conPe',0),1)}x"
+        for f in forecasts[:2]
+    ]) if forecasts else "（无一致预期数据）"
+
+    # ── 预计算目标价基准 ──
+    fc_eps = None; fc_pe = None
+    if forecasts:
+        fc0 = forecasts[0]
+        fc_eps = fc0.get("conEps"); fc_pe = fc0.get("conPe")
+    _tp_ref_text = ""
+    if fc_eps is not None and fc_pe is not None:
+        try:
+            _eps_f = float(fc_eps); _pe_f = float(fc_pe)
+            _tp_neutral = round(_eps_f * _pe_f, 2)
+            _tp_ref_text = (
+                f"\n【目标价自动计算基准】\n"
+                f"一致预期EPS={_eps_f}元，当前PE={_pe_f}x\n"
+                f"基准目标价 = {_eps_f} × {_pe_f} = {_tp_neutral}元\n"
+                f"（乐观/悲观PE由模型根据业务情景调整，但需写明计算过程）\n"
+                f"⚠️ 目标价 = EPS × PE，必须写完整公式，不得写约数。估值含义直接写算式，不加内部测算、基于推算等说明。"
+            )
+        except (TypeError, ValueError):
+            pass
+
+    prompt = f"""为 {name} 撰写第9.4节的情景推演。
+
+【一致预期数据】
+{fc_text}
+{_tp_ref_text}
+【财务数据（最近实际年度）】
+{_compact_fin(fin)}
+
+【引用映射】
+fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
+consensus=[{ref_map.get('consensus',{}).get('n','')}]
+
+【格式要求】
 
 ### 9.4 情景推演
 **核心变量**
@@ -2721,6 +2776,7 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 ⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
 ⚠️ **每个核心变量只写当前数值和选择该变量作为核心驱动因素的理由，不要写敏感性区间**。
 ⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
+⚠️ **核心变量必须含具体数值和[N]引用**，例如「• **800G出货量**：2026年预计X万件[N]；[一句话说明]」，不得写「• **需求风险**：[N]」等无数字的条目。
 • **[业务驱动变量1]**：[数值][N]；[一句话说明为何是核心变量]
 • **[业务驱动变量2]**：[数值] [N]；[一句话说明，不同于变量1的来源]
 • ...（3-5个，每个变量有自己的独立引用）
@@ -2748,7 +2804,33 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多个小点，必须用 `<br>` 分隔换行。
 ⚠️ **表格格式强制规则**：每行必须严格 4 列（以 | 分隔，开头和结尾各一个 |），单元格内容不得包含未转义的 | 符号；不得合并单元格；三档情景必须各占独立一行，单元格内换行只使用 `<br>`。
 """
-    return call_claude(client, prompt, max_tokens=1800)
+    return call_claude(client, prompt, max_tokens=1200)
+
+
+def gen_section9_valuation(client, key_data: dict) -> str:
+    """9.3/9.4 估值分析 + 情景推演（v1.2.11：按数据可用性分别处理）
+
+    - 估值维度全无效 → 跳过 9.3
+    - 无一致预期 EPS/PE 且材料无可提取业务变量 → 跳过 9.4
+    - 两者均跳过时返回空字符串，由组装处决定是否省略整章
+    """
+    parts = []
+
+    if _has_valuation_data(key_data.get("valuation", {})):
+        s93 = _gen_section93(client, key_data)
+        if s93 and len(s93.strip()) > 15:
+            parts.append(s93.strip())
+
+    if _has_scenario_input(key_data):
+        s94 = _gen_section94(client, key_data)
+        if s94 and len(s94.strip()) > 15:
+            parts.append(s94.strip())
+
+    if not parts:
+        return ""
+
+    # 两个都有时，中间加空行分隔
+    return "\n\n".join(parts)
 
 
 _A_SHARE_RISK_BULLET_RE = re.compile(r'^\s*[-*•]\s+', re.M)
@@ -3533,6 +3615,18 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     # 参考资料章节
     refs_md = refs_to_markdown(ref_map)
 
+    # 9.1 表格：只有有数据才显示（v1.2.11: 无数据时跳过整节，对齐 9.2）
+    consensus_table = sections.get("consensus_table", "")
+    section_9_1 = ""
+    if consensus_table and "暂缺" not in str(consensus_table) and len(consensus_table.strip()) > 20:
+        section_9_1 = f"""
+### 9.1 市场一致预期
+
+**数据来源**：research_sec_coredata接口[{ref_map.get('consensus',{}).get('n','')}]
+
+{consensus_table}
+"""
+
     # 9.2 表格：只有有数据才显示
     forecast_table_md = sections.get("forecast_table", "")
     section_9_2 = ""
@@ -3567,7 +3661,18 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {peer_table}
 """ if peer_table else ""
 
-    # ── 4.3/4.4 内容为空时跳过子节 ──
+    # ── 第九章整章条件拼接（v1.2.11：任一小节无数据则单独跳过，全空则整章不出现）──
+    _ch9_parts = []
+    if section_9_1:
+        _ch9_parts.append(section_9_1.strip())
+    if section_9_2:
+        _ch9_parts.append(section_9_2.strip())
+    _s9v = sections.get('s9_valuation', '').strip()
+    if _s9v:
+        _ch9_parts.append(_s9v)
+    _chapter_9_block = ""
+    if _ch9_parts:
+        _chapter_9_block = "## 9 一致预期、盈利预测与估值\n\n" + "\n\n".join(_ch9_parts) + "\n\n"
     s4_deep = sections.get('s4_deep_analysis', '')
     s4_adv = sections.get('s4_deep_advantage', '')
     s4_deep_block = ""
@@ -3646,18 +3751,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {sections['s8_industry']}
 {peer_section_block}
 
-## 9 一致预期、盈利预测与估值
-
-### 9.1 市场一致预期
-
-**数据来源**：research_sec_coredata接口[{ref_map.get('consensus',{}).get('n','')}]
-
-{sections['consensus_table']}
-{section_9_2}
-
-{sections['s9_valuation']}
-
-## 10 风险提示
+{_chapter_9_block}## 10 风险提示
 
 {sections['s10']}
 
@@ -5245,6 +5339,53 @@ def _final_self_check_v123(md_content: str, ref_map: dict) -> list:
     return blockers
 
 
+def _find_section_start(md_content: str, keyword: str) -> int:
+    """在 Markdown 中查找关键词所在章节的起始位置（H3 或 H4 标题前）。
+    返回标题前最近一个 `### ` 的起始位置，找不到时返回关键词本身的起始位置。
+    """
+    kw_pos = md_content.find(keyword)
+    if kw_pos < 0:
+        return -1
+    # 向前找最近的 ### 或 ## 标题
+    _prev = md_content.rfind("### ", 0, kw_pos)
+    if _prev >= 0:
+        # 确保标题和关键词之间没有其他 H2/H3 标题（即标题确实包含这个关键词）
+        _next_title = md_content.find("\n## ", _prev + 1)
+        if _next_title < 0 or _next_title > kw_pos:
+            return _prev
+    return kw_pos
+
+
+def _remove_section(md_content: str, start_pos: int, end_markers: list) -> str:
+    """删除从 start_pos 到下一个 end_marker 或下一章节之间的内容。
+    会在删除区域前后保留干净的段落边界。
+    """
+    if end_markers:
+        for marker in end_markers:
+            end_pos = md_content.find(marker, start_pos + 1)
+            if end_pos > start_pos:
+                break
+        else:
+            end_pos = -1
+    else:
+        end_pos = -1
+
+    if end_pos < 0:
+        # 找下一个 ## 或 ### 标题
+        for pat in ["\n## 10 ", "\n## 风险提示", "\n## 参考资料", "\n---"]:
+            end_pos = md_content.find(pat, start_pos + 1)
+            if end_pos > start_pos:
+                break
+    if end_pos < 0:
+        return md_content  # 安全兜底
+
+    # 删除区域：从 start_pos 到 end_pos（保留 end_pos 之后的内容）
+    # 清理尾部可能残留的连续空行
+    while start_pos > 0 and md_content[start_pos - 1] in ('\n', ' '):
+        start_pos -= 1
+    return md_content[:max(0, start_pos)] + "\n" + md_content[end_pos:]
+
+
 def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
     """v1.2.5: 生成后校验催化事件表 & 情景推演表，不合格则自动调用 LLM 补写。
 
@@ -5277,54 +5418,93 @@ def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
                 repair_log[-1] += " ❌(未找到催化事件章节)"
 
     # ── 检查2: 情景推演表 (§9.4) 必须含具体数值（非模板话术）──
+    # v1.2.11: 增加核心变量具体性校验 + 修复失败则删除空壳
     _sce_sec = _extract_section(md_content, "情景推演", end_markers=["## 10 ", "## 风险提示"])
-    _template_patterns = [
-        "基于核心变量乐观假设", "基于核心变量基准假设", "基于核心变量悲观假设",
-        "基于EPS×PE=目标价", "收入与利润上修", "收入与利润下修", "基准预期"
-    ]
-    _has_template = any(p in _sce_sec for p in _template_patterns)
-    _has_concrete_numbers = bool(re.search(r'(?:目标价|估值|EPS)[^\n]*?\d+[\.\d]*[元x×倍]', _sce_sec))
-    # 有3行情景表格且核心变量写得好时，放宽判断
-    _has_3_scenario_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) == 3
-    _has_good_core_vars = bool(re.search(r'为何|驱动|选为|核心变量|输入侧', _sce_sec))
-    # 若情景表不足3行（如只有2行），强制修复补写悲观行
-    _missing_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) < 3
-    _sce_valid = (not _missing_rows) and ((_has_concrete_numbers and not _has_template) or (_has_3_scenario_rows and _has_good_core_vars and not _has_template))
+    if not _sce_sec or len(_sce_sec.strip()) < 10:
+        # 情景推演章节完全不存在或为空 → 跳过检查（组装处已决定跳过）
+        pass
+    else:
+        _template_patterns = [
+            "基于核心变量乐观假设", "基于核心变量基准假设", "基于核心变量悲观假设",
+            "基于EPS×PE=目标价", "收入与利润上修", "收入与利润下修", "基准预期"
+        ]
+        _has_template = any(p in _sce_sec for p in _template_patterns)
+        _has_concrete_numbers = bool(re.search(r'(?:目标价|估值|EPS)[^\n]*?\d+[\.\d]*[元x×倍]', _sce_sec))
+        _has_3_scenario_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) == 3
+        _has_good_core_vars = bool(re.search(r'为何|驱动|选为|核心变量|输入侧', _sce_sec))
+        # v1.2.11: 核心变量必须包含至少一条带具体数字+引用的条目
+        _has_concrete_core_vars = bool(re.search(
+            r'•\s+\*\*[^*]+\*\*[：:]\s*.*?\d+\.?\d*.*?\[\d+\]',
+            _sce_sec
+        ))
+        _missing_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) < 3
+        _sce_valid = (
+            (not _missing_rows) and
+            _has_concrete_core_vars and
+            ((_has_concrete_numbers and not _has_template) or
+             (_has_3_scenario_rows and _has_good_core_vars and not _has_template))
+        )
 
-    if not _sce_valid:
-        repair_log.append("情景推演含模板话术或无数值→LLM补写")
-        # 提取已生成的核心变量文本注入 key_data，供 _gen_scenario_table 使用
-        _core_vars_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)', _sce_sec, re.DOTALL)
-        if _core_vars_match:
-            key_data["_scenario_core_vars"] = _core_vars_match.group(1).strip()[:2000]
-        _sce_fix = _gen_scenario_table(key_data)
-        if _sce_fix:
-            # 只替换「**情景推演表**：」之后的表格，保留核心变量文本
-            _table_marker = "**情景推演表**："
-            _table_pos = md_content.find(_table_marker)
-            if _table_pos > 0:
-                _table_end = md_content.find("## 10 ", _table_pos)
-                if _table_end < 0:
-                    _table_end = md_content.find("## 风险提示", _table_pos)
-                if _table_end > 0:
-                    md_content = md_content[:_table_pos + len(_table_marker)] + "\n\n" + _sce_fix + "\n\n" + md_content[_table_end:]
-                    repair_log[-1] += " ✅"
-                else:
-                    repair_log[-1] += " ❌(未找到下一章节)"
-            else:
-                # 找不到情景推演表标记时，整体替换 9.4 区域
-                _old_start = md_content.find("情景推演")
-                if _old_start > 0:
-                    _old_end = md_content.find("## 10 ", _old_start)
-                    if _old_end < 0:
-                        _old_end = md_content.find("## 风险提示", _old_start)
-                    if _old_end > 0:
-                        md_content = md_content[:_old_start] + "情景推演\n\n" + _sce_fix + "\n\n" + md_content[_old_end:]
+        if not _sce_valid:
+            _fail_reasons = []
+            if _missing_rows:
+                _fail_reasons.append(f"情景表仅{len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M))}行(需3行)")
+            if not _has_concrete_core_vars:
+                _fail_reasons.append("核心变量无具体数字+引用")
+            if _has_template:
+                _fail_reasons.append("含模板话术")
+            if not _has_concrete_numbers:
+                _fail_reasons.append("情景表无数值")
+            repair_log.append(f"情景推演不合格({', '.join(_fail_reasons)})→LLM补写")
+
+            # 提取已生成的核心变量文本注入 key_data
+            _core_vars_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)', _sce_sec, re.DOTALL)
+            if _core_vars_match:
+                key_data["_scenario_core_vars"] = _core_vars_match.group(1).strip()[:2000]
+            _sce_fix = _gen_scenario_table(key_data)
+            if _sce_fix:
+                # 只替换「**情景推演表**：」之后的表格，保留核心变量文本
+                _table_marker = "**情景推演表**："
+                _table_pos = md_content.find(_table_marker)
+                if _table_pos > 0:
+                    _table_end = md_content.find("## 10 ", _table_pos)
+                    if _table_end < 0:
+                        _table_end = md_content.find("## 风险提示", _table_pos)
+                    if _table_end > 0:
+                        md_content = md_content[:_table_pos + len(_table_marker)] + "\n\n" + _sce_fix + "\n\n" + md_content[_table_end:]
                         repair_log[-1] += " ✅"
                     else:
-                        repair_log[-1] += " ❌(未找到下一章节)"
+                        repair_log[-1] += " ❌→删除空壳"
+                        # 修复失败且无法定位结束位置 → 删除 9.4 整节
+                        _sce_start = _find_section_start(md_content, "情景推演")
+                        if _sce_start >= 0:
+                            md_content = _remove_section(md_content, _sce_start, [])
+                            repair_log[-1] += " ✅"
                 else:
-                    repair_log[-1] += " ❌(未找到情景推演章节)"
+                    # 找不到情景推演表标记 → 整体替换 9.4 区域
+                    _old_start = _find_section_start(md_content, "情景推演")
+                    if _old_start >= 0:
+                        _old_end = md_content.find("## 10 ", _old_start)
+                        if _old_end < 0:
+                            _old_end = md_content.find("## 风险提示", _old_start)
+                        if _old_end > 0:
+                            md_content = md_content[:_old_start] + "情景推演\n\n" + _sce_fix + "\n\n" + md_content[_old_end:]
+                            repair_log[-1] += " ✅"
+                        else:
+                            repair_log[-1] += " ❌→删除空壳"
+                            md_content = _remove_section(md_content, _old_start, [])
+                            repair_log[-1] += " ✅"
+                    else:
+                        repair_log[-1] += " ❌(未找到情景推演章节)"
+            else:
+                # v1.2.11: LLM 修复返回空 → fail-closed，删除 9.4 空壳
+                repair_log[-1] += " ❌→删除空壳"
+                _sce_start = _find_section_start(md_content, "情景推演")
+                if _sce_start >= 0:
+                    md_content = _remove_section(md_content, _sce_start, [])
+                    repair_log[-1] += " ✅"
+                else:
+                    repair_log[-1] += " ❌(找不到章节起始)"
 
     # ── 检查3: 注记行清除（不对读者展示内部注记）──
     md_content = re.sub(r'^>[ \t]*注：[^\n]*\n?', '', md_content, flags=re.MULTILINE)

@@ -1,8 +1,15 @@
-# 公司一页纸 Skill v1.2.10
+# 公司一页纸 Skill v1.2.11
 
 ## 版本状态
 
-**v1.2.10 A 股风险提示修复版**——修复 §10 项目符号误判、空上下文字段与静态通用 fallback，增加证据型重建和最终 fail-closed 门禁。
+**v1.2.11 第九章无数据处理版**——第九章各小节按数据可用性独立跳过，9.4 增强校验+fail-closed，整章全空时不出现。
+
+## v1.2.11 变更（基于 v1.2.10）
+
+- 9.1/9.3/9.4 各自按数据可用性独立跳过，无数据时不保留空壳标题。
+- 9.3/9.4 从单一 LLM 调用拆分为两个独立函数，各带数据预检。
+- 9.4 核心变量新增具体性校验（必须含数字+`[N]`），修复失败时删除空壳。
+- 组装处重构：第九章条件拼接，全空时整章标题不出现。
 
 ## v1.2.10 变更（基于 v1.2.9）
 
@@ -25,7 +32,7 @@
 ## 文件结构
 
 ```
-skills/v1.2.10/
+skills/v1.2.11/
 ├── SKILL.md                                  # 主 Skill 定义
 ├── README.md                                 # 本文件
 ├── CHANGELOG.md                              # 版本变更记录
@@ -38,7 +45,7 @@ skills/v1.2.10/
 │   └── hk-us-api-playbook.md                 # 港美股 API 编排手册
 ├── scripts/
     ├── a_share_fetch_data.py                         # A股数据采集
-    ├── a_share_report_writer.py                      # A股报告生成（含 v1.2.5 自动修复）
+    ├── a_share_report_writer.py                      # A股报告生成（含 v1.2.11 第九章跳过+修复）
     ├── fetch_materials.py                    # 港美股素材采集
     ├── hk_us_report_writer.py                # 港美股自动化全流程 Writer
     ├── build_docx.py                         # MD→DOCX 转换
@@ -48,7 +55,8 @@ skills/v1.2.10/
     └── requirements.txt                      # Python 依赖
 └── tests/
     └── datayes-company-onepaper/
-        └── test_a_share_risk_logic.py        # A 股风险专项测试
+        ├── test_a_share_risk_logic.py        # A 股风险专项测试
+        └── test_ch9_no_data.py               # 第九章无数据跳过测试
 ```
 
 ## 与其他版本的关系
@@ -63,12 +71,14 @@ skills/v1.2.10/
 | v1.2.6 | 修复与增强版 | 标题兜底/同业表误删 + 业务树状缩进 + §3/§9 增强 |
 | v1.2.8 | 标题后置生成版 | 历史版本 |
 | v1.2.9 | 列表标记统一+调研QA重写版 | 历史版本——`•` 归一化 + §4.5 QA 管线重写 + 格式清洗 |
-| **v1.2.10** | **A 股风险提示修复版** | **本版本**，基于 v1.2.9——证据型风险生成 + 引用门禁 + fail closed |
+| v1.2.10 | A 股风险提示修复版 | 证据型风险生成 + 引用门禁 + fail closed |
+| **v1.2.11** | **第九章无数据处理版** | **本版本**，基于 v1.2.10——各小节独立跳过 + fail-closed |
 | v1.3.0 | 规划中 | 下一阶段 |
 
 ## 验证状态
 
-- [x] A 股风险逻辑单元测试：项目符号、模板拦截、证据 fallback、财务快照和整章修复
+- [x] A 股风险逻辑单元测试（7/7 通过）：项目符号、模板拦截、证据 fallback、财务快照和整章修复
+- [x] 第九章新函数可用性验证：`_has_valuation_data` / `_has_scenario_input` / `_gen_section93` / `_gen_section94` / `_find_section_start` / `_remove_section`
 - [x] 三市场标题质量验证（历史）
 
 ## 注意事项

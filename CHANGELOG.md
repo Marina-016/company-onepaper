@@ -1,5 +1,53 @@
 # Changelog
 
+## v1.2.11
+
+Status: Chapter 9 subsection-level no-data handling — conditional skip + fail-closed.
+
+### P0: 第九章小节独立跳过
+
+第九章（一致预期、盈利预测与估值）四个小节在无可用数据时各自跳过，不再保留空壳：
+
+- **9.1 市场一致预期**：`research_sec_coredata` 无数据或返回"暂缺" → 整节跳过（对齐 9.2 已有逻辑）。
+- **9.2 各机构盈利预测**：已有条件跳过，无变动。
+- **9.3 估值分析**：`diagnosis_valuation_rank` 所有估值维度无效 → 跳过，不调用 LLM（新增 `_has_valuation_data` 预检）。
+- **9.4 情景推演**：无一致预期 EPS/PE 且材料无业务驱动变量文本 → 跳过，不调用 LLM（新增 `_has_scenario_input` 预检）。
+- 四节全空时整章 `## 9` 标题也不出现。
+
+### P0: 9.3/9.4 拆分生成
+
+原 270 行单函数 `gen_section9_valuation`（一次 LLM 调用同时生成 9.3+9.4）拆为三个函数：
+
+- `_has_valuation_data()`：检查估值接口是否返回任何有效维度。
+- `_has_scenario_input()`：检查是否有一致预期 EPS/PE 或材料中的量化业务指标。
+- `_gen_section93()`：仅生成 9.3 估值分析，估值维度全空时返回 `""`。
+- `_gen_section94()`：仅生成 9.4 情景推演，无输入基础时返回 `""`。
+- `gen_section9_valuation()`：路由器，按数据可用性条件调用上述函数。
+
+### P0: 9.4 增强校验 + fail-closed
+
+`_v124_post_repair` 中 9.4 情景推演检查增强：
+
+- **新增核心变量具体性校验**：`_has_concrete_core_vars` 检查核心变量 bullet 是否含「数字+`[N]`」模式，泛化核心变量（如「需求风险：[N]」无具体数字）直接触发修复。
+- **修复失败则删除空壳**：LLM 补写返回空、找不到情景推演表标记、或找不到下一章结束位置 → 删除整个 9.4 节，不再保留模板内容。
+- **新增辅助函数**：`_find_section_start()`（定位章节起始）、`_remove_section()`（安全删除章节区间）。
+
+### P1: 组装处重构
+
+- 9.1 与 9.2 对齐条件跳过模式，不再硬编码输出。
+- 新增 `_chapter_9_block`：预计算第九章所有有效内容，全空时整章不输出，避免触发自检"空章节"阻断。
+
+### Files changed
+
+- `scripts/a_share_report_writer.py`：~260 行净增
+- `SKILL.md`：版本号 + §5.7/§5.8 重编号为 §5.7/§5.8/§5.9 + Appendix A
+- `CHANGELOG.md`：this entry
+
+### Unchanged
+
+- 所有港美股脚本、fetch_data、build_docx、fetch_materials、gen_charts、llm_adapter 无变化
+- 既有测试全部通过（7/7）
+
 ## v1.2.10
 
 Status: A-share §10 risk evidence and validation repair.
