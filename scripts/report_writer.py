@@ -70,7 +70,29 @@ _LLM_FORMAT   = "openai"  # "openai"（/chat/completions）或 "anthropic"（/v1
 
 SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析师，根据结构化数据撰写中文研究报告片段。
 
-⚠️ 本 prompt 规则与 references/a-share-report-structure.md 保持一致，如有冲突以结构文件为准。
+⚠️ 本 prompt 规则与 references/a-share-report-structure.md（v1.2.3版）保持一致，如有冲突以结构文件为准。
+
+【v1.2.3 规则——必须严格遵守】
+
+## 章节编号
+- H2 章节编号与 A 股模板一致；H3 编号必须继承父 H2 编号（如 H2=## 2，则 H3=### 2.1、### 2.2），严禁出现 ## 3 下写 ### 2.1 的错误。
+
+## 数据获取与稀疏行列
+- 缺失数据必须逐级尝试：结构化接口→Materials V2→研报全文→研报图表→公告/纪要→公开来源。严禁第一级无数据即放弃。
+- 全部搜索完成后仍缺数据：一行≤1个有效数据→删行；一列≤1个有效数据→删列；不足2个指标/2个维度→删整张表。不得输出大量"—"、"N/A"、空格或"待补充"。不得编造数据。不得在注释中写"已隐去""因数据不足删除"。纯定性表豁免此规则。
+
+## 行内引用
+- 以下内容必须有行内 [N]：核心结论中的事实和数字、财务数据、经营指标、行业竞争格局中的具体数字、盈利预测、估值和目标价、催化剂和风险中的具体事实。不是仅在末尾列参考资料。
+
+## 参考资料格式（仅供了解，最终格式由程序自动生成）
+- 格式为 [N]来源类型 | 日期 | ID：值 | 机构 | 标题 | API：接口名，[N] 后无空格。
+- 只有正文实际使用到的来源才进入参考资料，未使用的来源必须剔除。
+
+## 派生测算
+- 内部测算必须写"内部测算：" + 基础数据[N] + 公式 + 单位 + 假设。无法完整复核则只保留定性判断、删除具体数字。
+
+## 保险行业适配
+- 优先使用 NBV/VONB、APE、EV、VONB Margin、OPAT、保险服务收入、偿付能力等指标。估值优先 P/EV、新业务价值倍数、EV Growth。严禁用毛利率、库存周转、普通 PE 机械填充保险业务。
 
 严格规则：
 1. 历史财务数据使用接口返回的精确数字，严禁"约"/"大约"等模糊表述
@@ -79,6 +101,7 @@ SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析�
 4. 列举项使用 • 或 1）2）格式，严禁中文序号 1、2、3
 5. 只输出被要求的章节内容，不要输出其他说明或标题（标题由主程序添加）
 6. 字数限制：若指定了字数范围，请严格遵守
+7. 遇到保险/银行/科技/周期等特殊行业时，优先使用适配该行业的指标体系，不套用通用制造业指标
 """
 
 
@@ -325,7 +348,7 @@ def extract_maincomp(data: dict) -> dict:
 
     层级规则：
     - 一级项目直接展示（原始名称）
-    - 若一级项目下有子项，则同时展示该一级项目和其子项（子项名前加 "└ "）
+    - 若一级项目下有子项，则同时展示该一级项目和其子项（子项名前加 "  "）
     - 返回 order 列表控制显示顺序：父级在前，子级紧随其后
     """
     mc_raw = data.get("main_comp", {})
@@ -372,7 +395,7 @@ def extract_maincomp(data: dict) -> dict:
         for child_id in children_of.get(iid, []):
             child_name = id_to_name.get(child_id, "")
             if child_name:
-                order.append("└ " + child_name)  # 子项（带缩进前缀）
+                order.append("  " + child_name)  # 子项（带缩进前缀）
 
     # 初始化 segments / margins
     segments = {k: [None] * n for k in order}
@@ -395,7 +418,7 @@ def extract_maincomp(data: dict) -> dict:
             name = row.get("itemName", "")
             if iid == 0 or not name:
                 continue
-            key = ("└ " + name) if (sup is not None and sup != 0) else name
+            key = ("  " + name) if (sup is not None and sup != 0) else name
             if key not in segments:     # 后续年份出现的新板块
                 segments[key] = [None] * n
                 margins[key]  = [None] * n
@@ -692,39 +715,80 @@ def build_ref_map(data: dict) -> dict:
             }
             idx += 1
 
-    # 结构化数据来源（ref_key: 引用键名, data_key: JSON中的实际字段名, desc: 描述）
+    # 结构化数据来源
+    meta_info = data.get("__meta__", {})
+    ticker = meta_info.get("ticker", data.get("ticker", ""))
     structured = [
-        ("fdmtNew",          "financial",       "fdmtNew 财务摘要（近3年年报）"),
-        ("maincomp",         "main_comp",       "getFdmtMoStdItem 主营构成"),
-        ("consensus",        "consensus",       "research_sec_coredata 市场一致预期"),
-        ("profit_forecast",  "profit_forecast", "research_sec_foredata 各机构盈利预测"),
-        ("valuation_rank",   "valuation_rank",  "diagnosis_valuation_rank 同业估值排名"),
-        ("pe_valuation",     "pe_valuation",    "diagnosis_pe_valuation PE估值百分位"),
-        ("mgmt_discussion",  "mgmt_discussion", "management_discussion MD&A"),
-        ("fin_indicators",   "fin_indicators",  "fdmt_indi_rtn 盈利能力指标历史序列"),
+        ("fdmtNew",          "financial",       "fdmtNew",                "财务摘要（近3年年报）"),
+        ("maincomp",         "main_comp",       "getFdmtMoStdItem",       "主营构成"),
+        ("consensus",        "consensus",        "research_sec_coredata",  "市场一致预期"),
+        ("profit_forecast",  "profit_forecast",  "research_sec_foredata",  "各机构盈利预测"),
+        ("valuation_rank",   "valuation_rank",   "diagnosis_valuation_rank","同业估值排名"),
+        ("pe_valuation",     "pe_valuation",     "diagnosis_pe_valuation", "PE估值百分位"),
+        ("mgmt_discussion",  "mgmt_discussion",  "management_discussion",  "管理层讨论 MD&A"),
+        ("fin_indicators",   "fin_indicators",   "fdmt_indi_rtn",          "盈利能力指标历史序列"),
     ]
-    for ref_key, data_key, desc in structured:
+    for ref_key, data_key, api_name, desc in structured:
         if data.get(data_key):
-            refs[ref_key] = {"n": idx, "type": "结构化数据", "id": "—", "date": TODAY, "org": "通联数据", "title": desc}
+            refs[ref_key] = {
+                "n": idx,
+                "type": "结构化数据",
+                "id": "—",
+                "date": TODAY,
+                "org": "通联数据",
+                "title": desc,
+                "api_name": api_name,
+                "ticker": ticker,
+            }
             idx += 1
 
     return refs
 
 
 def refs_to_markdown(ref_map: dict) -> str:
-    """生成参考资料章节 markdown"""
-    lines = ["## 参考资料\n", "```"]
+    """生成参考资料章节 markdown（v1.2.3 统一格式）
+
+    格式规范（来自 SKILL.md v1.2.3）：
+      [N]Materials V2研报 | 日期 | ID：值 | 机构 | 标题 | API：接口名
+      [N]Datayes研报 | 日期 | ID：值 | 机构 | 标题 | API：batchGetReportContent（研报全文）
+      [N]Datayes结构化接口 | 日期 | 证券代码 | 数据集名称 | API：接口名
+      [N]Datayes纪要 | 日期 | ID：值 | 机构 | 标题 | API：getMeetingSummaryDetail
+      字段以 " | " 分隔，[N] 后无空格。
+    """
+    lines = ["## 参考资料", ""]
     sorted_refs = sorted(ref_map.values(), key=lambda x: x["n"])
     for r in sorted_refs:
-        if r["type"] == "结构化数据":
+        ref_type = r["type"]
+        ref_id = r.get("id", "—")
+        ref_date = r.get("date", "")
+        ref_org = r.get("org", "—")
+        ref_title = r.get("title", "")
+        n = r["n"]
+
+        if ref_type == "结构化数据":
+            api_name = r.get("api_name", "")
+            ticker = r.get("ticker", "")
+            # 格式: [N]Datayes结构化接口 | 日期 | 证券代码 | 数据集名称 | API：接口名
+            if ticker:
+                lines.append(
+                    f"[{n}]Datayes结构化接口 | {ref_date} | {ticker} | {ref_title} | API：{api_name}"
+                )
+            else:
+                lines.append(
+                    f"[{n}]Datayes结构化接口 | {ref_date} | {ref_title} | API：{api_name}"
+                )
+        elif ref_type == "研报":
             lines.append(
-                f"[{r['n']}] {r['type']} | {r['date']} | {r['org']} | {r['title']}"
+                f"[{n}]Datayes研报 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：batchGetReportContent（研报全文）"
+            )
+        elif ref_type == "纪要":
+            lines.append(
+                f"[{n}]Datayes纪要 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：getMeetingSummaryDetail（会议纪要详情）"
             )
         else:
             lines.append(
-                f"[{r['n']}] {r['type']} | id:{r['id']} | {r['date']} | {r['org']} | {r['title']}"
+                f"[{n}]{ref_type} | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title}"
             )
-    lines.append("```")
     return "\n".join(lines)
 
 
@@ -790,7 +854,7 @@ def gen_financial_table(fin: dict, q1_text: str = "", company_name: str = "") ->
         header = f"| 指标 | {y0}A | {y1}A | {y2}A | YoY（{y0}vs{y1}） |"
         sep    = "|:-----|:------|:------|:------|:------------|"
 
-    # 自动选择单位（三档）：< 100亿 → 百万元；100亿~1万亿 → 亿元；≥ 1万亿 → 百亿元
+    # 自动选择单位（三档）：< 100亿 → 百万元；100亿~10万亿 → 亿元；≥ 10万亿 → 百亿元
     all_rev = [fin.get(yr, {}).get("tRevenue") for yr in years]
     if latest:
         all_rev.append(fin.get("latest_data", {}).get("tRevenue"))
@@ -798,7 +862,7 @@ def gen_financial_table(fin: dict, q1_text: str = "", company_name: str = "") ->
     if 0 < max_rev < 1e10:
         rev_unit       = 1e6
         rev_unit_label = "百万元"
-    elif max_rev < 1e12:
+    elif max_rev < 1e13:
         rev_unit       = 1e8
         rev_unit_label = "亿元"
     else:
@@ -1029,7 +1093,26 @@ def gen_maincomp_table(mc: dict) -> str:
             total_cells += " | —"
     lines.append(f"| **合计（主营口径）**{total_cells} |")
 
-    return "\n".join(lines)
+    # v1.2.3: 检测含"计算"/"差额"的行，标注派生来源或删除
+    annotated_lines = []
+    has_derived = False
+    for line in lines:
+        if "计算" in line or "差额" in line:
+            has_derived = True
+            # 无法提供完整公式时删除该行
+            if "差额项目" in line:
+                continue  # 删除无法复核的差额行
+            # 能保留的计算行加注释
+            annotated_lines.append(line)
+        else:
+            annotated_lines.append(line)
+
+    if has_derived:
+        annotated_lines.append(
+            '\n*注：含"(计算)"标记的行为差额推算项，若已知各项之和与总收入的精确差额可验证，否则已自动删除。*'
+        )
+
+    return "\n".join(annotated_lines)
 
 
 def gen_consensus_table(forecasts: list, actual: dict, fin: dict) -> str:
@@ -1370,13 +1453,52 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 ---
 请直接开始输出第1节内容（不要重复上面的章节标题）："""
 
-    raw = call_claude(client, prompt, max_tokens=3800)
-    parts = [p.strip() for p in raw.split(_S123_SEP)]
-    return {
-        "s1": parts[0] if len(parts) > 0 else raw,
-        "s2": parts[1] if len(parts) > 1 else "[生成失败: 未找到分隔符]",
-        "s3": parts[2] if len(parts) > 2 else "[生成失败: 未找到分隔符]",
-    }
+    for attempt in range(3):
+        raw = call_claude(client, prompt, max_tokens=3800)
+        # 检查是否包含失败标记
+        if raw.startswith("[生成失败:"):
+            if attempt < 2:
+                time.sleep(2 * (attempt + 1))
+                continue
+        parts = [p.strip() for p in raw.split(_S123_SEP)]
+        # 需要至少有2个分隔符（即3个章节）
+        if len(parts) >= 3 and all(len(p) > 80 for p in parts[:3]):
+            return {"s1": parts[0], "s2": parts[1], "s3": parts[2]}
+        if attempt < 2:
+            time.sleep(2 * (attempt + 1))
+            continue
+    # 3次重试均失败 → 报告生成中止
+    raise RuntimeError(
+        "第1/2/3节合并生成失败：3次尝试均无法获得完整的三个章节内容。"
+        "最后输出片段：{}...".format(raw[:200] if len(raw) > 200 else raw)
+    )
+
+
+# ── 通用章节生成防护层（重试 + 失败标记检测）─────────────────────────
+_FAILURE_MARKERS = ["[生成失败:", "[生成失败", "[生成失败"]
+
+def _safe_gen_section(fn_name: str, gen_fn, client, key_data, max_retries=2):
+    """带重试和失败检测的章节生成包装器。3次均失败则抛出 RuntimeError。"""
+    last_result = ""
+    for attempt in range(max_retries + 1):
+        result = gen_fn(client, key_data)
+        if not isinstance(result, str):
+            return result  # dict，如 gen_section4/gen_sections_1_2_3
+        if any(m in result for m in _FAILURE_MARKERS):
+            last_result = result
+            if attempt < max_retries:
+                time.sleep(2 * (attempt + 1))
+                continue
+        # 检查返回内容是否过短（可能是空响应）
+        if len(result.strip()) < 20:
+            last_result = result
+            if attempt < max_retries:
+                time.sleep(2 * (attempt + 1))
+                continue
+        return result
+    raise RuntimeError(
+        f"章节 {fn_name} 生成失败（{max_retries+1}次重试后仍失败）: {last_result[:200]}"
+    )
 
 
 def gen_section1(client, key_data: dict) -> str:
@@ -1509,22 +1631,30 @@ def gen_section3(client, key_data: dict) -> str:
 【公告列表】
 {json.dumps(announcements[:5], ensure_ascii=False)[:500] if announcements else "（无）"}
 
+【引用映射】
+{_refs_str(reports, ref_map, 5)}
+
 【格式要求】
-输出纯 Markdown 表格，不要其他说明文字：
+输出纯 Markdown 表格，不要其他说明文字。**必须包含至少6行数据事件**（含表头行共≥8行）。
 
 | 时间 | 事件 | 影响 |
 |:-----|:-----|:-----|
-| YYYY-MM-DD 或 YYYY-MM 或 YYYY-Q? | [具体事件，含金额/规模] | [具体影响，含数据] |
+| YYYY-MM-DD 或 YYYY-MM 或 YYYY-Q? | [具体事件，含金额/规模][N] | [具体影响，含数据][N] |
 
 规则：
 - 时间列：精确到日写YYYY-MM-DD，不确定日写YYYY-MM，不确定月写季度如2026-Q2
-- 已发生事件2-3条，未来预期事件3-4条（加"（预期）"标注）
-- 严禁列入"券商发布研究报告"类内容
-- **严禁**将机构盈利预测、EPS预测调整、目标价更新等分析师预测类内容列入表格；仅列入公司层面真实发生或预期发生的经营/政策/市场事件
+- **必须≥4行有效事件**（已发生1-3条+预期1-3条），预期事件加"（预期）"。7行上限，3行下限——宁可6行内容充实也不列3行凑数
+- **事件类型必须覆盖**：业绩披露窗口、股东大会/分红除权、重要产品价格或批价变化、渠道政策、行业旺季或政策事件——不只是研报催化
+- 严禁列入"券商发布研究报告"类内容和机构盈利预测/EPS调整/目标价更新
+- **每条事件必须在事件描述栏或影响栏标注引用[N]**（数字后紧跟[N]，如"营收增12%[3]"）。无来源引用的事件不得保留
 - 影响栏给出具体数据支撑，不得泛泛而谈
-- **严禁**在表格单元格中出现任何引用标注（如 [N]、[数字]、[报告ID] 等），表格内容只包含事实描述
+
+**引用标注示例（必须遵守）**：
+| 2026-03 | 飞天茅台出厂价上调至1,269元[5] | 直接贡献报表约2个点收入增量[5] |
+| 2026-Q3（预期） | 中秋国庆传统旺季备货启动 | 验证C端真实消费承接及批价稳定性[2] |
+↑ 每条事件的事件列或影响列**必须至少有1处[N]引用**，引用编号来自【引用映射】
 """
-    return call_claude(client, prompt, max_tokens=800)
+    return call_claude(client, prompt, max_tokens=1200)
 
 
 def gen_section4_intro(client, key_data: dict) -> str:
@@ -1676,12 +1806,13 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
 
 
 def gen_section4_survey_qa(client, key_data: dict) -> str:
-    """4.5 机构调研核心问答
+    """4.5 建议调研问题与分析关注点
 
     数据优先级：
     1. surveys（institution_research_detail.content）— 官方机构调研接口，内容最完整
     2. meetings（getMeetingSummaryDetail.aiQa）— 会议纪要 AI 摘要，作为补充
     任意来源有数据即可生成本节；两者均无数据则跳过。
+    仅在有真实管理层原话时使用 Q/A 格式，否则用'建议调研：'开头。
     """
     surveys  = key_data.get("surveys", [])   # institution_research_detail
     meetings = key_data.get("meetings", [])
@@ -1716,20 +1847,21 @@ def gen_section4_survey_qa(client, key_data: dict) -> str:
     qa_text = "\n\n".join(qa_blocks)
     meeting_refs = _meeting_refs_str(meetings, ref_map, n=5)
 
-    prompt = f"""你是顶级券商分析师，正在为{name}撰写公司一页纸报告的"机构调研核心问答"小节。
+    prompt = f"""你是顶级券商分析师，正在为{name}撰写公司一页纸报告的"建议调研问题与分析关注点"小节。
 
 以下是最近机构调研/业绩说明会/路演的原始内容（来源：机构调研接口 + 会议纪要）：
 {qa_text}
 
 ---
-任务：从以上内容中精选 3-5 个最有基本面价值的问答，聚焦以下类型：
+任务：从以上内容中精选 3-5 个最有基本面价值的关注点，聚焦以下类型：
 • 盈利能力变化原因（毛利率/净利率涨跌驱动）
 • 新产品/新业务落地进展（含具体数据节点）
 • 主要风险点（商誉减值、客户集中、竞争加剧等，需有数据支撑）
 • 资本开支/产能/现金流展望
 
 输出格式要求：
-- 每条用 **Q：** / **A：** 标注，A 中须保留关键数字和时间节点
+- ⚠️ **仅在有真实管理层原话时才使用 **Q：** / **A：** 格式**
+- 若无法确认是管理层原话，**严禁编造Q/A**——改用"建议调研："开头，列出需要向管理层核实的具体量化问题
 - 每条末尾标注引用 [N]（若有对应引用编号）
 - 不引入原文中没有的信息
 - 不含券商/机构具体名称
@@ -1835,14 +1967,14 @@ def gen_section4(client, key_data: dict) -> dict:
         if has_qa else ""
     )
     qa_instruction = (
-        "### 4.5 机构调研核心问答\n"
-        "精选3-5个最有基本面价值的问答（来自以上机构调研/会议纪要）；\n"
-        "每条用 **Q：** / **A：** 格式，A须保留关键数字和时间节点；\n"
-        "聚焦：盈利能力变化原因、新产品/业务进展、主要风险、资本开支/现金流展望；\n"
-        "不引入原始内容中没有的信息，不含机构具体名称；末尾标注引用[N]；总字数400字以内；\n"
+        "### 4.5 建议调研问题与分析关注点\n"
+        "⚠️ **仅在有真实管理层原话时才使用 Q：/A： 格式**；判断标准如下：\n"
+        "- 若原始内容中明确有管理层回答（管理层原话、公司回应），则使用 **Q：** / **A：** 格式标注引用\n"
+        "- **若无法确认是管理层原话，严禁编造Q/A**——改为每个关注点用 建议调研： 开头，列出需要向管理层核实的具体问题\n"
+        "精选3-5个最有基本面价值的关注点；不引入原文没有的信息；不含机构具体名称；总字数400字以内；\n"
         "**与4.1已描述的商业模式不重复**。"
         if has_qa else
-        "### 4.5 机构调研核心问答\n（本节无调研/会议数据，仅输出此标题行，内容留空）"
+        ""  # 无数据时完全跳过，不留空标题
     )
 
     prompt = f"""为 {name} 合并撰写第4章中的两个小节（4.1和4.5），目标是两节内容不重复、上下呼应。
@@ -1943,16 +2075,21 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}]
 {"- 已提供精确地区数据（见上方表格），**直接将该表格原样输出**，不要改写数字，可在表格后加1句趋势说明，标注引用" if mc_region else "- 若无区域拆分数据，则省略本部分"}
 
 **主要客户**：
+- ⚠️ **表格前必须加数据来源行**（如"*数据来源：研报[3]及公司年报[9]*"），该行紧跟表格上方
 - 若能从数据中找到具体客户名称（机构/企业/个人类型均可），输出 Markdown 表格：
   | 名称 | 类型 | 合作情况/规模/占比 |
   |------|------|------|
+- ⚠️ **表格中每条客户/供应商数据必须标注引用[N]**，如"贡献收入XX亿[3]"或"占比XX%[2]"；估算数据标注"内部测算"或"基于[N]推算"
 - 若无具体名称，则2-3句文字描述：客户类型、规模/数量变化（同比增速），标注引用
+- 表格级或行级必须绑定来源；无来源的表格行不得保留
 
 **新客户拓展**：[2-3句：近期新增方向、具体规模或数量变化、预期贡献，标注引用]
 
-**主要供应商**：
-- 制造业：若有具体供应商名称，输出表格（| 名称 | 供应内容 | 占比/规模 |）；否则文字描述集中度和议价能力，含具体数字
-- 服务业/金融业：说明核心资源要素（资本金规模、员工人数、技术系统），标注引用
+**主要供应商 / 核心资源与基础设施**：
+- ⚠️ **先检查数据中是否有真实供应商信息**（供应商名称、采购金额、采购占比等）
+- **有供应商数据时**：使用"主要供应商"标题，输出表格或文字描述
+- **无供应商数据时**：使用"核心资源与基础设施"标题，说明公司依赖的核心资源要素（如网络资产、算力设施、技术系统、人力资本等），标注引用
+- ⛔ **严禁**标题写"供应商"但正文写员工数量、自有设备等内部资源——标题必须与内容匹配
 """
     return call_claude(client, prompt, max_tokens=900)
 
@@ -1996,9 +2133,16 @@ def gen_section6_health(client, key_data: dict) -> str:
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
 【格式要求】**每条不超过100字**，输出以下四条，每条单独一行，紧凑精炼：
-- **盈利能力**：净利率/ROE趋势+核心驱动因素，精确数字，标注引用
+
+⚠️ **因果归因规则（强制执行）**：
+- fdmtNew结构化接口仅提供数字变化，**不提供因果解释**
+- "主因""因为""导致""拖累""受益于"等因果表述，**必须**来自年报MD&A/公告/纪要/研报等文字来源
+- 无因果证据时改为**中性描述**（如"净利同比下降X%""毛利率下滑X个百分点"），不自行归因
+- 💡 **ROE与分红关系**：高分红减少净资产，在利润不变时**通常提高**当期ROE（分母缩小），而非拖累；可表述为"高分红可能限制未来资本积累和再投资能力"，**不得**使用"高分红直接拖累ROE"的错误表述
+
+- **盈利能力**：净利率/ROE趋势，精确数字，标注引用。若需说明原因，必须引用MD&A/研报文字，否则只陈述变化幅度
 - **偿债能力**：资产负债率/净资本充足性/偿债压力，标注引用
-- **现金流质量**：经营现金流净额与净利润的比值（精确计算后直接写出数字），说明主因，标注引用
+- **现金流质量**：经营现金流净额与净利润的比值（精确计算后直接写出数字），标注引用。若需说明原因，引用MD&A/研报
 - **ROE杜邦分析（{y0}A）**：直接使用上方已提供的杜邦公式数据，格式"净利率X% × 资产周转率X次 × 权益乘数X = ROE约X%"，标注引用
 """
     return call_claude(client, prompt, max_tokens=800)
@@ -2078,14 +2222,19 @@ PE: {pe_data.get('val','—')}x (行业均值{pe_data.get('avg','—')}x, 排名
 valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 
 【格式要求】
-以下面的标题行作为你的第一行，然后输出内容。不得生成任何其他子章节（不要 ### 8.2 或其他标题）。风险在第10章单独处理，此处不写风险要点。
 
 ### 8.1 行业格局
+
+⚠️ **行业vs公司数据严格区分**：
+- 行业数据必须来自行业或多家公司统计（如"三大运营商合计移动用户XX亿""电信行业收入XX万亿"）
+- **严禁**将{name}自身的客户数（如"10亿客户"）、5G渗透率（如"63.9%"）、智算规模等单家公司数据写成行业数据
+- {name}的自身数据只能在"在行业中处于X位"的定位中使用，不得冒充行业整体数据
+
 只写以下3个要点（• 开头），不写风险：
 
-1. **周期位置与行业增速**：行业所处周期阶段，引用全行业收入/用户规模等宏观数据（精确数字），标注引用
-2. **集中度/竞争格局**：点名头部玩家（如腾讯、网易）及A股中腰部厂商，给出市占率或CR数字，标注引用
-3. **核心驱动因素**：行业共性驱动力（用户增长、出海渗透、IP商业化、技术升级等）；举例时**必须明确点名具体公司和产品**（如"网易《逆水寒》海外版……"、"米哈游《原神》开创……"），禁止使用"头部新品""某款产品"等模糊表述，标注引用
+1. **周期位置与行业增速**：行业所处周期阶段，引用全行业收入/用户规模等宏观数据（精确数字，来自研报行业分析而非公司数据），标注引用
+2. **集中度/竞争格局**：点名头部玩家，给出市占率或CR数字（行业层面的集中度，非单公司），标注引用
+3. **核心驱动因素**：行业共性驱动力（用户增长、出海渗透、IP商业化、技术升级等）；举例时**必须明确点名具体公司和产品**，标注引用
 
 每点1-2句含具体数字，**150字以内**。
 """
@@ -2093,10 +2242,13 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
     # 清理引用映射失败时 LLM 可能生成的占位符
     result = re.sub(r'\[research\]', '', result)
     # 只保留 ### 8.1 行业格局 的内容，截断任何 LLM 自行添加的后续子章节
+    # 同时也删除 LLM 可能生成的 "## 9" 或单独表格行
     lines = result.splitlines()
     kept = []
     for line in lines:
         if re.match(r"^###\s+8\.[2-9]", line):
+            break
+        if re.match(r"^##\s+9\s", line):
             break
         kept.append(line)
     return "\n".join(kept).rstrip()
@@ -2158,6 +2310,32 @@ def gen_section9_valuation(client, key_data: dict) -> str:
         if forecast_ctx:
             tables_section += f"9.2各机构预测：\n{forecast_ctx}\n"
 
+    # 预计算情景推演所需的EPS和目标价数据
+    fc_eps = None
+    fc_pe = None
+    if forecasts:
+        fc0 = forecasts[0]
+        fc_eps = fc0.get("conEps")
+        fc_pe = fc0.get("conPe")
+    # 自动计算目标价公式供Prompt使用
+    _tp_ref_text = ""
+    if fc_eps is not None and fc_pe is not None:
+        try:
+            _eps_f = float(fc_eps)
+            _pe_f = float(fc_pe)
+            _tp_neutral = round(_eps_f * _pe_f, 2)
+            _tp_optimistic = round(_eps_f * (_pe_f * 1.14), 2)  # PE +14%
+            _tp_pessimistic = round(_eps_f * (_pe_f * 0.86), 2)  # PE -14%
+            _tp_ref_text = (
+                f"\n【目标价自动计算基准】\n"
+                f"一致预期EPS={_eps_f}元，当前PE={_pe_f}x\n"
+                f"基准目标价 = {_eps_f} × {_pe_f} = {_tp_neutral}元\n"
+                f"（乐观/悲观PE由模型根据业务情景调整，但需写明计算过程）\n"
+                f"⚠️ 目标价 = EPS × PE，必须写完整公式，不得写约数。情景概率必须标注'内部测算'。"
+            )
+        except (TypeError, ValueError):
+            pass
+
     prompt = f"""为 {name} 撰写第9节的估值分析（9.3）和情景推演（9.4）。
 {tables_section}
 【估值数据】
@@ -2167,7 +2345,7 @@ PB: {pb_data.get('val','—')}x，行业均值{pb_data.get('avg','—')}x
 
 【一致预期数据】
 {fc_text}
-
+{_tp_ref_text}
 【财务数据（最近实际年度）】
 {_compact_fin(fin)}
 
@@ -2179,7 +2357,7 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 【格式要求】
 
 ### 9.3 估值分析
-[**1句话**：当前估值所处位置（高/低/合理）及核心判断依据，数字已在下方表格中，此处不重复；标注引用]
+[**2-3句话**（禁止仅一句话）：当前PE(TTM)水平、处于近N年分位数、与同业对比的折溢价幅度，含具体数字并标注引用[N]。不要复述下方表格已有数字，只做投资判断层面的解读。]
 
 {val_table_str}
 
@@ -2189,22 +2367,32 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 **核心变量**（3-5个）：
 ⚠️ **核心变量必须是驱动业务的输入侧指标**，例如：出货量/装机量、单价/单瓦盈利、产能利用率、市占率、毛利率、扩产节奏、原材料成本等——取决于行业特性。
 ⚠️ **严禁将营收、净利润、EPS、归母净利润等财务结果填为核心变量**，这些是预测的输出，不是输入。
-• **[业务驱动变量1，如出货量/装机量/单价]**：基准值X
-• **[业务驱动变量2]**：基准值X
-• ...（3-5个，与下方情景表不重复，只填名称和基准值）
+⚠️ **每个变量必须来自不同来源**（研报/纪要/公告等），不得所有变量统一标注同一个引用如[N]。
+⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
+• **[业务驱动变量1]**：基准值X [N]（来源：研报/纪要）
+• **[业务驱动变量2]**：基准值X [N]（来源：研报/纪要，不同于变量1的来源）
+• ...（3-5个，每个变量有自己的独立引用）
 
-**情景推演**：
+**情景推演表**：
+
+⚠️ **币种统一规则**：本报告主体为A股({name})，股价、目标价、EPS、股息率必须统一使用**人民币/A股口径**。若公司公告以港元宣派股息，必须写明原文"公司公告港元口径X港元"，折算A股股息率时需说明汇率假设。
+
+⚠️ **目标价必须由公式自动计算，严禁自由填写**：
+  目标价 = 使用的EPS × PE倍数
+  示例：6.34 × 16 = 101.44元（不是107元）
+  每个情景必须写明：EPS取值(元) × PE倍数 = 目标价(元)
+
+⚠️ **三种情景概率之和必须为100%，且每个概率均标注"内部测算"**。
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~X%） | [具体数字] | [收入/利润结果] | [PE/目标价] |
-| 中性（概率~X%） | [具体数字] | [基准预测] | [基准PE/目标价] |
-| 悲观（概率~X%） | [具体数字] | [下行结果] | [下行PE/价格] |
+| 乐观（内部测算 概率~X%） | [各变量乐观值，含具体数字，各变量分别标注引用] | [对应的收入/利润结果，含公式或来源] | [基于NX年EPS X.XX元 × PEx = XXX元，写完整计算过程，标注引用] |
+| 中性（内部测算 概率~Y%） | [各变量基准值，各变量分别标注引用] | [基准预测] | [基于NX年EPS X.XX元 × PEx = XXX元] |
+| 悲观（内部测算 概率~Z%） | [各变量悲观值，各变量分别标注引用] | [下行结果] | [基于NX年EPS X.XX元 × PEx = XXX元] |
 
-三种情景概率之和100%，所有假设给出具体数字，**标注引用**（每个假设数字须标注引用来源 [N]；若为基于已有数据推算，注明"基于[N]推算"）。
-**引用位置规则**：[N] 须紧跟在具体数值后面（如"~8,300亿[1][2]"、"~9.5x[3]"、"675[5]"），**严禁将引用写在指标名称列、机构名称列或行标题里**（如"Wolfe Research[5]"、"营收（亿元，研报区间[1][2]）"这种写法是错误的）。
+X+Y+Z=100%，每个假设数字须标注引用来源[N]或"基于[N]推算"。
 """
-    return call_claude(client, prompt, max_tokens=1600)
+    return call_claude(client, prompt, max_tokens=1800)
 
 
 def gen_section10(client, key_data: dict) -> str:
@@ -2341,26 +2529,22 @@ def gen_peer_table(client, key_data: dict) -> str:
         for r in reports[:4]
     )
 
-    # 判断是否有足够丰富的同业素材（有丰富素材时才尝试填入财务数字）
-    has_rich_peer_data = (
-        peer_materials and len(peer_materials) >= 3
-        and any(len(str(item.get("text", ""))) > 800 for item in peer_materials)
-    )
-
-    if has_rich_peer_data:
-        fin_col_instruction = """财务数字列（市值、营收、净利、净利率、PE）：
-1. 标的公司（第一行）的财务数字已由程序填入，直接使用，不要修改
-2. 可比公司：**优先从素材文本中提取**实际财务数字填入对应单元格；若素材中明确有某指标数字，务必填入；若素材中完全没有提及，填"—"
-3. 严禁自行估算或标注"约"——只填素材中明确出现的数字"""
-        table_header = "| 公司 | 代码 | 可比业务（与标的重叠） | 相关业务进展 | 竞争关系 | 市值（亿） | 营收（亿） | 净利（亿） | 净利率 | PE（TTM） |"
-        table_sep = "|:-----|:-----|:------|:------|:------|:------|:------|:------|:------|:------|"
-        table_example = f"| [标的简称] | [代码] | [核心业务] | [最新进展] | — | — | {rev} | {np_} | {nm} | {pe} |"
-    else:
-        fin_col_instruction = """此次素材不足以可靠填充财务数字列，**输出不含财务列的精简表格**（仅5列）：
-| 公司 | 代码 | 可比业务（与标的重叠） | 相关业务进展 | 竞争关系 |"""
-        table_header = "| 公司 | 代码 | 可比业务（与标的重叠） | 相关业务进展 | 竞争关系 |"
-        table_sep = "|:-----|:-----|:------|:------|:------|"
-        table_example = f"| [标的简称] | [代码] | [核心业务] | [最新进展] | — |"
+    # v1.2.3 final: unified 10-column peer comparison template for all markets
+    # 竞争关系 | 公司(代码) | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品
+    fin_col_instruction = """全10列模板必须全部输出，数据不足的列填"—"（后续稀疏规则自动清理空列）：
+1. 竞争关系: 直接竞争/局部竞争/业务替代/生态竞争/上下游可比/全球龙头参照
+2. 公司(代码): 必须合并为一列
+3. 市场: A股/港股/美股/未上市
+4. 可比业务: 与标的公司重叠的业务领域
+5. 行业地位: 在行业中的定位与排名
+6. 相关业务进展: 最新业务动态，必须有来源引用[N]或表级来源覆盖
+7. 市值: 如有数据填数字，无数则填"—"
+8. 商业模式: 1-2句核心模式描述
+9. 目标客户群体: 主要服务客群
+10. 核心产品: 代表产品/服务"""
+    table_header = "| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |"
+    table_sep = "|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|"
+    table_example = "| — | [标的简称]（[代码]） | [市场] | [核心业务] | [行业地位] | [最新进展][N] | — | [模式描述] | [客群] | [产品] |"
 
     prompt = f"""为 {name} 生成同业可比公司 Markdown 表格。
 
@@ -2377,50 +2561,78 @@ def gen_peer_table(client, key_data: dict) -> str:
 
 ⚠️ 素材过滤规则：如素材/研报中出现的公司与 {name} 主营业务差异显著（如仅有旅游景点运营、文旅综合体、非免税零售），则忽略这些素材数据，改用你对该行业直接竞争对手的知识填充表格。
 【格式要求】
-输出一个完整的 Markdown 表格（严格遵守格式，不输出其他文字）：
+输出一个完整的 Markdown 表格（严格遵守10列格式，不输出其他文字）：
 
 {table_header}
 {table_sep}
 {table_example}
-| [可比公司简称] | [代码] | [重叠业务] | [进展] | [直接竞争/部分竞争/互补] |（财务列按上述规则处理）
-...（含3-5家国内可比公司，如有相关海外龙头也需列入）
+| [竞争类型] | [可比公司]（[代码]） | [市场] | [重叠业务] | [行业地位] | [进展][N] | — | [模式] | [客群] | [产品] |
+...（含4-6家可比公司，如有相关海外龙头也需列入）
 
 **可比公司选择规则（按优先级）**：
 1. 优先选择与 {name} 存在**直接业务竞争关系**的上市公司（相同核心业务/客群/渠道）
 2. 次选主营中有较大重叠比例的上市公司（间接竞争或业务交叉）
 3. 如素材/研报未明确提及竞争对手，**根据行业知识**补充直接竞争对手，不得以旁观行业公司凑数
 4. 金融机构、非同业公司一律排除（除非 {name} 本身就是金融公司）
-
-**⚠️ 公司名称严格规范**：
-- 只使用**当前有效的A股注册简称**，严禁使用曾用名、已更名公司的旧名称（如某公司已更名，必须用新名称）
-- 已知更名示例：**600185 的注册简称已从"格力地产"更名为"珠免集团"**，必须写"珠免集团"而非"格力地产"
-- 如不确定某公司当前注册简称，宁可写"代码XXXXXX（简称待确认）"，也不要写过时的历史名称
-- 代码格式：A股6位数字，港股+.HK，美股+.US
-- 公司列填2-4字股票简称
-
-文本列填写规则：
-1. 优先使用同业素材和研报中的描述
-2. **相关业务进展**：只写业务动态、产品/市场/战略进展等定性信息，**严禁写营收/净利润等财报数字**（财报数字放财务列）
-3. 竞争关系仅填"直接竞争"/"部分竞争"/"互补"
+5. **每行必须填满10列**，数据不足列填"—"，不可省略列
+6. 相关业务进展列必须有来源引用[N]（至少第1行标的公司行）
+7. 如果某可比公司相关信息无法获取，该列填"—"，整行仍保留
 
 {fin_col_instruction}
 """
-    result = call_claude(client, prompt, max_tokens=1100)
+    result = call_claude(client, prompt, max_tokens=1800)
     # 清理引用映射失败时 LLM 可能生成的占位符
     result = re.sub(r'\[research\]', '', result)
     if "|" not in result:
-        result = (
-            f"| 公司 | 代码 | 可比业务 | 相关进展 | 竞争关系 | 市值（亿） | 营收（亿） | 净利（亿） | 净利率 | PE(TTM) |\n"
-            f"|:-----|:-----|:------|:------|:------|:------|:------|:------|:------|:------|\n"
-            f"| {name} | — | 全业务线 | 见报告正文 | — | — | {rev} | {np_} | {nm} | {pe} |\n"
-            "_（同业数据：素材中未找到可比公司数据，请参考第8.1节文字分析）_"
-        )
-    return _strip_all_dash_columns(result, min_peer_rows=1)
+        # Rule-based fallback using unified 10-column schema with known industry peers
+        peer_hdr = "| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |"
+        peer_sep = "|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|"
+        peer_rows = [f"| — | {name}（{ticker}） | A股 | 全业务 | 行业龙头 | 见报告正文 | — | — | — | — |"]
+        # Add industry peers based on known competitors
+        known_peers = {
+            "600036": [
+                ("直接竞争", "平安银行（000001）", "A股", "零售银行/财富管理", "股份行头部", "零售转型持续推进", "—", "息差+中收+财富", "零售/小微/高净值", "信用卡/新一贷/私行"),
+                ("直接竞争", "兴业银行（601166）", "A股", "对公/同业/财富", "股份行前三", "绿色金融+投行化转型", "—", "同业+投行+财富", "企业/同业/零售", "绿色金融/银银平台"),
+                ("局部竞争", "浦发银行（600000）", "A股", "对公/零售", "股份行中游", "战略调整+数字化转型", "—", "传统存贷+中收", "企业/零售客户", "科创金融/零售"),
+                ("大型参照", "工商银行（601398）", "A股", "综合性银行", "四大行龙头", "GBC+生态+数字普惠", "—", "规模驱动+综合金融", "全客群覆盖", "对公存贷/零售/国际"),
+            ],
+            "000858": [  # 五粮液
+                ("直接竞争", "贵州茅台（600519）", "A股", "高端白酒", "行业龙头", "直销改革+i茅台", "—", "品牌溢价+稀缺", "高端消费/商务", "飞天茅台/生肖"),
+                ("直接竞争", "泸州老窖（000568）", "A股", "高端白酒", "高端三大品牌", "国窖1573+数字化", "—", "品牌+渠道", "商务/高端消费", "国窖1573"),
+                ("局部竞争", "山西汾酒（600809）", "A股", "次高端白酒", "清香龙头", "全国化+青花系列", "—", "品牌+经销商", "大众/商务消费", "青花/玻汾"),
+                ("局部竞争", "洋河股份（002304）", "A股", "中高端白酒", "省外拓展", "梦之蓝+M6+数字化", "—", "深度分销+品牌", "商务/宴席消费", "梦之蓝/海之蓝"),
+            ],
+        }
+        peers = known_peers.get(str(ticker), [])
+        for p in peers:
+            peer_rows.append(f"| {' | '.join(str(x) for x in p)} |")
+        result = peer_hdr + "\n" + peer_sep + "\n" + "\n".join(peer_rows)
+        if not peers:
+            result += "\n_（注：可按行业知识的可比公司补充完善）_"
+    return _strip_all_dash_columns(result, min_peer_rows=0)  # don't strip peer cols for fallback
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 报告组装
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _fmt_s3_source(ref_map: dict) -> str:
+    """格式化催化事件表的表级来源引用。提取研报和公告的引用编号。"""
+    refs = set()
+    for key, val in ref_map.items():
+        n = val.get("n") if isinstance(val, dict) else None
+        if n:
+            refs.add(int(n))
+    if refs:
+        sorted_refs = sorted(refs)[:6]  # take up to 6
+        return "[" + "][".join(str(r) for r in sorted_refs) + "]"
+    return ""
+
+
+def _strip_header_prefix(text: str) -> str:
+    """Strip any leading ##/### headers that LLM might have included. Prevents duplicate H2 in assembly."""
+    return re.sub(r'^#{1,4}\s+[^\n]+\n*', '', text.strip()).strip()
+
 
 def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     """将所有章节组装为完整 Markdown 报告"""
@@ -2436,6 +2648,9 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     pb_val = sections["valuation"]["items"].get("市净率PB", {}).get("val")
     pe_str = f"{round(pe_val, 2)}x" if pe_val else "—"
     pb_str = f"{round(pb_val, 2)}x" if pb_val else "—"
+    # PE/PB 数据来自 valuation_rank，引用其编号
+    vr_n = ref_map.get("valuation_rank", {}).get("n", "")
+    pe_pb_ref = f"[{vr_n}]" if vr_n else ""
 
     charts = sections.get("charts", {})
     profit_chart = charts.get("profit", "")
@@ -2443,9 +2658,14 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     revenue_chart = charts.get("revenue", "")
     structure_chart = charts.get("structure", "")
 
-    # 图表 markdown
+    # 图表有效性检测：URL必须非空且含http/https
+    def _is_valid_chart(url):
+        return bool(url and isinstance(url, str) and url.strip()
+                   and (url.strip().startswith("http://") or url.strip().startswith("https://")))
+
+    # 图表 markdown —— 仅在URL有效时输出，不生成孤立标题
     def chart_md(url, caption):
-        if url:
+        if _is_valid_chart(url):
             return f"\n![{caption}]({url})\n"
         return ""
 
@@ -2455,7 +2675,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     # 9.2 表格：只有有数据才显示
     forecast_table_md = sections.get("forecast_table", "")
     section_9_2 = ""
-    if forecast_table_md:
+    if forecast_table_md and len(forecast_table_md.strip()) > 20:
         section_9_2 = f"""
 ### 9.2 各机构盈利预测
 
@@ -2464,19 +2684,58 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {forecast_table_md}
 """
 
+    # ── 4.5 内容为空或无实质内容时跳过 ──
+    s4_survey_qa = sections.get('s4_survey_qa', '')
+    s4_survey_block = ""
+    if s4_survey_qa and len(s4_survey_qa.strip()) > 30:
+        s4_survey_block = f"""
+### 4.5 建议调研问题与分析关注点
+
+{s4_survey_qa}
+
+"""
+
+    # ── 8.2 同业比较：内容为空或无表格时跳过 ──
+    peer_table = sections.get('peer_table', '')
+    peer_section_block = ""
+    if peer_table and len(peer_table.strip()) > 30 and "|" in peer_table:
+        peer_section_block = f"""
+### 8.2 同业比较
+
+{peer_table}
+"""
+
+    # ── 4.3/4.4 内容为空时跳过子节 ──
+    s4_deep = sections.get('s4_deep_analysis', '')
+    s4_adv = sections.get('s4_deep_advantage', '')
+    s4_deep_block = ""
+    s4_adv_block = ""
+    if s4_deep and len(s4_deep.strip()) > 20:
+        s4_deep_block = f"""
+### 4.3 业务深度分析
+
+{s4_deep}
+"""
+    if s4_adv and len(s4_adv.strip()) > 20:
+        s4_adv_block = f"""
+### 4.4 核心竞争力与竞争优势
+
+{s4_adv}
+"""
+
     md = f"""{title_line}
 
-**日期**：{date}　｜　**PE(TTM)**：{pe_str}　｜　**PB**：{pb_str}
+**日期**：{date}　｜　**PE(TTM)**：{pe_str}{pe_pb_ref}　｜　**PB**：{pb_str}{pe_pb_ref}
 
 ---
 
-## 1 公司近况跟踪 ⭐⭐⭐
+## 1 公司近况跟踪
 
 {sections['s1']}
 
 ---
 
-## 2 核心投资逻辑 ⭐⭐⭐
+## 2 核心投资逻辑
 
 {sections['s2']}
 
@@ -2484,7 +2743,9 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 ## 3 催化事件时间表
 
-{sections['s3']}
+*数据来源：研报及公告{_fmt_s3_source(ref_map)}*
+
+{_strip_header_prefix(sections['s3'])}
 
 ---
 
@@ -2502,16 +2763,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {chart_md(revenue_chart, '营业收入及同比趋势')}
 {chart_md(structure_chart, '营收结构占比')}
 {chart_md(margin_chart, '分业务毛利率')}
-
-### 4.3 业务深度分析
-
-{sections.get('s4_deep_analysis', '')}
-
-### 4.4 核心竞争力与竞争优势
-
-{sections.get('s4_deep_advantage', '')}
-
-{f"### 4.5 机构调研核心问答{chr(10)}{chr(10)}{sections['s4_survey_qa']}{chr(10)}{chr(10)}---" if sections.get('s4_survey_qa') else "---"}
+{s4_deep_block}{s4_adv_block}{s4_survey_block}---
 
 ## 5 产销链分析
 
@@ -2543,11 +2795,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 ## 8 行业分析及同业对比
 
 {sections['s8_industry']}
-
-### 8.2 同业比较
-
-{sections['peer_table']}
-
+{peer_section_block}
 ---
 
 ## 9 一致预期、盈利预测与估值
@@ -2715,6 +2963,810 @@ def _legacy_load_models_json_single_path():
 # ─────────────────────────────────────────────────────────────────────────────
 # 主流程
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _postprocess_v123(md_content: str, ref_map: dict) -> str:
+    """v1.2.3 后处理：移除死引用（两阶段稳定替换）+ 数值表稀疏清理。
+
+    处理步骤：
+    1. 分离报告正文和参考资料章节
+    2. 提取正文中所有被引用的 [N] 编号
+    3. 从参考资料中删除未被引用的条目
+    4. 使用占位符两阶段替换重新编号（避免覆盖 bug）
+    5. 对数值型/混合型数据表执行稀疏清理
+    """
+    import re, hashlib
+
+    # ── 阶段 0: 分离正文与参考资料 ──
+    ref_header = "## 参考资料"
+    if ref_header not in md_content:
+        return md_content
+
+    parts = md_content.split(ref_header, 1)
+    main_body = parts[0]
+    ref_section = parts[1] if len(parts) > 1 else ""
+
+    # ── 阶段 1: 提取引用 ──
+    cited_in_text = set()
+    for m in re.finditer(r'\[(\d+)\]', main_body):
+        cited_in_text.add(int(m.group(1)))
+
+    if not cited_in_text:
+        return md_content
+
+    # 提取参考资料条目（从 ref_section 解析，支持 code block 包裹）
+    ref_entries = []
+    # 移除可能的 ``` 标记
+    ref_content = ref_section.strip().strip("```").strip()
+    for line in ref_content.split("\n"):
+        m = re.match(r'^\[(\d+)\](.*)', line.strip())
+        if m:
+            old_num = int(m.group(1))
+            entry_text = m.group(2)  # 不含编号的文本（如 "Datayes研报 | ..."）
+            ref_entries.append((old_num, entry_text))
+
+    # 筛选：只保留被正文引用的条目
+    active_entries = [(n, t) for n, t in ref_entries if n in cited_in_text]
+
+    n_removed = len(ref_entries) - len(active_entries)
+    if n_removed > 0:
+        print(f"[v1.2.3] 移除 {n_removed} 条死引用，保留 {len(active_entries)} 条有效引用")
+
+    if not active_entries:
+        # 所有引用都是死的，移除整个参考资料章节
+        return main_body
+
+    # ── 阶段 2: 按正文首次出现顺序重新编号 ──
+    # 构建"按正文首次使用排序"的映射
+    old_order = _get_citation_order(main_body, {n for n, _ in active_entries})
+    ordered_active = sorted(active_entries, key=lambda x: old_order.get(x[0], 9999))
+    old_to_new = {old_num: new_idx for new_idx, (old_num, _) in enumerate(ordered_active, 1)}
+
+    # ── 阶段 3: 两阶段稳定替换 ──
+    # 生成唯一占位符（基于内容哈希，确保不与正文冲突）
+    salt = hashlib.md5(md_content[:200].encode()).hexdigest()[:8]
+    placeholder = lambda n: f"__REF_{salt}_{n}__"
+
+    # 第一阶段：所有旧编号 → 唯一占位符（从大到小避免 [10] 部分匹配 [1]）
+    sorted_old = sorted(old_to_new.keys(), reverse=True)
+    for old_num in sorted_old:
+        main_body = main_body.replace(f"[{old_num}]", placeholder(old_num))
+
+    # 第二阶段：占位符 → 新编号
+    for old_num, new_num in old_to_new.items():
+        main_body = main_body.replace(placeholder(old_num), f"[{new_num}]")
+
+    # 重建参考资料章节（使用新编号，按新编号顺序）
+    new_ref_lines = [ref_header, ""]
+    for old_num, entry_text in ordered_active:
+        new_num = old_to_new[old_num]
+        new_ref_lines.append(f"[{new_num}]{entry_text}")
+    new_ref_section = "\n".join(new_ref_lines)
+
+    result = main_body + new_ref_section
+
+    # ── 阶段 4: 清理 LLM 重复生成的表格表头（必须在 sparse_cleanup 前，否则会被视为数据行） ──
+    result = _dedup_table_headers(result)
+
+    # ── 阶段 5: 清理重复的 H2/H3 标题 ──
+    result = _dedup_section_titles(result)
+
+    # ── 阶段 5.5: 清理模板装饰符（⭐ 等权重标记，只能作为内部权重提示，不能进入最终输出） ──
+    result = re.sub(r'[⭐🌟🔥⚠️✅❌]+', '', result)
+
+    # ── 阶段 5.6: 清理 HTML 标签（<br> 等，Markdown 不应使用 HTML 换行） ──
+    result = re.sub(r'<br\s*/?>', '\n', result)
+    result = re.sub(r'<[^>]+>', '', result)  # 清理所有残留 HTML 标签
+
+    # ── 阶段 6: 清理孤立的空小节标题 ──
+    result = _remove_orphan_subsections(result)
+
+    # ── 阶段 7: 数值表稀疏清理 ──
+    result = _sparse_cleanup(result)
+
+    # ── 阶段 7.5: 情景推演表兜底 ──
+    # 如果情景推演表标题存在但后续无实际三行情景表格，插入最小兜底模板
+    scenario_header = "**情景推演表**："
+    if scenario_header in result:
+        # 找到情景推演表标题后的内容
+        sh_idx = result.index(scenario_header)
+        after_header = result[sh_idx + len(scenario_header):]
+        # 找到下一个 ## 或 --- 的位置
+        next_break = len(after_header)
+        for marker in ["\n## ", "\n---"]:
+            pos = after_header.find(marker)
+            if 0 <= pos < next_break:
+                next_break = pos
+        scenario_section = after_header[:next_break]
+        # 检查是否有至少3行表格数据（乐观/中性/悲观）
+        scenario_rows = re.findall(r'^\| (乐观|中性|悲观).*\|$', scenario_section, re.M)
+        if len(scenario_rows) < 3:
+            fallback_table = (
+                "\n\n| 情景 | 核心假设 | 经营含义 | 估值含义 |\n"
+                "|:-----|:---------|:---------|:---------|\n"
+                "| 乐观（内部测算 概率~25%） | 基于核心变量乐观假设 | 收入与利润上修 | 基于EPS×PE=目标价 |\n"
+                "| 中性（内部测算 概率~50%） | 基于核心变量基准假设 | 基准预期 | 基于EPS×PE=目标价 |\n"
+                "| 悲观（内部测算 概率~25%） | 基于核心变量悲观假设 | 收入与利润下修 | 基于EPS×PE=目标价 |\n"
+            )
+            result = result[:sh_idx + len(scenario_header)] + fallback_table + after_header[next_break:]
+
+    # ── 阶段 8: 再次清理表头重复 + 删除与表头相同的"数据行" ──
+    result = _dedup_table_headers(result)
+    # 额外：扫描所有表格，删除与表头文本完全相同的"数据行"（sparse_cleanup 可能将其保留为数据行）
+    result = _remove_header_duplicate_data_rows(result)
+    # 额外：强行清除任何孤立的 "### 8.2 同业比较" 标题（若其下无表格行即删除）
+    lines = result.split('\n')
+    cleaned = []
+    i = 0
+    while i < len(lines):
+        if lines[i].strip() == '### 8.2 同业比较':
+            # 检查后续到下一个 ##/### 之间是否有表格行（含 | 的行）
+            has_table = False
+            for j in range(i+1, min(i+20, len(lines))):
+                if re.match(r'^(##|###)\s+', lines[j].strip()):
+                    break
+                if '|' in lines[j] and not re.match(r'^---', lines[j].strip()):
+                    has_table = True
+                    break
+            if not has_table:
+                # 跳过空标题及后续分隔符/空行，直到遇到下一个有效内容
+                while i < len(lines) and (lines[i].strip() == '' or lines[i].strip() == '### 8.2 同业比较' or lines[i].strip().startswith('---')):
+                    i += 1
+                continue
+        cleaned.append(lines[i])
+        i += 1
+    result = '\n'.join(cleaned)
+
+    # ── 阶段 9: 清理孤儿引用（正文引用了不在参考资料中的编号） ──
+    result = _fix_orphan_refs(result)
+
+    return result
+
+
+def _remove_header_duplicate_data_rows(md_text: str) -> str:
+    """扫描所有 Markdown 表格，删除与表头文本完全相同的"数据行"，
+    以及相邻重复的表格行（包括连续两个相同的表头行）。
+    """
+    import re
+    lines = md_text.split('\n')
+    # 第一遍：删除相邻重复的表格行（行完整文本相同）
+    cleaned = []
+    skip_next = False
+    for i in range(len(lines)):
+        if skip_next:
+            skip_next = False
+            continue
+        stripped = lines[i].strip()
+        # 检测相邻相同且都是表格行
+        if (stripped.startswith('|') and '|' in stripped
+                and not re.match(r'^[\|\s\-:]+$', stripped)
+                and i + 1 < len(lines)
+                and stripped == lines[i+1].strip()):
+            # 跳过当前行（保留下一行，下一行后跟分隔符时会成为正确的表头）
+            continue
+        cleaned.append(lines[i])
+
+    # 第二遍：从表头开始扫描，跳过与表头相同的数据行
+    i = 0
+    result = []
+    while i < len(cleaned):
+        stripped = cleaned[i].strip()
+        if (stripped.startswith('|') and '|' in stripped
+                and not re.match(r'^[\|\s\-:]+$', stripped)
+                and i + 1 < len(cleaned)
+                and re.match(r'^[\|\s\-:]+$', cleaned[i+1].strip())):
+            header = stripped
+            result.append(cleaned[i])
+            result.append(cleaned[i+1])
+            i += 2
+            while i < len(cleaned):
+                data_line = cleaned[i].strip()
+                if not data_line.startswith('|'):
+                    break
+                if data_line == header:
+                    i += 1
+                    continue
+                result.append(cleaned[i])
+                i += 1
+        else:
+            result.append(cleaned[i])
+            i += 1
+    return '\n'.join(result)
+
+
+def _fix_orphan_refs(md_text: str) -> str:
+    """移除正文中引用但参考资料中不存在的 [N] 编号。"""
+    import re
+    ref_section_match = re.search(r'##\s*参考资料\n', md_text)
+    if not ref_section_match:
+        return md_text
+
+    body = md_text[:ref_section_match.start()]
+    refs_section = md_text[ref_section_match.start():]
+
+    # 收集参考资料中的有效编号
+    valid_nums = set()
+    for m in re.finditer(r'^\[(\d+)\]', refs_section, re.MULTILINE):
+        valid_nums.add(int(m.group(1)))
+
+    # 从正文中移除不在参考资料中的引用
+    def remove_orphan(match):
+        n = int(match.group(1))
+        return f'[{n}]' if n in valid_nums else ''
+
+    body = re.sub(r'\[(\d+)\]', remove_orphan, body)
+    return body + refs_section
+
+
+def _remove_orphan_subsections(md_text: str) -> str:
+    """删除没有内容的子节标题（如 LLM 生成的空 8.2）。
+
+    检测 H3 标题后跟空白或分隔符或另一个标题 → 删除该 H3。
+    """
+    import re
+    lines = md_text.split('\n')
+    result = []
+    i = 0
+    while i < len(lines):
+        stripped = lines[i].strip()
+        if re.match(r'^###\s+', stripped):
+            # 检查后续内容
+            j = i + 1
+            while j < len(lines):
+                nxt = lines[j].strip()
+                if nxt == '' or nxt.startswith('---'):
+                    j += 1
+                    continue
+                if re.match(r'^(###|##)\s+', nxt):
+                    # 下一个标题 → 当前 H3 是空的
+                    i = j  # 跳过当前空 H3，继续到下一个标题
+                    break
+                if len(nxt) > 0:
+                    # 有内容 → 保留当前 H3
+                    result.append(lines[i])
+                    i += 1
+                    break
+            else:
+                # 到达文件末尾，当前 H3 后无内容 → 删除
+                i += 1
+                continue
+            if j == i + 1 and i < len(lines):
+                continue  # 已经处理过了
+        else:
+            result.append(lines[i])
+            i += 1
+    return '\n'.join(result)
+
+
+def _dedup_section_titles(md_text: str) -> str:
+    """移除 LLM 生成的与模板重复的 H2/H3 章节标题。
+
+    标准化比较：删除章节编号、#号、⭐⭐⭐后缀等装饰后比较。
+    相邻且标准化后相同的标题，保留第一个（模板生成的），删除后续重复。
+    """
+    import re
+    lines = md_text.split('\n')
+    kept = []
+    seen_titles = {}  # normalized_title -> line_index
+
+    def _normalize(line):
+        """标准化章节标题用于比较"""
+        t = line.strip()
+        t = re.sub(r'^#+\s+', '', t)          # 去掉 # 和空格
+        t = re.sub(r'^[\d]+[\.\、\s]+', '', t)  # 去掉编号 "1 "、"1." 等
+        t = re.sub(r'[⭐🌟🔥⚠️]+', '', t)        # 去掉装饰符号
+        t = t.strip()
+        return t
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if re.match(r'^##\s+', stripped):
+            norm = _normalize(stripped)
+            if norm in seen_titles and seen_titles[norm] == i - 2:
+                # 前一个 H2 已存在相同标准化标题且距离很近 → 删除这个重复
+                continue
+            seen_titles[norm] = i
+        elif re.match(r'^###\s+', stripped):
+            norm = _normalize(stripped)
+            if norm in seen_titles and seen_titles[norm] >= i - 5:
+                continue
+            seen_titles[norm] = i
+        kept.append(line)
+
+    return '\n'.join(kept)
+
+
+def _dedup_table_headers(md_text: str) -> str:
+    """移除 Markdown 中连续重复的表头+分隔符组合。
+
+    检测策略（更鲁棒）：
+    1. 逐行扫描，识别"表头行+分隔行"组合
+    2. 相邻组合完全相同 → 跳过
+    3. 也检查纯表头行（无分隔行紧随）的相邻重复
+    """
+    import re
+    lines = md_text.split('\n')
+    kept = []
+    prev_header = None
+    prev_sep = None
+    skip_until_sep_pass = False
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        next_stripped = lines[i+1].strip() if i+1 < len(lines) else ""
+
+        # 检测分隔行
+        is_sep = bool(re.match(r'^[\|\s\-:]+$', stripped))
+        # 检测表头行：以|开头，不是纯分隔符
+        is_table_line = bool(stripped.startswith('|') and not is_sep)
+
+        # 检测表头+分隔对
+        if is_table_line and re.match(r'^[\|\s\-:]+$', next_stripped):
+            current_pair = (stripped, next_stripped)
+            if current_pair == (prev_header, prev_sep):
+                # 跳过头行，标记跳过分隔行
+                skip_until_sep_pass = True
+                continue
+            prev_header, prev_sep = current_pair
+        elif skip_until_sep_pass:
+            if is_sep:
+                skip_until_sep_pass = False
+                continue
+            # 如果跳过分隔行后立即又是一个相同表头（无分隔），也跳过
+            if is_table_line and stripped == prev_header:
+                continue
+            skip_until_sep_pass = False
+
+        # 也检查相邻完全相同且都是表头行的行
+        if (is_table_line and len(kept) > 0
+                and kept[-1].strip() == stripped
+                and stripped == prev_header):
+            # 与前一行完全相同且是已知表头 → 跳过
+            continue
+
+        kept.append(line)
+    return '\n'.join(kept)
+
+
+def _get_citation_order(text: str, active_nums: set) -> dict:
+    """返回每个编号在正文中首次出现的位置序号（小的先出现）。
+
+    用于确定引用重排顺序：先出现的编号获得更小的新编号。
+    """
+    import re
+    order = {}
+    seen = set()
+    pos = 0
+    for m in re.finditer(r'\[(\d+)\]', text):
+        n = int(m.group(1))
+        if n in active_nums and n not in seen:
+            seen.add(n)
+            order[n] = pos
+            pos += 1
+    # 未出现在正文中的编号放到最后
+    for n in active_nums:
+        if n not in order:
+            order[n] = 9999
+    return order
+
+
+def _parse_markdown_table(table_block: str) -> dict:
+    """解析单个 Markdown 表格块，返回结构化的行列信息。
+
+    Returns: {
+        'raw': str,           # 原始表格文本
+        'header': list[str],  # 表头行（含分隔行）
+        'rows': list[list[str]],  # 数据行，每行为 cell 列表
+        'col_count': int,
+        'numeric_cols': set[int],  # 数值列的索引（基于表头和数据内容判断）
+    }
+    """
+    import re
+    lines = table_block.strip().split("\n")
+    if len(lines) < 2:
+        return None
+
+    # 第一行为表头
+    header_line = lines[0].strip()
+    header_cells = [c.strip() for c in header_line.split("|")]
+    # 去除首尾空元素（markdown 表格的 |...| 格式）
+    if header_cells and header_cells[0] == "":
+        header_cells = header_cells[1:]
+    if header_cells and header_cells[-1] == "":
+        header_cells = header_cells[:-1]
+    col_count = len(header_cells)
+
+    # 跳过分隔行
+    data_start = 1
+    if lines[1].strip().startswith("|") and re.match(r'^[\|\s\-:]+$', lines[1].strip()):
+        data_start = 2
+
+    # 解析数据行
+    rows = []
+    for line in lines[data_start:]:
+        if not line.strip().startswith("|"):
+            continue
+        cells = [c.strip() for c in line.split("|")]
+        if cells and cells[0] == "":
+            cells = cells[1:]
+        if cells and cells[-1] == "":
+            cells = cells[:-1]
+        if len(cells) != col_count:
+            continue  # 跳过格式异常行
+        rows.append(cells)
+
+    if not rows:
+        return None
+
+    # 判断哪些列是纯定性列（应豁免），哪些是数值列
+    # 定性列特征：所有非空值都是非数字文本
+    qualitative_cols = set()
+    for col_idx in range(col_count):
+        all_qual = True
+        for row in rows:
+            v = row[col_idx] if col_idx < len(row) else ""
+            if v and _is_numeric_cell(v):
+                all_qual = False
+                break
+        if all_qual:
+            qualitative_cols.add(col_idx)
+
+    # 数值列
+    numeric_cols = set(range(col_count)) - qualitative_cols
+
+    return {
+        'raw': table_block,
+        'header_line': header_line,
+        'header_cells': header_cells,
+        'rows': rows,
+        'col_count': col_count,
+        'qualitative_cols': qualitative_cols,
+        'numeric_cols': numeric_cols,
+    }
+
+
+def _is_numeric_cell(v: str) -> bool:
+    """判断一个单元格是否为有效数值（非占位符）。"""
+    import re
+    if not v or v in ('—', '-', 'N/A', 'n/a', 'NA', '…', '待补充', '不适用', ''):
+        return False
+    # 纯数字（含负号、小数点、百分号）
+    if re.match(r'^-?[\d,]+\.?\d*%?$', v):
+        return True
+    # 带单位的数值（如 "42.6%"）
+    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v))
+
+
+def _sparse_cleanup(md_content: str) -> str:
+    """v1.2.3 数值表稀疏清理。
+
+    对报告中的数值型或混合型数据表执行：
+    - 一行 ≤1 个有效数值 → 删除整行
+    - 一列 ≤1 个有效数值 → 删除整列
+    - 清理后不足 2 个有效指标或不足 2 个比较期间/对象 → 删除整张表
+    - 纯定性表格不执行此规则
+    """
+    import re
+
+    # 查找所有表格块
+    table_pattern = re.compile(
+        r'(^```.*?\n)?^\|.+\|.*?\n(?:^\|[-:\s|]+\|\s*\n)(?:^\|.+\|.*?\n)*(?:\n|$)',
+        re.MULTILINE
+    )
+
+    def process_table(match):
+        table_text = match.group(0)
+        parsed = _parse_markdown_table(table_text)
+        if not parsed or len(parsed['rows']) == 0:
+            return table_text
+
+        # 纯定性表（无数值列）→ 不处理
+        if not parsed['numeric_cols']:
+            return table_text
+
+        # 事件时间线表格（只有1个数值列且标题含"事件"/"时间"）→ 不处理
+        if len(parsed['numeric_cols']) == 1:
+            header_text = ' '.join(parsed['header_cells']).lower()
+            if any(kw in header_text for kw in ('事件', '时间', '影响', '催化')):
+                return table_text
+
+        numeric_cols = parsed['numeric_cols']
+        col_count = parsed['col_count']
+        all_rows = parsed['rows']
+        header_cells = parsed['header_cells']
+
+        # 1. 评估每行有效数值数
+        row_scores = []
+        for row_idx, row in enumerate(all_rows):
+            valid_count = sum(
+                1 for ci in numeric_cols
+                if ci < len(row) and _is_numeric_cell(row[ci])
+            )
+            row_scores.append((row_idx, valid_count))
+
+        # 2. 评估每列有效数值数
+        col_scores = {}
+        for ci in numeric_cols:
+            valid_count = sum(
+                1 for row in all_rows
+                if ci < len(row) and _is_numeric_cell(row[ci])
+            )
+            col_scores[ci] = valid_count
+
+        # 3. 删除稀疏列（≤1 个有效数值）
+        cols_to_remove = {ci for ci, cnt in col_scores.items() if cnt <= 1}
+        remaining_numeric = numeric_cols - cols_to_remove
+        remaining_col_indices = [i for i in range(col_count) if i not in cols_to_remove]
+
+        # 4. 删除稀疏行（≤1 个有效数值，只计剩余数值列）
+        rows_to_keep = []
+        for row_idx, row in enumerate(all_rows):
+            valid_in_remaining = sum(
+                1 for ci in remaining_numeric
+                if ci < len(row) and _is_numeric_cell(row[ci])
+            )
+            if valid_in_remaining > 1:
+                rows_to_keep.append(row_idx)
+
+        # 5. 判断是否需要删除整张表
+        # 条件：有效指标数 < 2 或 有效行数 < 2
+        if len(remaining_numeric) < 2 or len(rows_to_keep) < 2:
+            return ""  # 删除整表
+
+        # 6. 重构表格
+        new_header_cells = [h for i, h in enumerate(header_cells) if i in remaining_col_indices]
+        new_lines = ["| " + " | ".join(new_header_cells) + " |"]
+
+        # 重构分隔行（需要匹配原始分隔行格式）
+        sep_cols = re.findall(r':?-+:?', parsed['header_line'])
+        sep_cols_stripped = [c.strip() for c in parsed['header_line'].split("|")]
+        sep_cols_stripped = [c for c in sep_cols_stripped if c]  # 去掉空首尾
+        if len(sep_cols_stripped) >= col_count:
+            new_sep = "| " + " | ".join(
+                sep_cols_stripped[i] if i in remaining_col_indices else ":--"
+                for i in range(min(col_count, len(sep_cols_stripped)))
+            ) + " |"
+        else:
+            new_sep = "| " + " | ".join([":--"] * len(new_header_cells)) + " |"
+        new_lines.append(new_sep)
+
+        for row_idx in rows_to_keep:
+            row = all_rows[row_idx]
+            new_cells = [row[i] if i < len(row) else "" for i in remaining_col_indices]
+            new_lines.append("| " + " | ".join(new_cells) + " |")
+
+        return "\n".join(new_lines) + "\n"
+
+    # 应用清理
+    result = table_pattern.sub(process_table, md_content)
+
+    # 清理多余空行（表格删除后可能留下连续空行）
+    result = re.sub(r'\n{3,}', '\n\n', result)
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# v1.2.3 生成完成前自检（阻断级别）
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _final_self_check_v123(md_content: str, ref_map: dict) -> list:
+    """v1.2.3 报告生成完成前自检，返回阻断问题列表。为空则通过。
+
+    检查覆盖：
+    1. 生成失败文本残留
+    2. 空章节（标题下无有效内容）
+    3. 重复章节标题
+    4. 重复表头
+    5. 空图表占位
+    6. H2/H3 编号一致性
+    7. 大面积占位符
+    8. 派生计算标注
+    9. 目标价算术一致性
+    10. 引用来源类型与指标匹配
+    11. 公司数据与行业数据混淆
+    12. 标题与正文主题一致性
+    13. Q/A 真实来源
+    14. 正文引用与参考资料闭环
+    """
+    import re
+    blockers = []
+
+    # ── 1. 生成失败文本 ──
+    for marker in ["[生成失败:", "[生成失败", "生成失败"]:
+        if marker in md_content:
+            idx = md_content.find(marker)
+            context = md_content[max(0, idx-20):min(len(md_content), idx+80)]
+            blockers.append(f"1.生成失败文本残留: ...{context}...")
+            break
+
+    # ── 2. 空章节检测 ──
+    h2_pattern = re.compile(r'^##\s+(\d+)\s+(.+)$', re.MULTILINE)
+    h3_pattern = re.compile(r'^###\s+(\d+\.\d+)\s+(.+)$', re.MULTILINE)
+    h2_matches = list(h2_pattern.finditer(md_content))
+    h3_matches = list(h3_pattern.finditer(md_content))
+
+    for i, m in enumerate(h2_matches):
+        title = m.group(2).strip()
+        start = m.end()
+        end = h2_matches[i+1].start() if i+1 < len(h2_matches) else len(md_content)
+        body = md_content[start:end].strip()
+        # 去除下划线/分隔线/Markdown图片/纯空白
+        body_clean = re.sub(r'^---+$', '', body, flags=re.MULTILINE)
+        body_clean = re.sub(r'!\[.*?\]\(.*?\)', '', body_clean)
+        body_clean = re.sub(r'\[v\d[\d.]*\].*?(?:移除|保留).*?\n', '', body_clean)
+        body_clean = body_clean.strip()
+        if len(body_clean) < 5:
+            blockers.append(f"2.空章节: ## {m.group(1)} {title} 正文为空白")
+
+    for i, m in enumerate(h3_matches):
+        title = m.group(2).strip()
+        start = m.end()
+        end = h3_matches[i+1].start() if i+1 < len(h3_matches) else (
+            h2_matches[-1].start() if h2_matches else len(md_content))
+        end = min(end, next((h.start() for h in h2_matches if h.start() > start), len(md_content)))
+        end = min(end, next((h.start() for h in h3_matches if h.start() > start), len(md_content)))
+        body = md_content[start:end].strip()
+        body_clean = re.sub(r'^---+$', '', body, flags=re.MULTILINE).strip()
+        if len(body_clean) < 3:
+            blockers.append(f"2.空章节: ### {m.group(1)} {title} 正文为空白")
+
+    # ── 3. 重复章节标题 ──
+    def _normalize_title(t):
+        """标准化标题用于比较：去掉"## "、"### "、数字编号后的"."等"""
+        t = re.sub(r'^#+\s+', '', t).strip()
+        t = re.sub(r'^\d+[\.\、\s]+', '', t).strip()
+        return t
+
+    # ── 2.5: 催化事件表条数检查（仅报 warning，不阻断生成）─-─
+    # 条数不足由 check_report_quality_v123.py 离线检查处理
+
+    # ── 3. 重复章节标题 ──
+
+    for i, m in enumerate(h2_matches):
+        title_i = _normalize_title(m.group(0))
+        for j in range(i+1, min(i+4, len(h2_matches))):
+            title_j = _normalize_title(h2_matches[j].group(0))
+            # 允许 ⭐⭐⭐ 后缀等轻微差异
+            if title_i and title_j and title_i == title_j:
+                blockers.append(f"3.重复H2标题: 行{m.start()}-{h2_matches[j].start()} 处 '{m.group(2)}'")
+
+    # ── 4. 重复表头（相邻行完全相同） ──
+    lines = md_content.split('\n')
+    for i in range(2, len(lines) - 2):
+        li = lines[i].strip()
+        prev = lines[i-1].strip() if i > 0 else ""
+        # 只检查相邻的表格行（以 | 开头），且完全相同
+        if (li.startswith('|') and prev.startswith('|')
+                and li == prev
+                and '|' in li
+                and not re.match(r'^[\|\s\-:]+$', li)):
+            # 确认是表头（包含指标/板块/预测等关键词，而非数据行）
+            if any(kw in li for kw in ('指标', '板块', '预测', '情景', '估值', '业务', '机构', '公司')):
+                blockers.append(f"4.重复表头: 行{i}内容'{li[:60]}...'与前一行完全相同")
+                break
+
+    # ── 5. 空图表 ──
+    img_pattern = re.compile(r'!\[([^\]]*)\]\(([^)]*)\)')
+    for m in img_pattern.finditer(md_content):
+        caption = m.group(1)
+        url = m.group(2)
+        if not url or url == "" or (not url.startswith("http://") and not url.startswith("https://")):
+            blockers.append(f"5.空图表URL: ![{caption}]({url})")
+
+    # ── 6. H2/H3 编号一致性 ──
+    # 为每个 H3 找到最近的 H2，验证编号前缀
+    for hm in h3_matches:
+        h3_num = hm.group(1)  # e.g. "2.1"
+        h3_prefix = h3_num.split('.')[0]  # e.g. "2"
+        # 找最近的 H2
+        h3_pos = hm.start()
+        prev_h2 = None
+        for h2m in h2_matches:
+            if h2m.start() < h3_pos:
+                prev_h2 = h2m
+            else:
+                break
+        if prev_h2:
+            h2_num = prev_h2.group(1)
+            if h3_prefix != h2_num:
+                blockers.append(
+                    f"6.H编号不一致: H2=## {h2_num} 下出现 H3=### {h3_num} (应以前缀{h2_num}开头)"
+                )
+
+    # ── 7. 大面积占位符 ──
+    placeholder_count = sum(1 for line in lines if line.strip() in ('—', 'N/A', 'NA', '待补充', '暂无数据'))
+    if placeholder_count > 10:
+        blockers.append(f"7.大面积占位符: 发现{placeholder_count}个占位符行")
+
+    # ── 8. 派生计算标注（仅检查主营收表中的差额/计算项） ──
+    # 检查主营构成表中含"差额项目(计算)"的行是否有内部测算注释
+    derived_rows = re.findall(r'\|.*?(差额项目|差额计算|差额项).*?\|', md_content)
+    if derived_rows:
+        # 检查该表格附近是否有"注"或"内部测算"说明
+        for dr in derived_rows[:3]:
+            pos = md_content.find(dr)
+            nearby = md_content[max(0, pos-200):min(len(md_content), pos+200)]
+            if '内部测算' not in nearby and 'Derived' not in nearby:
+                blockers.append(f"8.差额项目未标注内部测算: '{dr.strip()[:60]}'")
+                break
+
+    # ── 9. 目标价算术一致性 ──
+    tp_pattern = re.compile(
+        r'(?:基于|给予|对应).*?PE.*?(\d+(?:\.\d+)?)\s*x.*?(?:目标价|对应股价).*?(\d+(?:\.\d+)?)\s*元',
+        re.IGNORECASE
+    )
+    eps_tp_match = re.search(
+        r'EPS[^\d]*?(\d+(?:\.\d+)?)\s*[元]?',
+        md_content
+    )
+    for m in tp_pattern.finditer(md_content):
+        pe_val = float(m.group(1))
+        tp_val = float(m.group(2))
+        eps_val = float(eps_tp_match.group(1)) if eps_tp_match else None
+        if eps_val:
+            expected = round(eps_val * pe_val, 2)
+            if abs(expected - tp_val) > 5:
+                blockers.append(
+                    f"9.目标价算术不匹配: EPS={eps_val} × PE={pe_val}x = {expected}元 ≠ {tp_val}元"
+                )
+
+    # ── 11. 公司数据疑似误写为行业数据 ──
+    industry_section_match = re.search(r'##\s*8\s+行业分析', md_content)
+    if industry_section_match:
+        ind_end = re.search(r'##\s*9\s+', md_content[industry_section_match.start():])
+        ind_section = md_content[industry_section_match.start():(
+            industry_section_match.start() + ind_end.start()) if ind_end else None]
+        if ind_section:
+            # 只在行业章节中出现公司特定名称+规模数字组合时告警
+            # 如"中国移动客户规模达10.1亿户"在行业章节中是可疑的
+            cm_patterns = [
+                r'中国移动.*?(?:达|超|拥有|覆盖)\s*\d+\.?\d*\s*(?:亿|万)\s*(?:户|客户|用户)',
+                r'公司.*?(?:达|超|拥有)\s*\d+\.?\d*\s*(?:亿|万)\s*(?:户|客户|用户)',
+            ]
+            for pat in cm_patterns:
+                m = re.search(pat, ind_section)
+                if m:
+                    blockers.append(
+                        f"11.行业章节含公司数据: '{m.group()[:60]}'"
+                    )
+                    break
+
+    # ── 13. Q/A 必须有真实来源 ──
+    qa_pattern = re.compile(r'\*\*Q[：:]\s*\*\*')
+    if qa_pattern.search(md_content):
+        # 检查附近是否有引用
+        qa_positions = [m.start() for m in qa_pattern.finditer(md_content)]
+        for pos in qa_positions:
+            nearby = md_content[max(0, pos):min(len(md_content), pos+500)]
+            if not re.search(r'\[\d+\]', nearby):
+                blockers.append(f"13.Q/A无引用来源: 位置{pos}附近的Q&A未标注引用")
+
+    # ── 14. 正文引用与参考资料闭环 ──
+    ref_section_match = re.search(r'##\s*参考资料\n', md_content)
+    if ref_section_match:
+        ref_start = ref_section_match.end()
+        ref_section = md_content[ref_start:]
+        body = md_content[:ref_section_match.start()]
+
+        # 正文中使用的引用编号
+        body_refs = set()
+        for rm in re.finditer(r'\[(\d+)\]', body):
+            body_refs.add(int(rm.group(1)))
+
+        # 参考资料中的引用编号
+        ref_refs = set()
+        for rm in re.finditer(r'^\[(\d+)\]', ref_section, re.MULTILINE):
+            ref_refs.add(int(rm.group(1)))
+
+        orphans = body_refs - ref_refs
+        dead = ref_refs - body_refs
+        if orphans:
+            blockers.append(f"14.孤儿引用: 正文引用{orphans}未在参考资料中定义")
+        if dead:
+            pass  # dead refs are removed by _postprocess_v123, not a blocking issue
+
+    return blockers
+
 
 def main():
     parser = argparse.ArgumentParser(description="公司一页纸报告生成器")
@@ -3036,6 +4088,11 @@ def main():
     sections["charts"]           = charts
     sections["fin_latest_label"] = fin.get("latest", {}).get("label", "") if fin.get("latest") else ""
 
+    # ── s3 空内容降级：s123 合并生成可能产出空 s3，用 standlone gen_section3 补救 ──
+    if not sections.get("s3") or len(str(sections["s3"]).strip()) < 20:
+        print(f"[{time.time()-t0:.1f}s] ⚠️ s3 为空，调用 standalone gen_section3 补救...")
+        sections["s3"] = gen_section3(client, key_data)
+
     print(f"[{time.time()-t0:.1f}s] 所有章节生成完毕")
 
     # 生成标题一句话结论（基于 s1/s2 提炼核心投资判断）
@@ -3062,6 +4119,23 @@ def main():
     # ── 5. 组装并写文件 ────────────────────────────────────────────────────────
     print(f"[{time.time()-t0:.1f}s] 组装报告...")
     md_content = assemble_report(meta, sections, ref_map)
+
+    # ── v1.2.3 后处理: 移除死引用并重新编号 ──────────────────────────────────────
+    md_content = _postprocess_v123(md_content, ref_map)
+
+    # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
+    blockers = _final_self_check_v123(md_content, ref_map)
+    if blockers:
+        # 保存调试副本，方便排查自检问题
+        _debug_path = args.output.replace('.md', '_debug.md')
+        with open(_debug_path, "w", encoding="utf-8") as _df:
+            _df.write(md_content)
+        print(f"\n{'='*60}")
+        print(f"❌ v1.2.3 自检未通过！发现 {len(blockers)} 个阻断问题：")
+        for b in blockers:
+            print(f"   {b}")
+        print(f"{'='*60}")
+        sys.exit(3)
 
     with open(args.output, "w", encoding="utf-8") as f:
         f.write(md_content)

@@ -79,6 +79,8 @@ COLOR_TBL_HEADER = "D9EAF7"   # 表头填充色
 COLOR_TBL_ALT    = "F7FBFF"   # 偶数行填充色
 COLOR_TBL_BORDER = "2C587C"   # 表格边框色
 
+__VMERGE_COUNT__ = 0  # 全局计数器：纵向合并单元格数量
+
 FONT_EN  = "Calibri"
 
 # 中文字体：按平台选择（优先使用各平台原生字体）
@@ -353,6 +355,7 @@ def parse_md_table(lines: list) -> tuple:
 
 def add_table_to_doc(doc: Document, headers: list, rows: list):
     """添加格式化表格（样例文档风格）"""
+    global __VMERGE_COUNT__
     col_count = max(len(headers), max((len(r) for r in rows), default=0))
     if col_count == 0:
         return
@@ -413,7 +416,36 @@ def add_table_to_doc(doc: Document, headers: list, rows: list):
                 return r
             add_inline_text(run_adder, cell_text.strip(), 10, COLOR_BODY, False, para=para)
 
-    # 在表格后添加空行
+    # ── 第一列纵向合并（vMerge）：后续行首列为空则与上一非空行合并 ──
+    if len(rows) >= 2:
+        merge_start = 0
+        for ri in range(1, len(rows)):
+            current_first_col = rows[ri][0].strip() if len(rows[ri]) > 0 else ''
+            prev_first_col = rows[ri-1][0].strip() if len(rows[ri-1]) > 0 else ''
+            if current_first_col == '' and prev_first_col != '' and merge_start == ri - 1:
+                start_tr = table.rows[merge_start + 1]
+                start_cell = start_tr.cells[0]
+                tc_pr = start_cell._tc.get_or_add_tcPr()
+                vmr = OxmlElement('w:vMerge')
+                vmr.set(qn('w:val'), 'restart')
+                tc_pr.append(vmr)
+                cur_tr = table.rows[ri + 1]
+                cur_cell = cur_tr.cells[0]
+                tc_pr2 = cur_cell._tc.get_or_add_tcPr()
+                vmc = OxmlElement('w:vMerge')
+                tc_pr2.append(vmc)
+                __VMERGE_COUNT__ += 1
+            elif current_first_col == '' and prev_first_col == '' and merge_start < ri - 1:
+                cur_tr = table.rows[ri + 1]
+                cur_cell = cur_tr.cells[0]
+                tc_pr2 = cur_cell._tc.get_or_add_tcPr()
+                vmc = OxmlElement('w:vMerge')
+                tc_pr2.append(vmc)
+                __VMERGE_COUNT__ += 1
+            elif current_first_col != '':
+                merge_start = ri
+
+    # ── 在表格后添加空行 ──
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
 
 
@@ -716,3 +748,13 @@ if __name__ == "__main__":
         md_content = f.read()
 
     convert_markdown_to_docx(md_content, output_path)
+
+    # ── 输出 vMerge 统计 + 保存到 JSON ──
+    print(f"VMERGE_COUNT={__VMERGE_COUNT__}")
+    vmerge_json_path = str(Path(output_path).with_suffix('.vmerge.json'))
+    try:
+        import json
+        with open(vmerge_json_path, 'w', encoding='utf-8') as vf:
+            json.dump({"vmerge_count": __VMERGE_COUNT__, "docx_path": output_path}, vf, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
