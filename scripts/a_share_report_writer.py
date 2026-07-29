@@ -1956,131 +1956,158 @@ def gen_section4_survey_qa(client, key_data: dict) -> str:
     return call_claude(client, prompt, max_tokens=700)
 
 
-def _fallback_qa_from_raw(qa_blocks: list) -> str:
-    """从原始调研/会议纪要数据中提取 Q&A 对，兜底生成 4.5 节。
+def _extract_qa_candidates(qa_blocks: list) -> list:
+    """v1.2.9: 从原始调研/会议纪要中提取 Q&A 候选对，返回结构化列表。
 
-    输入 qa_blocks 格式：每条为 【日期 类型（机构调研）】\\n原始内容 或
-    【日期 类型 标题】\\n原始内容。
-    输出：**Q：** / **A：** 格式的 Markdown 文本，最多 5 组问答。
-
-    v1.2.9: 增加中文 N、...答:... 格式支持（海光信息等会议纪要格式）。
+    支持格式：**Q：**/A:, Q：/A：, N、...答:..., question:/answer:, 问：/答：
+    返回: [{"q": str, "a": str, "ref": str or ""}, ...]
+    不包含 Markdown 格式标记，纯文本。
     """
     import re as _re
 
-    qa_pairs = []
+    candidates = []
     for blk in qa_blocks[:4]:
-        # 提取引用标记（如 [{N}]）再剥离表头
+        # 提取引用标记
         ref_tag = ""
         ref_m = _re.search(r'】\s*(\[\d+\])', blk)
         if ref_m:
-            ref_tag = " " + ref_m.group(1)
+            ref_tag = ref_m.group(1)
+        # 剥离表头和残留引号
         text = _re.sub(r'^【.*?】\n?', '', blk, flags=_re.MULTILINE)
-        # 也去掉残留的独立 [{N}] 行
         text = _re.sub(r'^\s*\[\d+\]\s*$', '', text, flags=_re.MULTILINE)
         text = text.strip()
         if not text:
             continue
 
-        # ── 路径1: 中文 N、...答:... 格式（如 "1、问题？答：回答"）──
-        chinese_qa = _re.split(r'(?:(?:^|\s)\d+[、.]\s*)', text)
-        # 去掉第一条（可能是"投资者关系活动主要内容介绍"等导语）
+        extracted = False
+
+        # ── 路径A: 尝试从已格式化的 Q/A 文本提取（如 **Q：**...**A：**...）──
+        # 先把各种 Q/A 标记归一化，再按行或分隔符拆分
+        normalized = text
+        # 去掉 Q/A 周围的加粗标记，便于统一拆分
+        normalized = _re.sub(r'\*\*([AQ])([:：])\*\*', r'\1\2', normalized)
+        normalized = _re.sub(r'([AQ])([:：])\*\*', r'\1\2', normalized)
+        normalized = _re.sub(r'\*\*([AQ])([:：])', r'\1\2', normalized)
+
+        # 尝试按 Q：/A：拆分成单独的 QA 对
+        qa_segments = _re.split(r'(?:^|\n)\s*(?:Q|问)(?:\d*)\s*[:：]\s*', normalized, flags=_re.MULTILINE | _re.IGNORECASE)
+        if len(qa_segments) >= 2:
+            for seg in qa_segments[1:]:  # 跳过第一个（Q 前的内容）
+                seg = seg.strip()
+                if len(seg) < 15:
+                    continue
+                a_parts = _re.split(r'(?:^|\n)\s*(?:A|答)(?:\d*)\s*[:：]\s*', seg, maxsplit=1, flags=_re.MULTILINE | _re.IGNORECASE)
+                if len(a_parts) >= 2:
+                    q = a_parts[0].strip()
+                    a = a_parts[1].strip()
+                    if q and a:
+                        candidates.append({"q": q, "a": a, "ref": ref_tag})
+                        extracted = True
+                        if len(candidates) >= 10:
+                            return candidates
+
+        if extracted:
+            continue
+
+        # ── 路径B: 中文 N、...答:... 格式 ──
+        chinese_items = _re.split(r'(?:(?:^|\s)\d+[、.]\s*)', text)
         meaningful = []
-        for item in chinese_qa:
+        for item in chinese_items:
             item = item.strip()
             if not item:
                 continue
-            # 跳过纯导语（无答字且短）
-            if '答' not in item[:20] and len(item) < 50:
+            if not _re.search(r'[答回]', item[:20]) and len(item) < 50:
                 continue
             meaningful.append(item)
         if len(meaningful) >= 2:
-            # 尝试按 答[:：] 拆分每段
             for item in meaningful:
-                parts = _re.split(r'(?:答)\s*[:：]\s*', item, maxsplit=1)
-                if len(parts) >= 2:
-                    q_text = parts[0].strip().rstrip('？?')
-                    a_text = parts[1].strip()
-                    # 从 Q 中去掉残留的编号
-                    q_text = _re.sub(r'^.*?[,，]?\s*', '', q_text, count=1) if len(q_text) > 40 else q_text
-                    # 截断过长 Q/A
-                    if len(q_text) > 200:
-                        q_text = q_text[:200] + '…'
-                    if len(a_text) > 400:
-                        cut = a_text[:400].rfind('。')
-                        a_text = a_text[:cut + 1] if cut > 200 else a_text[:400] + '…'
-                    qa_pairs.append(f"**Q：** {q_text}\n**A：** {a_text}{ref_tag}")
-                    if len(qa_pairs) >= 5:
-                        break
-            if qa_pairs:
-                break  # 路径1成功，跳过路径2
-
-        # ── 路径2: 标准 Q:/A: 格式 ──
-        segments = _re.split(
-            r'(?:(?:^|\n)\s*(?:QA\s*[环节]?\s*[:：]|Q\d*\s*[:：]\s*|question\s*\d*\s*[:：]\s*))',
-            text, flags=_re.IGNORECASE
-        )
-        for seg in segments:
-            seg = seg.strip()
-            if not seg or len(seg) < 20:
+                parts = _re.split(r'(?:回[答复]?|[答回])[\s]*[:：]\s*', item, maxsplit=1)
+                if len(parts) >= 2 and parts[0].strip() and parts[1].strip():
+                    q = parts[0].strip()
+                    a = parts[1].strip()
+                    if len(q) < 200 and len(a) > 10:
+                        candidates.append({"q": q, "a": a, "ref": ref_tag})
+                        if len(candidates) >= 10:
+                            return candidates
+            if candidates:
                 continue
-            # 拆分 Q 和 A（支持 答: 和 A: 两种答案标记）
-            a_match = _re.split(
-                r'(?:(?:^|\n)\s*(?:A\d*\s*|答)\s*[:：]\s*)',
-                seg, maxsplit=1, flags=_re.IGNORECASE
-            )
-            if len(a_match) >= 2 and a_match[0].strip() and a_match[1].strip():
-                q_text = a_match[0].strip()
-                a_text = a_match[1].strip()
-                if len(a_text) > 400:
-                    cut = a_text[:400].rfind('。')
-                    a_text = a_text[:cut + 1] if cut > 200 else a_text[:400] + '…'
-                qa_pairs.append(f"**Q：** {q_text}\n**A：** {a_text}{ref_tag}")
-                if len(qa_pairs) >= 5:
-                    break
-        if len(qa_pairs) >= 5:
-            break
 
-    if not qa_pairs:
-        # 完全无法解析时，取第一条原始内容的前 600 字
-        first = _re.sub(r'^【.*?】\n?', '', qa_blocks[0], flags=_re.MULTILINE) if qa_blocks else ""
-        if first.strip():
-            qa_pairs.append(first.strip()[:600])
+        # ── 路径C: full text 按 question:/answer: 拆分 ──
+        qa_segs = _re.split(r'(?:^|\n)\s*question\s*\d*\s*:\s*', text, flags=_re.MULTILINE | _re.IGNORECASE)
+        if len(qa_segs) >= 2:
+            for seg in qa_segs[1:]:
+                seg = seg.strip()
+                a_parts = _re.split(r'(?:^|\n)\s*answer\s*\d*\s*:\s*', seg, maxsplit=1, flags=_re.MULTILINE | _re.IGNORECASE)
+                if len(a_parts) >= 2 and a_parts[0].strip() and a_parts[1].strip():
+                    candidates.append({"q": a_parts[0].strip(), "a": a_parts[1].strip(), "ref": ref_tag})
+                    if len(candidates) >= 10:
+                        return candidates
+            if candidates:
+                continue
 
-    return "\n\n".join(qa_pairs) if qa_pairs else ""
+        # ── 路径D: 主持人/董事长/总经理 对话体（同行内如"主持人：...董事长：..."）──
+        speaker_parts = _re.split(r'(?:(?:^|\n|。|！|？)\s*)?(?:主持人|公司董事长|副董事长|总经理|CEO|CFO)[^：:]{0,8}[：:]\s*', text)
+        if len(speaker_parts) >= 3:  # 至少有2组发言
+            # 第一段可能是导语，跳过
+            for i in range(1, len(speaker_parts) - 1, 2):
+                q_seg = speaker_parts[i].strip()
+                a_seg = speaker_parts[i + 1].strip() if i + 1 < len(speaker_parts) else ""
+                # 过滤：主持人/投资者发言 = Q，高管发言 = A
+                if q_seg and a_seg and len(q_seg) > 10 and len(a_seg) > 20:
+                    # 取最后一个完整句作为问题
+                    q_sentences = _re.split(r'[。！？]', q_seg)
+                    q = q_sentences[-1].strip() if len(q_sentences) > 1 else q_seg
+                    if len(q) > 5:
+                        candidates.append({"q": q[:200], "a": a_seg[:500], "ref": ref_tag})
+                        if len(candidates) >= 10:
+                            return candidates
+
+    return candidates
+
+
+def _format_qa_markdown(selected: list, ref_tags: list) -> str:
+    """v1.2.9: 确定性排版 Q&A 为 Markdown。LLM 完全不参与格式。
+
+    selected: [{"q": str, "a": str}, ...]
+    ref_tags: ["[N1]", "[N2]", ...] 附加到每条 A 末尾做引用
+    """
+    import re as _re
+    ref_str = "".join(ref_tags[:3]) if ref_tags else ""
+    lines = []
+    for item in selected:
+        q = item["q"].strip()
+        # 兜底：Q 以中文字结尾无标点 → 自动补？
+        if q and _re.search(r'[一-鿿]$', q):
+            q += '？'
+        a = item["a"].strip()
+        if len(a) > 400:
+            cut = a[:400].rfind('。')
+            a = a[:cut + 1] if cut > 150 else a[:400] + '…'
+        lines.append(f"**Q：** {q}")
+        lines.append(f"**A：** {a}{ref_str}")
+    return "\n\n".join(lines)
 
 
 def _normalize_survey_qa_markdown(text: str) -> str:
-    """v1.2.9: 精简版——格式化 4.5 调研问答。
-    prompt 已要求 Q/A 分两行 + **Q：**/**A：** 格式，此处只做兜底清理：统一加粗标记、清理残余格式。
+    """v1.2.9: 精简兜底——仅处理已格式化 Q/A 文本的残余格式问题。
+
+    主流程已改由 _extract_qa_candidates + _format_qa_markdown 确定生产出，
+    本函数仅处理遗留/降级路径可能出现的零星格式脏数据。
     """
     if not text:
         return ""
     t = str(text).strip()
     t = re.sub(r'\r\n?', '\n', t)
-    # 统一 Q：/A：加粗格式（前后 ** 均可选，覆盖全部变体）
+    # 行首 Q/A 加粗归一化
     t = re.sub(r'(?m)^(\s*)(?:\*\*)?Q[:：](?:\*\*)?\s*', r'\1**Q：** ', t)
     t = re.sub(r'(?m)^(\s*)(?:\*\*)?A[:：](?:\*\*)?\s*', r'\1**A：** ', t)
-    # 清理残留空加粗 **A：**** 等
-    t = re.sub(r'(\*\*[AQ][:：]\*\*)\s*\*{1,2}\s*', r'\1 ', t)
-    # 兜底：同行内 A：前补换行（prompt 要求分两行，此处处理 LLM 不遵循的情况）
-    t = re.sub(r'(?<!\n)\*\*A[:：]\*\*', r'\n**A：** ', t)
-    t = re.sub(r'(?<=\S)\*\*A[:：]', r'\n**A：**', t)
-    # v1.2.9: 同行内 Q/A 标记拆分（粗体在冒号后且前无*）→ 换行 + 归一化
-    t = re.sub(r'(?<!\n)(?<!\*)(Q[:：]\*{1,2})', r'\n**\1', t)
-    t = re.sub(r'(?<!\n)(?<!\*)(A[:：]\*{1,2})', r'\n**\1', t)
-    # 英文小写 question:/answer: 兜底
+    # 同行 Q/A 拆分（极少触发，仅兜底）
+    t = re.sub(r'(?<!\n)(?<!\*)([QA])([:：]\*{1,2})(?!\w)', r'\n**\1\2', t)
+    # 英文小写
     t = re.sub(r'(?m)^\s*question\s*:\s*', '**Q：** ', t)
     t = re.sub(r'(?m)^\s*answer\s*:\s*', '**A：** ', t)
     # 合并多余空行
     t = re.sub(r'\n{3,}', '\n\n', t)
-    # 截断检测
-    lines = t.split('\n')
-    if lines:
-        last_line = lines[-1].strip()
-        if last_line and not re.search(r'[。！？；）」】…]$', last_line):
-            if any('一' <= c <= '鿿' for c in last_line[-1:]):
-                lines[-1] = lines[-1].rstrip() + '…[内容截断]'
-                t = '\n'.join(lines)
     return t.strip()
 
 
@@ -2105,7 +2132,7 @@ def gen_section4(client, key_data: dict) -> dict:
         for seg in mc["segments"] if mc["segments"][seg]
     ]) if y0 else str(list(mc["segments"].keys()))
 
-    # 4.5 Q&A 原始数据
+    # ── 4.5 结构化生成：提取候选 → LLM 选+压缩 → 代码排版 ──
     qa_blocks = []
     for sv in surveys[:5]:
         if sv.get("content"):
@@ -2118,34 +2145,21 @@ def gen_section4(client, key_data: dict) -> dict:
                 ref_tag = f"[{ref_n}]" if ref_n else ""
                 qa_blocks.append(f"【{m['date']} {m['type']} {m['title']}】{ref_tag}\n{m['qa'][:2500]}")
     has_qa = bool(qa_blocks)
-    qa_text = "\n\n".join(qa_blocks) if qa_blocks else ""
-    meeting_refs = _meeting_refs_str(meetings, ref_map, n=5)
 
-    maincomp_section = (
-        f"\n【4.2分板块业务数据表格（已生成，4.1不要重复表中数字明细，可用'如下表'指向）】\n{maincomp_ctx}\n"
-        if maincomp_ctx else ""
-    )
-    qa_data_section = (
-        f"\n【机构调研/会议纪要原始内容（用于生成4.5）】\n{qa_text}\n引用映射（4.5用）：{meeting_refs}\n"
-        if has_qa else ""
-    )
-    qa_instruction = (
-        "### 4.5 机构调研核心问答\n"
-        "⚠️ **只输出真实管理层原话的 Q&A**；判断标准如下：\n"
-        "- 若原始内容中明确有管理层回答（管理层原话、公司回应），则输出\n"
-        "- **严禁编造Q/A，严禁输出'建议调研：'等任何建议性问题**\n"
-        "- 若原始内容中完全没有可确认的管理层原话，则跳过本节（不输出任何内容）\n"
-        "- ⚠️ **格式铁则：每对QA的Q与A必须分两行输出**——**Q：**xxx 一行，**A：**xxx 下一行，A 回答前必须换行\n"
-        "精选3-5组最有基本面价值的真实问答；不引入原文没有的信息；不含机构具体名称；总字数400字以内；\n"
-        "**与4.1已描述的商业模式不重复**。"
-        if has_qa else
-        ""  # 无数据时完全跳过，不留空标题
-    )
+    # 确定性提取所有 Q&A 候选
+    candidates = _extract_qa_candidates(qa_blocks) if has_qa else []
+    all_refs = list({c["ref"] for c in candidates if c["ref"]})
+    # 候选人 ref 为空时，从 meetings ref_map 补齐
+    if not all_refs:
+        for m in meetings[:5]:
+            key = "meeting_" + m["date"] + "_" + m["title"][:20]
+            n_val = str(ref_map.get(key, {}).get("n", ""))
+            if n_val and f"[{n_val}]" not in all_refs:
+                all_refs.append(f"[{n_val}]")
 
-    sec_count = "两个小节（4.1和4.5）" if has_qa else "一个小节（4.1）"
-    sec_goal = "目标是两节内容不重复、上下呼应" if has_qa else ""
-    prompt = f"""为 {name} 合并撰写第4章中的{sec_count}。{sec_goal}
-{maincomp_section}
+    # ── 4.1 盈利方式（始终独立生成）──
+    profit_prompt = f"""为 {name} 撰写第4章 4.1 盈利方式。
+{maincomp_ctx if maincomp_ctx else ""}
 【主营业务板块及规模（{y0}年）】
 {segs_data}
 
@@ -2162,58 +2176,65 @@ def gen_section4(client, key_data: dict) -> dict:
 
 【引用映射】
 maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
-{qa_data_section}
-【格式要求】按顺序输出以下{"两个" if has_qa else "一个"}小节，不输出其他内容：
 
-### 4.1 盈利方式
 用2-3个 bullet（• 开头），格式：**[盈利维度]**：[结合本公司实际如何通过此维度赚钱]
 先说行业通用盈利逻辑，再用本公司具体数字说明竞争位置；不重复4.2表格已有数字明细；标注引用；**120-160字以内**。
-
-{qa_instruction}
+只输出盈利方式内容，不要带 ### 标题。
 """
-    result = call_claude(client, prompt, max_tokens=1200)
+    result_41 = call_claude(client, profit_prompt, max_tokens=600)
+    s41 = re.sub(r'^###\s*4\.1[^\n]*\n?', '', result_41, flags=re.MULTILINE).strip()
 
-    # 按 ### 4.1 / ### 4.5 切分，连同标题行一并消掉（模板已有标题，避免重复）
-    parts_45 = re.split(r'###\s*4\.5[^\n]*\n?', result, maxsplit=1)
-    s41_parts = re.split(r'###\s*4\.1[^\n]*\n?', parts_45[0], maxsplit=1)
-    s41 = s41_parts[1].strip() if len(s41_parts) > 1 else parts_45[0].strip()
+    # ── 4.5 机构调研 Q&A（结构化生成）──
     s45 = ""
-    if len(parts_45) > 1:
-        s45_raw = parts_45[1].strip()
-        # 跳过无数据提示
-        if not re.search(r'无.*数据|留空|跳过', s45_raw) and len(s45_raw) > 30:
-            # v1.2.9: 格式合法性校验——必须包含 Q/A 标记，否则触发 fallback
-            if re.search(r'[QA][：:]|question\s*:|answer\s*:', s45_raw, re.IGNORECASE):
-                s45 = s45_raw
-    # ── fallback：正则切分失败时尝试更宽松的匹配 ──
-    if not s45 and has_qa:
-        # 宽松切分：容忍 deepseek 等模型用 ## / ** / 无标题等变体
-        fb_parts = re.split(
-            r'(?:#{2,4}\s*)?4\.5[^\n]*?(?:机构调研|核心问答|调研问答|Q&A|QA|建议调研)[^\n]*\n?',
-            result, maxsplit=1, flags=re.IGNORECASE
-        )
-        if len(fb_parts) > 1:
-            s45_raw = fb_parts[1].strip()
-            if not re.search(r'无.*数据|留空|跳过', s45_raw) and len(s45_raw) > 30:
-                s45 = s45_raw
-        # 仍失败：用原始调研数据提取 Q&A 兜底生成 4.5 节内容
-        if not s45:
-            s45 = _fallback_qa_from_raw(qa_blocks)
-    if not has_qa:
-        s45 = ""  # 无调研/会议QA数据时强制清空，防止LLM从管理层讨论中编造无引用Q/A
-    s45 = _normalize_survey_qa_markdown(s45)
-    # v1.2.9: Q&A 缺引用时，从 meetings+ref_map 提取 ref 补齐到每条 Answer 末尾
-    if s45 and has_qa and not re.search(r'\[\d+\]', s45):
-        ref_nums = []
-        for m in meetings[:5]:
-            key = "meeting_" + m["date"] + "_" + m["title"][:20]
-            n_val = str(ref_map.get(key, {}).get("n", ""))
-            if n_val and f"[{n_val}]" not in ref_nums:
-                ref_nums.append(f"[{n_val}]")
-        if ref_nums:
-            ref_str = "".join(ref_nums[:3])  # 最多3个引用，避免过长
-            s45 = re.sub(r'(\*\*A：\*\*[^\n]+)', r'\1' + ref_str, s45)
+    if candidates:
+        # 压缩候选列表给 LLM 选择
+        candidates_text_lines = []
+        for i, c in enumerate(candidates[:10]):
+            a_preview = c["a"][:300] + ("…" if len(c["a"]) > 300 else "")
+            candidates_text_lines.append(f"[{i}] Q: {c['q'][:150]}\n    A: {a_preview}")
+        candidates_text = "\n".join(candidates_text_lines)
 
+        qa_select_prompt = f"""从以下 {name} 的机构调研 Q&A 候选中，选出 3-4 组最有基本面投资价值的问答。
+
+判断标准：涉及业绩增长驱动、竞争壁垒、新产品/新市场突破、成本趋势、股东回报 > 一般性行业展望。
+
+对选中的每个回答，若原文超过 200 字则压缩到 200 字以内（保留核心数据和结论），否则保持原样。
+
+输出严格的 JSON 数组，不要任何其他文字：
+[{{"i": 候选序号, "a": "压缩后的回答文本"}}, ...]
+
+候选列表：
+{candidates_text}
+"""
+        try:
+            result_qa = call_claude(client, qa_select_prompt, max_tokens=800)
+            json_match = re.search(r'\[[\s\S]*\]', result_qa)
+            if json_match:
+                selected = json.loads(json_match.group(0))
+                formatted = []
+                for sel in selected:
+                    idx = int(sel.get("i", -1))
+                    if 0 <= idx < len(candidates):
+                        formatted.append({
+                            "q": candidates[idx]["q"],
+                            "a": sel.get("a", candidates[idx]["a"])[:400],
+                        })
+                if 1 <= len(formatted) <= 5:
+                    s45 = _format_qa_markdown(formatted, all_refs)
+        except Exception:
+            pass  # JSON 解析失败走兜底
+
+        # 兜底：LLM 失败时直接取前 4 个候选
+        if not s45:
+            top4 = [{"q": c["q"], "a": c["a"]} for c in candidates[:4]]
+            s45 = _format_qa_markdown(top4, all_refs)
+
+    elif has_qa:
+        first = re.sub(r'^【.*?】\n?', '', qa_blocks[0], flags=re.MULTILINE) if qa_blocks else ""
+        if first.strip():
+            s45 = first.strip()[:500]
+
+    s45 = _normalize_survey_qa_markdown(s45)
     return {"s4_profit_model": s41, "s4_survey_qa": s45}
 
 
@@ -4536,7 +4557,9 @@ def _fix_truncated_chinese(md_text: str) -> str:
                 or re.match(r'^[-*•·●►]\s', stripped)
                 or stripped.startswith('```')
                 or stripped.startswith('![')
-                or re.match(r'^\[v?\d', stripped)):
+                or re.match(r'^\[v?\d', stripped)
+                or stripped.startswith('**Q：')
+                or stripped.startswith('**A：')):
             result.append(line)
             continue
         # 仅短行（≤50字）末为纯汉字才检查：如长段末位是正常正文结束，不处理
