@@ -42,7 +42,7 @@ def normalize_ticker(ticker: str | None) -> str:
     if not ticker:
         return ""
     value = ticker.strip().upper()
-    for suffix in (".HK", ".US", ".O", ".N", ".XHKG", ".XNAS", ".XNYS", ".AMXO"):
+    for suffix in (".HK", ".US", ".O", ".N", ".XHKG", ".XNAS", ".XNYS", ".AMXO", ".SZ", ".SS"):
         if value.endswith(suffix):
             value = value[: -len(suffix)]
             break
@@ -56,6 +56,9 @@ def infer_market(ticker: str, market: str | None) -> str:
         return market.upper()
     raw = ticker.strip().upper()
     code = normalize_ticker(raw)
+    # A股：6位纯数字 或 .SZ/.SS 后缀
+    if raw.endswith((".SZ", ".SS")) or (code.isdigit() and len(code) == 6):
+        return "A"
     if raw.endswith(".HK") or (code.isdigit() and len(code) == 5):
         return "HK"
     if raw.endswith((".O", ".N", ".US", ".XNAS", ".XNYS", ".AMXO")) or code.isalpha():
@@ -177,22 +180,47 @@ def choose_company(args: argparse.Namespace, client: DatayesClient, errors: list
                 ticker = entity_id
                 market = "HK"
                 company = company or str(first.get("name") or "")
-            elif market == "auto" and entity_id.isdigit() and len(entity_id) == 6:
+            elif entity_id.isdigit() and len(entity_id) == 6:
                 ticker = entity_id
-                market = "CN"
+                market = "A"
+                company = company or str(first.get("name") or "")
 
     if ticker and market == "auto":
         market = infer_market(ticker, "auto")
     if market == "auto":
-        market = "US" if ticker and ticker.isalpha() else "HK"
+        if ticker and ticker.isdigit() and len(ticker) == 6:
+            market = "A"
+        elif ticker and ticker.isalpha():
+            market = "US"
+        else:
+            market = "HK"
     if not company:
         company = ticker
 
-    return {"ticker": ticker, "market": market, "company": company}
+    # A股交易所推断
+    exchange = ""
+    full_ticker = ticker
+    if market == "A":
+        raw = (args.ticker or "").strip().upper()
+        if raw.endswith(".SZ") or ticker.startswith(("0", "3")):
+            exchange = "SZSE"
+            full_ticker = ticker + ".SZ"
+        elif raw.endswith(".SS") or ticker.startswith("6"):
+            exchange = "SSE"
+            full_ticker = ticker + ".SH"
+        else:
+            exchange = "SZSE"
+            full_ticker = ticker + ".SZ"
+    elif market == "HK":
+        exchange = "XHKG"
+        full_ticker = ticker + ".HK"
+
+    return {"ticker": ticker, "market": market, "company": company, "exchange": exchange, "full_ticker": full_ticker}
 
 
 def collect_research(client: DatayesClient, company: str, ticker: str, market: str, errors: list[dict[str, str]], max_reports: int) -> dict[str, Any]:
-    exchange = "XHKG" if market == "HK" else "AMXO,XNAS,XNYS"
+    exchange_map = {"HK": "XHKG", "US": "AMXO,XNAS,XNYS", "A": "SZSE,SSE"}
+    exchange = exchange_map.get(market, "XHKG")
     items: dict[str, dict[str, Any]] = {}
 
     for days_back in (180, 365):
@@ -267,7 +295,8 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
 
 def collect_meetings(client: DatayesClient, company: str, ticker: str, market: str, errors: list[dict[str, str]], max_meetings: int) -> dict[str, Any]:
     start, end = dates(180)
-    market_type = "港股" if market == "HK" else "美股"
+    market_type_map = {"HK": "港股", "US": "美股", "A": "A股"}
+    market_type = market_type_map.get(market, "港股")
     found: dict[str, dict[str, Any]] = {}
 
     for page in range(1, 4):
@@ -342,13 +371,25 @@ def collect_structured(client: DatayesClient, ticker: str, market: str, errors: 
                 "pagesize": 50,
             })),
         }
+    elif market == "A" and ticker:
+        result["fdmtNew"] = data_of(safe_call(client, errors, "fdmtNew", {
+            "ticker": ticker,
+            "mergedFlag": 1,
+            "reportType": "SUMMARY",
+            "displaySort": "left",
+            "duration": "ACCUMULATE",
+            "includeLatest": True,
+            "period": 4,
+            "reportPeriodType": "A,Q1",
+        }))
 
     return result
 
 
 def build_material_questions(company: str, ticker: str, market: str) -> list[dict[str, str]]:
     name = " ".join(x for x in (company, ticker) if x).strip()
-    market_name = "港股" if market == "HK" else "美股"
+    market_map = {"HK": "港股", "US": "美股", "A": "A股"}
+    market_name = market_map.get(market, "港股")
     return [
         {"topic": "recent_updates", "question": f"{name} {market_name} 近况 业绩 指引 催化 资本市场 事件"},
         {"topic": "investment_logic", "question": f"{name} 投资逻辑 增长驱动 商业模式 竞争优势 风险"},
@@ -465,7 +506,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Fetch HK/US company one-pager materials from Datayes.")
     parser.add_argument("--company", default="", help="Company name, e.g. 腾讯控股 or NVIDIA")
     parser.add_argument("--ticker", default="", help="Ticker, e.g. 00700.HK or NVDA")
-    parser.add_argument("--market", default="auto", choices=["auto", "HK", "US", "hk", "us"], help="Market")
+    parser.add_argument("--market", default="auto", choices=["auto", "HK", "US", "A", "hk", "us", "a"], help="Market")
     parser.add_argument("--output", required=True, help="Output JSON path")
     parser.add_argument("--max-reports", type=int, default=8)
     parser.add_argument("--max-meetings", type=int, default=5)
@@ -485,18 +526,22 @@ def main() -> int:
     if not ticker:
         raise SystemExit("No ticker resolved. Provide --ticker for US stocks or ambiguous HK stocks.")
 
+    exchange = target.get("exchange", "")
+    full_ticker = target.get("full_ticker", ticker)
     output = {
         "__meta__": {
             "company": company,
             "ticker": ticker,
             "market": market,
+            "exchange": exchange,
+            "full_ticker": full_ticker,
             "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         },
         "materials_v2": collect_materials_v2(client, company, ticker, market, errors, args.materials_days, args.materials_size),
         "structured": collect_structured(client, ticker, market, errors),
         "research": collect_research(client, company, ticker, market, errors, args.max_reports),
         "meetings": collect_meetings(client, company, ticker, market, errors, args.max_meetings),
-        "announcements": collect_announcements(client, company, ticker, errors, args.max_announcements) if market == "HK" else {"list": [], "details": []},
+        "announcements": collect_announcements(client, company, ticker, errors, args.max_announcements) if market in ("HK", "A") else {"list": [], "details": []},
         "errors": errors,
     }
 

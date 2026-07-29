@@ -1,5 +1,23 @@
 # Changelog
 
+## v1.2.1
+
+Status: hotfix for production launch.
+
+Applied fixes:
+
+- Add sensitivity-number rule: source-given sensitivities may be cited; self-derived must be labeled "内部测算" with formula/base/unit/assumptions; unverifiable sensitivities must be deleted.
+- Add FY/CY time-caliber rule: fiscal year, calendar year, quarter labels must preserve source original labels; never default-interchange (e.g. NVDA FY2027 ≠ CY2027).
+- Extend §11.4 in report structure with sensitivity formatting examples.
+- Extend quality checklist with sensitivity and FY/CY verification items.
+
+Changed files:
+
+- `SKILL.md`
+- `references/hk-us-report-structure.md`
+- `references/hk-us-quality-checklist.md`
+- `CHANGELOG.md`
+
 ## v1.2.0
 
 Status: active regression revision.
