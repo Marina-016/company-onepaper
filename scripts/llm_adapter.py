@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unified LLM adapter for HK/US v1.2.5 writers.
+"""Unified LLM adapter for HK/US v1.2.6 writers.
 
 The adapter is intentionally provider-neutral: model names do not determine the
 transport protocol. Callers provide CLI/env config and receive structured
@@ -76,7 +76,7 @@ def _skill_root() -> Path:
 
 
 def _project_root() -> Path:
-    # company-onepager-eval/skills/v1.2.5/scripts -> company-onepager-eval
+    # company-onepager-eval/skills/v1.2.6/scripts -> company-onepager-eval
     try:
         return _script_dir().parents[2]
     except IndexError:

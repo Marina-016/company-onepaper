@@ -408,8 +408,17 @@ def extract_maincomp(data: dict) -> dict:
         if sup is not None and sup != 0 and iid != 0:
             children_of.setdefault(sup, []).append(iid)
 
-    # 构建有序 key 列表（父级→子级），key = segments dict 的键
+    # 构建有序 key 列表（父级→子级→孙级），同时建立 itemID→key 映射供后续填充使用
     order = []
+    id_to_key = {}  # itemID → order key（带层级前缀）
+    def _add_children(parent_id: int, prefix: str):
+        for child_id in children_of.get(parent_id, []):
+            child_name = id_to_name.get(child_id, "")
+            if child_name:
+                key = prefix + child_name
+                order.append(key)
+                id_to_key[child_id] = key
+                _add_children(child_id, "  " + prefix)  # 递归孙级
     for r in first_recs:
         iid = r.get("itemID", 0)
         sup = r.get("itemIDSuperior")
@@ -418,11 +427,9 @@ def extract_maincomp(data: dict) -> dict:
         name = r.get("itemName", "")
         if not name:
             continue
-        order.append(name)                        # 一级项目（原名）
-        for child_id in children_of.get(iid, []):
-            child_name = id_to_name.get(child_id, "")
-            if child_name:
-                order.append("  " + child_name)  # 子项（带缩进前缀）
+        order.append(name)                           # 一级项目（原名）
+        id_to_key[iid] = name
+        _add_children(iid, "└ ")                     # 递归子级/孙级
 
     # 初始化 segments / margins
     segments = {k: [None] * n for k in order}
@@ -445,7 +452,8 @@ def extract_maincomp(data: dict) -> dict:
             name = row.get("itemName", "")
             if iid == 0 or not name:
                 continue
-            key = ("  " + name) if (sup is not None and sup != 0) else name
+            # 使用 order 构建阶段确定的带层级前缀的 key
+            key = id_to_key.get(iid, name)
             if key not in segments:     # 后续年份出现的新板块
                 segments[key] = [None] * n
                 margins[key]  = [None] * n
@@ -1075,6 +1083,16 @@ def gen_maincomp_table(mc: dict) -> str:
     for seg_name in order:
         if seg_name not in segs:
             continue
+        # 层级显示：按 ":" 数量加树状前缀，子级只显示自身名称
+        depth = seg_name.count(":")
+        if depth == 0:
+            display_name = seg_name
+        elif depth == 1:
+            leaf = seg_name.rsplit(":", 1)[-1]
+            display_name = f"├ {leaf}"
+        else:
+            leaf = seg_name.rsplit(":", 1)[-1]
+            display_name = f"│  ├ {leaf}"
         vals = segs[seg_name]
         v0 = vals[0] if len(vals) > 0 else None
         v1 = vals[1] if len(vals) > 1 else None
@@ -1099,7 +1117,7 @@ def gen_maincomp_table(mc: dict) -> str:
             if has_margins:
                 mg_vals = margins.get(seg_name, [])
                 cells += f" | {_pct(mg_vals[2]) if len(mg_vals) > 2 and mg_vals[2] is not None else '—'}"
-        lines.append(f"| {seg_name}{cells} |")
+        lines.append(f"| {display_name}{cells} |")
 
     # 合计行
     t0, t1, t2 = total_vals
@@ -1992,9 +2010,10 @@ def _normalize_survey_qa_markdown(text: str) -> str:
         return ""
     t = str(text).strip()
     t = re.sub(r'\r\n?', '\n', t)
-    t = re.sub(r'\*\*Q[:：]\s*(.*?)\s*A[:：]\*\*', r'**Q：** \1\n**A：**', t, flags=re.S)
+    t = re.sub(r'\*\*Q[:：](.*?)A[:：]\*\*\s*', r'**Q：**\1\n**A：** ', t)  # 拆分同行 Q/A，无 re.S 避免跨行
     t = re.sub(r'\*\*Q[:：]\*\*\s*', '**Q：** ', t)
     t = re.sub(r'\*\*A[:：]\*\*\s*', '**A：** ', t)
+    t = re.sub(r'(\*\*A[:：]\*\*)\s*\*{1,2}\s*', r'\1 ', t)  # 清理 **A：** ** / **A：**** 等误加粗
     t = re.sub(r'(?<!\n)\*\*A[:：]\*\*', r'\n**A：**', t)
     t = re.sub(r'([？?])\s*A[:：]\s*', r'\1\n**A：** ', t)
     t = re.sub(r'(?<!\n)(\*\*Q[:：]\*\*)', r'\n\1', t)
@@ -2061,7 +2080,9 @@ def gen_section4(client, key_data: dict) -> dict:
         ""  # 无数据时完全跳过，不留空标题
     )
 
-    prompt = f"""为 {name} 合并撰写第4章中的两个小节（4.1和4.5），目标是两节内容不重复、上下呼应。
+    sec_count = "两个小节（4.1和4.5）" if has_qa else "一个小节（4.1）"
+    sec_goal = "目标是两节内容不重复、上下呼应" if has_qa else ""
+    prompt = f"""为 {name} 合并撰写第4章中的{sec_count}。{sec_goal}
 {maincomp_section}
 【主营业务板块及规模（{y0}年）】
 {segs_data}
@@ -2080,7 +2101,7 @@ def gen_section4(client, key_data: dict) -> dict:
 【引用映射】
 maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 {qa_data_section}
-【格式要求】按顺序输出以下两个小节，不输出其他内容：
+【格式要求】按顺序输出以下{"两个" if has_qa else "一个"}小节，不输出其他内容：
 
 ### 4.1 盈利方式
 用2-3个 bullet（• 开头），格式：**[盈利维度]**：[结合本公司实际如何通过此维度赚钱]
@@ -2114,6 +2135,8 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
         # 仍失败：用原始调研数据提取 Q&A 兜底生成 4.5 节内容
         if not s45:
             s45 = _fallback_qa_from_raw(qa_blocks)
+    if not has_qa:
+        s45 = ""  # 无调研/会议QA数据时强制清空，防止LLM从管理层讨论中编造无引用Q/A
     s45 = _normalize_survey_qa_markdown(s45)
 
     return {"s4_profit_model": s41, "s4_survey_qa": s45}
@@ -2969,11 +2992,11 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 ## 1 公司近况跟踪
 
-{sections['s1']}
+{_strip_header_prefix(sections['s1'])}
 
 ## 2 核心投资逻辑
 
-{sections['s2']}
+{_strip_header_prefix(sections['s2'])}
 
 ## 3 催化事件时间表
 

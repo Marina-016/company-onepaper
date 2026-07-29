@@ -1,13 +1,13 @@
 ﻿---
 name: datayes-company-onepager
-version: v1.2.5
+version: v1.2.6
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径通过 Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
   当前版本强调真实数据、引用闭环、目标公司一致性、结构化质量门禁和自动修复。
   当用户要求生成“一页纸”“公司一页纸”“股票研究报告”“公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.5）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.6）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
@@ -16,7 +16,7 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.5 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
+当前文档只描述 **v1.2.6 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
 运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
@@ -333,6 +333,13 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 增加同业比较表正式 schema 检查。
 - 增加港美股最小结构检查、结构化接口 ID 口径修正、空占位符检查。
 - 增加内部 checker 术语泄漏检查和 pipeline 结尾内容清理。
+
+### v1.2.6
+- DeepSeek-V4 thinking 模式导致标题落兜底：LLM payload 加 `"thinking": {"type": "disabled"}`。
+- `_is_numeric_cell` 误判含中文单元格为数值，导致同业比较表被 `_sparse_cleanup` 误删：排除含中文的单元格。
+- §4.2 分板块业务数据增加树状缩进（`├`/`│ ├`），一二三级业务层次一目了然。
+- 港美股 §3 核心投资逻辑：固定 3 点→2-4 点，每点 80-150 字→140-220 字，max_tokens 2200→3500。
+- 港美股 §9 同业比较：`peer_row_company_not_in_evidence` 校验降级为非阻塞（证据文本不必然含竞对公司名）。
 
 ### v1.2.5
 - 增加港股 PIT 三表聚合。
