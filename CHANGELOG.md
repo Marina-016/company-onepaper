@@ -1,8 +1,27 @@
 # Changelog
 
+## v1.2.0
+
+Status: active regression revision.
+
+Applied fixes:
+
+- Freeze `skills/v1.1.0` as the passed HK baseline; all new changes are made under `skills/v1.2.0`.
+- Formalize US-market fallback: do not require HK PIT structured financial APIs for US cases.
+- Require US financial fallback to be explicit in the evaluator as `skipped_with_reason` / `N/A`; skipped checks must not be counted as passed checks.
+- Extend US-case validation focus to GAAP / non-GAAP separation, segment actuals, company guidance, fiscal-year versus calendar-year labels, currency/unit labeling, and US valuation frameworks.
+- Add US ADR regression coverage requirement for BABA alongside NVDA.
+
+Changed files:
+
+- `SKILL.md`
+- `references/hk-us-report-structure.md`
+- `references/hk-us-quality-checklist.md`
+- `CHANGELOG.md`
+
 ## v1.1.0
 
-Status: active working revision.
+Status: frozen passed revision.
 
 Applied fixes:
 

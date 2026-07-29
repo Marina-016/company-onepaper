@@ -253,7 +253,7 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 
 **港股特别补充**：优先调用 `getHkFdmtIsPit`（利润表）、`getHkFdmtBsPit`（资产负债表）、`getHkFdmtCfPit`（现金流量表）补齐财务数据。
 
-**美股财务特别说明**：默认不假设通联有完整三大报表；美股财务、分业务、估值和市场分歧主要从研报、会议纪要、财报点评中抽取。
+**美股财务特别说明（v1.2.0）**：默认不假设通联有完整三大报表；美股财务、分业务、估值和市场分歧主要从研报、会议纪要、财报点评中抽取。美股报告必须显式区分 GAAP / non-GAAP、segment actual、company guidance、机构 forecast/estimate、财年与自然年、人民币/美元单位；若结构化三表缺失，评测中只能记录为 `skipped_with_reason` / `N/A`，不得将“未检查”计为“检查通过”。
 
 ### HK-US-4：写报告
 
@@ -324,6 +324,15 @@ python3 -X utf8 <skill_root>/scripts/build_docx.py \
 - **估值方法**：目标价、EV/S、PE、DCF、SOTP，并解释估值溢价或折价的验证条件
 - **市场分歧**：至少 3 组多空观点，每组必须有可验证指标
 - **下一次验证点**：下一份财报、产品商业化、指引、解禁、监管、订单/客户事件等
+
+### v1.2.0 美股/ADR 强制校验点
+
+- **GAAP / non-GAAP**：同一表格中可并列，但指标名必须写出口径；不得把 non-GAAP 净利、non-GAAP EPS 写成 GAAP actual。
+- **segment / guidance**：分部收入属于 segment actual；下一季收入、毛利率、费用率属于 company guidance；机构模型属于 forecast/estimate。
+- **币种和单位**：ADR 公司常同时出现人民币、美元、港元；表头必须写清币种与单位，禁止在同一列混用。
+- **财年和自然年**：阿里、英伟达等公司必须写清 FY2026、CY2026 或 “FY2026（截至 YYYY-MM-DD 财年）”；不得用自然年替代财年。
+- **估值方法**：PE、EV/S、DCF、SOTP 若来自来源必须保留来源口径；若从上下文推断，写作“推断：”并保留引用。
+- **评测记录**：美股缺少 HK PIT 三表时，正式 evaluator 应记录 `skipped_with_reason`，该项只能计入 skipped，不能计入 passed。
 
 ---
 
