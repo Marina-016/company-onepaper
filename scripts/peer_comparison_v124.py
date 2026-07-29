@@ -15,6 +15,16 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
+_NON_PEER_RELATION_RE = re.compile(r"客户|供应商|合作方|投资方|生态伙伴|渠道|client|customer|supplier|partner|investor", re.I)
+_COMPETITOR_RELATION_RE = re.compile(r"竞争|竞品|同业|可比|对标|benchmark|competitor|peer", re.I)
+_UNLISTED_PEER_NAMES = {"华为", "Huawei", "HUAWEI"}
+_CUSTOMER_SUPPLIER_REASONS = [
+    ("dropped_customer", re.compile(r"客户|client|customer", re.I)),
+    ("dropped_supplier", re.compile(r"供应商|supplier", re.I)),
+    ("dropped_partner", re.compile(r"合作方|生态伙伴|partner", re.I)),
+    ("dropped_investor", re.compile(r"投资方|investor", re.I)),
+]
+
 try:
     from fetch_materials import DatayesClient, data_of, dates, safe_call, stock_search
 except Exception:  # pragma: no cover - allows direct unit import without cwd tweaks
@@ -102,6 +112,66 @@ def _extract_json_payload(text: str) -> Any:
         return None
 
 
+def _coerce_peer_payload(payload: Any) -> list[dict]:
+    if isinstance(payload, dict):
+        payload = payload.get("peer_candidates") or payload.get("peers") or payload.get("candidates") or []
+    return payload if isinstance(payload, list) else []
+
+
+def _candidate_reject_reason(item: dict, article_ids: set[str], target_norm: str) -> str:
+    peer_name = _plain_text(item.get("peer_name") or item.get("company_name"), 80)
+    ticker_hint = _plain_text(item.get("ticker_hint") or item.get("ticker"), 30)
+    evidence = _plain_text(item.get("evidence_sentence") or item.get("reason"), 240)
+    business = _plain_text(item.get("comparable_business") or item.get("overlap_business"), 80)
+    relation_raw = _plain_text(item.get("relation_type") or item.get("relationship"), 40)
+    source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+    evidence_ids = item.get("evidence_source_ids") if isinstance(item.get("evidence_source_ids"), list) else []
+    aid = str(item.get("discovery_article_id") or (source_ids[0] if source_ids else "") or (evidence_ids[0] if evidence_ids else "")).strip()
+    relation_text = " ".join([relation_raw, evidence, business])
+    if not peer_name:
+        return "dropped_no_name"
+    if _norm_name(peer_name) == target_norm:
+        return "dropped_self"
+    if aid not in article_ids:
+        return "dropped_no_discovery_source"
+    if not ticker_hint:
+        return "dropped_no_ticker"
+    if peer_name in _UNLISTED_PEER_NAMES or _norm_name(peer_name) in {_norm_name(x) for x in _UNLISTED_PEER_NAMES}:
+        return "dropped_unlisted"
+    for reason, pattern in _CUSTOMER_SUPPLIER_REASONS:
+        if pattern.search(relation_text) and not _COMPETITOR_RELATION_RE.search(relation_text):
+            return reason
+    if not (_COMPETITOR_RELATION_RE.search(relation_text) or relation_raw in ("direct_competitor", "partial_competitor", "global_benchmark")):
+        return "dropped_no_business_overlap"
+    if not business:
+        return "dropped_no_business_overlap"
+    if len(evidence) < 8 or peer_name not in evidence:
+        return "dropped_weak_evidence"
+    return ""
+
+
+def _business_keyword_queries(target_reports: list[dict]) -> list[str]:
+    text = " ".join(f"{r.get('title', '')} {r.get('abstract', '')}" for r in target_reports)
+    candidates: list[str] = []
+    keyword_groups = [
+        r"(?:车载|手机|光学|LiDAR|AR|VR|XR|AI)[^，。；\n]{0,12}(?:镜头|模组|器件|平台|产品)",
+        r"(?:云服务|企业软件|AI平台|广告|游戏|电商)[^，。；\n]{0,12}",
+        r"(?:电动车|汽车|电池|储能|充电|智驾)[^，。；\n]{0,12}",
+    ]
+    for pattern in keyword_groups:
+        for match in re.findall(pattern, text, re.I):
+            q = _plain_text(match, 30)
+            if len(q) >= 3 and q not in candidates:
+                candidates.append(q)
+    if not candidates:
+        for word in re.findall(r"[A-Za-z0-9]{2,}|[\u4e00-\u9fff]{3,8}", text):
+            if len(candidates) >= 4:
+                break
+            if word not in candidates:
+                candidates.append(word)
+    return [f"{q} 上市公司 同业 可比" for q in candidates[:4]]
+
+
 def target_research_inputs(materials: dict, company_name: str, ticker: str, max_reports: int = 8) -> list[dict]:
     rows = []
     target_norm = _norm_name(company_name)
@@ -169,9 +239,7 @@ relation_type 只能是：
     text, ok = llm_call(prompt, max_tokens=2500, timeout=90)
     if not ok:
         return [], "discovery_llm_failed"
-    payload = _extract_json_payload(text)
-    if isinstance(payload, dict):
-        payload = payload.get("peers") or payload.get("candidates") or []
+    payload = _coerce_peer_payload(_extract_json_payload(text))
     if not isinstance(payload, list):
         return [], "discovery_json_invalid"
     rows = []
@@ -179,17 +247,19 @@ relation_type 只能是：
     for item in payload[:8]:
         if not isinstance(item, dict):
             continue
-        peer_name = _plain_text(item.get("peer_name"), 80)
+        peer_name = _plain_text(item.get("peer_name") or item.get("company_name"), 80)
+        ticker_hint = _plain_text(item.get("ticker_hint") or item.get("ticker"), 30)
         evidence = _plain_text(item.get("evidence_sentence"), 240)
-        business = _plain_text(item.get("comparable_business"), 80)
-        aid = str(item.get("discovery_article_id") or "").strip()
-        if not peer_name or _norm_name(peer_name) == target_norm or aid not in article_ids:
-            continue
-        if not business or len(evidence) < 8 or peer_name not in evidence:
+        business = _plain_text(item.get("comparable_business") or item.get("overlap_business"), 80)
+        relation_raw = _plain_text(item.get("relation_type") or item.get("relationship"), 40)
+        source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+        evidence_ids = item.get("evidence_source_ids") if isinstance(item.get("evidence_source_ids"), list) else []
+        aid = str(item.get("discovery_article_id") or (source_ids[0] if source_ids else "") or (evidence_ids[0] if evidence_ids else "")).strip()
+        if _candidate_reject_reason(item, article_ids, target_norm):
             continue
         rows.append({
             "peer_name": peer_name,
-            "ticker_hint": _plain_text(item.get("ticker_hint"), 30),
+            "ticker_hint": ticker_hint,
             "relation_type": item.get("relation_type") if item.get("relation_type") in RELATION_PRIORITY else "细分业务可比",
             "comparable_business": business,
             "evidence_sentence": evidence,
@@ -197,6 +267,65 @@ relation_type 只能是：
             "confidence": item.get("confidence", 0),
         })
     return dedupe_and_rank_candidates(rows)[:5], "supported" if rows else "empty"
+
+
+def discover_keyword_peer_candidates(target_reports: list[dict], company_name: str, ticker: str, market: str,
+                                     llm_call: Callable[..., tuple[str, bool]] | None,
+                                     candidate_fetcher: Callable[[str, int, int], list[dict]] | None = None) -> tuple[list[dict], list[dict]]:
+    """Second-stage discovery from business keyword retrieval, still source-bound.
+
+    The fetched snippets are treated as discovery materials only; final peer rows
+    still require stock resolution and independent peer-specific progress sources.
+    """
+    if llm_call is None or candidate_fetcher is None or not target_reports:
+        return [], []
+    contexts, raw_payloads = [], []
+    for query in _business_keyword_queries(target_reports):
+        items = candidate_fetcher(query, 365, 8) or []
+        raw_payloads.append({"query": query, "materials": items})
+        for item in items[:6]:
+            sid = _source_id(item)
+            if not sid:
+                continue
+            contexts.append({
+                "id": sid,
+                "title": _source_title(item),
+                "date": _source_date(item),
+                "text": _source_text(item),
+            })
+    if not contexts:
+        return [], raw_payloads
+    prompt = f"""仅根据以下业务关键词检索材料，提取上市同业候选。不要凭常识补同行。
+目标公司：{company_name} {ticker} {market}
+输出严格 JSON：
+{{"peer_candidates":[{{"company_name":"","ticker_hint":"","market_hint":"A|HK|US|unknown","relationship":"direct_competitor|partial_competitor|global_benchmark","overlap_business":"","reason":"","source_ids":[]}}]}}
+规则：只保留上市公司；客户、供应商、合作方、投资方、未上市主体不得作为同业；source_ids 必须来自输入材料 id；必须说明与目标公司的重叠业务。
+材料：{json.dumps(contexts, ensure_ascii=False)}
+"""
+    text, ok = llm_call(prompt, max_tokens=2500, timeout=90)
+    if not ok:
+        return [], raw_payloads
+    payload = _coerce_peer_payload(_extract_json_payload(text))
+    article_ids = {str(c["id"]) for c in contexts}
+    target_norm = _norm_name(company_name)
+    rows = []
+    for item in payload[:8]:
+        if not isinstance(item, dict) or _candidate_reject_reason(item, article_ids, target_norm):
+            continue
+        source_ids = item.get("source_ids") if isinstance(item.get("source_ids"), list) else []
+        evidence_ids = item.get("evidence_source_ids") if isinstance(item.get("evidence_source_ids"), list) else []
+        aid = str(item.get("discovery_article_id") or (source_ids[0] if source_ids else "") or (evidence_ids[0] if evidence_ids else "")).strip()
+        rows.append({
+            "peer_name": _plain_text(item.get("peer_name") or item.get("company_name"), 80),
+            "ticker_hint": _plain_text(item.get("ticker_hint") or item.get("ticker"), 30),
+            "relation_type": _plain_text(item.get("relation_type") or item.get("relationship"), 40) or "细分业务可比",
+            "comparable_business": _plain_text(item.get("comparable_business") or item.get("overlap_business"), 80),
+            "evidence_sentence": _plain_text(item.get("evidence_sentence") or item.get("reason"), 240),
+            "discovery_article_id": aid,
+            "confidence": item.get("confidence", 0),
+            "discovery_stage": "keyword_supplement",
+        })
+    return dedupe_and_rank_candidates(rows)[:5], raw_payloads
 
 
 def dedupe_and_rank_candidates(candidates: list[dict]) -> list[dict]:
@@ -421,11 +550,20 @@ def build_peer_comparison_bundle(materials: dict, company_name: str, ticker: str
                                  token: str = "", llm_call: Callable[..., tuple[str, bool]] | None = None,
                                  resolver: Callable[[dict], list[dict]] | None = None,
                                  material_fetcher: Callable[[dict, str, int, int], list[dict]] | None = None,
+                                 candidate_fetcher: Callable[[str, int, int], list[dict]] | None = None,
                                  output_dir: str | None = None) -> dict:
     target_reports = target_research_inputs(materials, company_name, ticker, 8)
     candidates, discovery_status = discover_peer_candidates(target_reports, company_name, ticker, market, llm_call)
     errors: list[dict[str, str]] = []
     client = DatayesClient(token) if token and DatayesClient is not None else None
+    if candidate_fetcher is None and client is not None:
+        candidate_fetcher = lambda question, days_back, size: _query_get_materials(client, question, days_back, size, errors)
+    supplemental_payloads: list[dict] = []
+    if len(candidates) < 3:
+        extra_candidates, supplemental_payloads = discover_keyword_peer_candidates(
+            target_reports, company_name, ticker, market, llm_call, candidate_fetcher
+        )
+        candidates = dedupe_and_rank_candidates(candidates + extra_candidates)[:8]
     entities, dropped = resolve_peer_entities(candidates, ticker, company_name, client=client, errors=errors, resolver=resolver)
     peers, peer_materials_dump, query_count = [], [], 0
     for peer in entities[:5]:
@@ -452,12 +590,28 @@ def build_peer_comparison_bundle(materials: dict, company_name: str, ticker: str
     bundle = {
         "target": {"company_name": company_name, "ticker": ticker, "market": market, "comparison_row": target_row},
         "status": "supported" if len(peers) >= 2 else "unsupported",
+        "discovery_status": discovery_status,
         "peer_candidates_total": len(candidates),
         "peer_entities_resolved": len(entities),
         "valid_peer_rows": len(peers),
         "query_count": query_count,
         "peers": peers,
         "dropped_candidates": dropped,
+        "candidate_discovery_materials": [
+            item for payload in supplemental_payloads for item in (payload.get("materials") or [])
+            if isinstance(item, dict)
+        ],
+        "diagnostics": {
+            "failure_stage": (
+                "supported" if len(peers) >= 2 else
+                "candidate_discovery" if not candidates else
+                "security_resolution" if not entities else
+                "peer_material_retrieval" if not any(p.get("peer_materials") for p in peers) else
+                "progress_evidence_validation"
+            ),
+            "keyword_supplement_triggered": bool(supplemental_payloads),
+            "dropped_reasons": [d.get("reason", "") for d in dropped if d.get("reason")],
+        },
         "errors": errors,
         "ah_mapping": {"status": "none", "rows": []},
     }
@@ -466,6 +620,8 @@ def build_peer_comparison_bundle(materials: dict, company_name: str, ticker: str
         raw.mkdir(parents=True, exist_ok=True)
         (raw / "peer_candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2), encoding="utf-8")
         (raw / "peer_materials.json").write_text(json.dumps(peer_materials_dump, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        if supplemental_payloads:
+            (raw / "peer_keyword_candidates.json").write_text(json.dumps(supplemental_payloads, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         (Path(output_dir) / "peer_evidence.json").write_text(json.dumps(bundle, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
         (Path(output_dir) / "ah_mapping.json").write_text(json.dumps(bundle["ah_mapping"], ensure_ascii=False, indent=2), encoding="utf-8")
     return bundle
@@ -500,6 +656,23 @@ def merge_peer_sources_into_materials(materials: dict, peer_bundle: dict) -> dic
                 "api_nameEn": "getMaterialsV2",
             })
             seen.add(sid)
+    for item in peer_bundle.get("candidate_discovery_materials", []) or []:
+        sid = _source_id(item)
+        if not sid or sid in seen:
+            continue
+        meta = item.get("metadata") or {}
+        sources.append({
+            "id": sid,
+            "type": item.get("type") or item.get("dataType") or "Materials V2",
+            "title": _source_title(item),
+            "organization": meta.get("organization", "") or item.get("organization", ""),
+            "publishTime": _source_date(item),
+            "url": item.get("url", ""),
+            "company_match": "peer_discovery_context",
+            "source_role": "peer_discovery",
+            "api_nameEn": "getMaterialsV2",
+        })
+        seen.add(sid)
     return out
 
 
@@ -518,8 +691,13 @@ def _fmt_cell(value: str, ref: int = -1) -> str:
 
 def build_peer_comparison_section(peer_bundle: dict, ref_map: dict) -> str:
     peers = peer_bundle.get("peers", [])[:3]
+    lines = [
+        "## 9 行业对比与 A/H 映射",
+        "",
+    ]
     if len(peers) < 2:
-        return ""
+        lines.append("本轮未取得至少2家具有独立进展来源的有效可比公司，同行表未生成。")
+        return "\n".join(lines)
     target = peer_bundle.get("target", {})
     target_row = target.get("comparison_row", {})
     lines = [

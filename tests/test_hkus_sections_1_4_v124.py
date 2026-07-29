@@ -27,6 +27,7 @@ def _key_data():
 
 def _payload():
     return {
+        "title_conclusion": "主业修复驱动盈利质量改善",
         "section_1": {
             "key_points": [
                 {"keyword": "利润率", "statement": "云业务收入改善驱动利润率修复", "source_refs": [1]},
@@ -130,7 +131,7 @@ class SectionsJsonTests(unittest.TestCase):
 
     def test_combined_fail_then_split_succeeds(self):
         p = _payload()
-        part12 = {"section_1": p["section_1"], "section_2": p["section_2"]}
+        part12 = {"title_conclusion": p["title_conclusion"], "section_1": p["section_1"], "section_2": p["section_2"]}
         part34 = {"section_3": p["section_3"], "section_4": p["section_4"]}
         calls = self._mock_llm([
             ("not json", True),

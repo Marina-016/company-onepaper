@@ -255,28 +255,41 @@ def check_delivery(md_path: str, market: str) -> GateResult:
         gate.issues.append(Issue("Delivery", "D3", P1,
             "未找到 source_trace.json / id_audit.json / materials.json", "check(产物)"))
 
-    # D4: market/ticker/date/price 口径在报告头信息中
+    # D4: report header metadata. HK/US only keeps market and generation date.
     with open(md_path, 'r', encoding='utf-8') as f:
         content = f.read()
     header_info = content[:800] if len(content) > 800 else content
     missing_header = []
-    if not re.search(r'市场[：:]', header_info) and market != "A":
-        missing_header.append('市场')
-    if not re.search(r'(?:ticker|代码|股票代码)', header_info, re.I) and not re.search(r'[\(（]\d{4,6}[\.\w]*[\)）]', header_info):
-        missing_header.append('ticker/代码')
-    if not re.search(r'生成日期[：:]', header_info) and not (market == "A" and re.search(r'\*\*日期\*\*|日期[：:]', header_info)):
-        missing_header.append('生成日期')
-    if not re.search(r'当前价格|价格/市值', header_info) and not (market == "A" and re.search(r'PE\(TTM\)|PB', header_info)):
-        missing_header.append('价格/市值口径')
     if market in ("HK", "US"):
-        if re.search(r'TBD|extract from materials', header_info, re.I):
-            missing_header.append('页眉占位符')
-        industry_m = re.search(r'行业[：:]\s*([^|\n]+)', header_info)
-        if not industry_m or not industry_m.group(1).strip() or re.search(r'TBD|待确认|待补充|extract from materials', industry_m.group(1), re.I):
-            missing_header.append('行业')
-        price_m = re.search(r'(?:当前价格/市值|价格/市值)[：:]\s*([^|\n]+)', header_info)
-        if not price_m or not price_m.group(1).strip() or re.search(r'TBD|待补充|未取得|extract from materials', price_m.group(1), re.I):
-            missing_header.append('当前价格/市值')
+        meta_line = ""
+        for line in content.splitlines()[1:6]:
+            if line.strip().startswith("市场"):
+                meta_line = line.strip()
+                break
+        expected_market = "港股" if market == "HK" else "美股"
+        if not meta_line:
+            missing_header.append('市场')
+            missing_header.append('生成日期')
+        else:
+            if not re.fullmatch(rf'市场：{expected_market} \| 生成日期：\d{{4}}-\d{{2}}-\d{{2}}', meta_line):
+                gate.issues.append(Issue("Delivery", "D4_HKUS_HEADER_SCHEMA", P1,
+                    f"港美股报告头部必须严格为: 市场：{expected_market} | 生成日期：YYYY-MM-DD", "header-schema"))
+            if "行业：" in meta_line or "当前价格/市值：" in meta_line:
+                gate.issues.append(Issue("Delivery", "D4_HKUS_HEADER_LEGACY", P1,
+                    "港美股报告头部不得出现'行业：'或'当前价格/市值：'", "header-schema"))
+            if not re.search(rf'市场：{expected_market}', meta_line):
+                missing_header.append('市场')
+            if not re.search(r'生成日期：\d{4}-\d{2}-\d{2}', meta_line):
+                missing_header.append('生成日期')
+    else:
+        if not re.search(r'市场[：:]', header_info) and market != "A":
+            missing_header.append('市场')
+        if not re.search(r'(?:ticker|代码|股票代码)', header_info, re.I) and not re.search(r'[\(（]\d{4,6}[\.\w]*[\)）]', header_info):
+            missing_header.append('ticker/代码')
+        if not re.search(r'生成日期[：:]', header_info) and not (market == "A" and re.search(r'\*\*日期\*\*|日期[：:]', header_info)):
+            missing_header.append('生成日期')
+        if not re.search(r'当前价格|价格/市值', header_info) and not (market == "A" and re.search(r'PE\(TTM\)|PB', header_info)):
+            missing_header.append('价格/市值口径')
     if missing_header:
         gate.issues.append(Issue("Delivery", "D4", P1,
             f"报告头信息缺失: {', '.join(missing_header)}", "check(口径)"))
@@ -447,6 +460,10 @@ def check_structure(content: str, market: str) -> GateResult:
     else:
         gate.issues.append(Issue("Structure", "S6", P1,
             "标题无一句话投资结论", "AUDIT-P1"))
+    # S6b: 标题不得包含"标题生成失败"占位符 (r11b)
+    if "标题生成失败" in first_line:
+        gate.issues.append(Issue("Structure", "S6", P0,
+            "标题包含'标题生成失败'占位符——标题生成链路必须兜底为投资结论", "r11b-P0"))
 
     # S7: §1 关键要点不能为空 (AUDIT P0)
     sec1 = _find_section(content, [r'## 1 关键要点.*?(?=## 2 |\Z)'])
@@ -638,6 +655,8 @@ def check_citation(content: str, market: str) -> GateResult:
                     header = headers[idx] if idx < len(headers) else ""
                     plain = re.sub(r'\[\d+\]', '', cell).strip()
                     has_fact_signal = bool(re.search(r'\d|增长|下降|提升|改善|验证|发布|披露|收入|利润|现金流|资本开支|产品|业务|客户|毛利率|市占率|订单|销量|出货|回购|分红', plain))
+                    if re.search(r'引用|来源|数据来源|Source', header, re.I):
+                        continue
                     if any(h in header for h in label_headers) and not has_fact_signal:
                         bad_cells.append(cell[:60])
                     elif len(plain) <= 12 and any(t in plain for t in pure_label_terms) and not has_fact_signal:
@@ -653,19 +672,20 @@ def check_citation(content: str, market: str) -> GateResult:
     if target_section:
         # Extract all [N] refs from each row of the target price table
         target_rows = re.findall(r'^\|.+\|$', target_section, re.M)
-        ref_per_row = {}
+        ref_to_orgs: dict[int, set[str]] = {}
         for row in target_rows:
+            if re.match(r'^\|\s*:?-+', row) or re.search(r'机构|目标价', row):
+                continue
             refs = [int(x) for x in re.findall(r'\[(\d+)\]', row)]
             org_match = re.match(r'\|\s*([^|\d]+?)(?:\s*\[|\s*\||$)', row)
             org = org_match.group(1).strip() if org_match else row[:30]
             if refs:
-                for r in refs:
-                    if r not in ref_per_row: ref_per_row[r] = []
-                    ref_per_row[r].append(org)
-        for ref_num, orgs in ref_per_row.items():
+                for r in set(refs):
+                    ref_to_orgs.setdefault(r, set()).add(org)
+        for ref_num, orgs in ref_to_orgs.items():
             if len(orgs) >= 3:
                 gate.issues.append(Issue("Citation", "C10", P0,
-                    f"引用[{ref_num}]被{len(orgs)}家机构目标价共用——每家机构必须绑定独立引用", "AUDIT-P0"))
+                    f"引用[{ref_num}]被{len(orgs)}家不同机构目标价共用——每家机构必须绑定独立引用", "AUDIT-P0"))
 
     # C11: 来源内容与引用支撑的事实类型不匹配 (AUDIT P1)
     # 检测: §11.1 所有目标价只引用 [1] 但 [1] 在参考资料中标注为微信/市场观点/行业研报
@@ -882,7 +902,9 @@ def check_data_integrity(content: str, market: str) -> GateResult:
                 if missing_refs:
                     gate.issues.append(Issue("Data", "D9b", P1,
                         f"港股§7出现PIT财务数据但参考资料缺少结构化接口来源: {', '.join(missing_refs)}", "AUDIT-P1"))
-                if not re.search(r'数据来源[：:]\s*(?:\[\d+\]){3}', sec7):
+                source_line = next((line for line in sec7.splitlines() if "数据来源" in line), "")
+                source_refs = {int(x) for x in re.findall(r'\[(\d+)\]', source_line)}
+                if len(source_refs) < 3:
                     gate.issues.append(Issue("Data", "D9d", P1,
                         "港股§7使用PIT财务数据但表前未以'[N][N][N]'简洁标明三表来源", "AUDIT-P1"))
                 long_source_terms = re.findall(r'财务数据使用港股 PIT 三表口径，表格覆盖|港股 PIT 利润表\[\d+\]|港股 PIT 资产负债表\[\d+\]|港股 PIT 现金流量表\[\d+\]', sec7)
@@ -1553,8 +1575,197 @@ def check_section_quality(content: str, market: str) -> GateResult:
                 gate.issues.append(Issue("Section", "E12h", P1,
                     "§11.4乐观/中性/悲观目标价排序错误", "AUDIT-P1"))
 
+    # ── r11b: §9 §10 §11 enhanced checks ──
+    _r11b_section_quality_checks(gate, content)
     _update_gate(gate)
     return gate
+
+
+def _strip_md(text: str) -> str:
+    """Strip markdown formatting: headers, bold, links, citation refs. KEEPS table content."""
+    if not text:
+        return ""
+    text = re.sub(r'^#{1,4}\s+.*$', '', text, flags=re.M)
+    text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    text = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', text)
+    text = re.sub(r'\[\d+\]', '', text)
+    text = re.sub(r'\s+', '', text)
+    return text
+
+
+def _cell_refs(cell: str) -> list[int]:
+    return [int(x) for x in re.findall(r'\[(\d+)\]', cell or "")]
+
+
+def _norm_topic_for_quality(text: str) -> set[str]:
+    base = re.sub(r'\[\d+\]|[^\w\u4e00-\u9fff]+', ' ', str(text or "").lower())
+    return {w for w in base.split() if len(w) >= 2} | set(re.findall(r'[\u4e00-\u9fff]{2,6}', base))
+
+
+def _topic_jaccard(a: str, b: str) -> float:
+    sa, sb = _norm_topic_for_quality(a), _norm_topic_for_quality(b)
+    return len(sa & sb) / max(1, len(sa | sb)) if sa and sb else 0.0
+
+
+def _r11b_section_quality_checks(gate, content):
+    """r11b: enhanced §9 §10 §11 quality checks."""
+    sec9_body = _find_section(content, [r'## 9 ' + '行业对比.*?(?=## 10 |\\Z)'])
+    sec10_body = _find_section(content, [r'## 10 ' + '市场分歧.*?(?=## 11 |\\Z)'])
+    # §9: check for substantive content (real table rows vs explanation-only)
+    sec9_table_rows = re.findall(r'^\|.*\|$', sec9_body, re.M) if sec9_body else []
+    sec9_data_rows = [r for r in sec9_table_rows
+                      if not re.match(r'^\|[\s:\-]+\|$', r)
+                      and "竞争关系" not in r
+                      and "可比业务" not in r]
+    sec9_clean = _strip_md(sec9_body) if sec9_body else ""
+    has_peer_table = len(sec9_data_rows) >= 1
+    if not has_peer_table and (not sec9_clean or len(sec9_clean) < 35):
+        gate.issues.append(Issue("Section", "E9a", P1,
+            "§9行业对比为空——必须输出同行表或'未取得有效同行'说明", "r11b-P1"))
+    # §10: check for substantive debate rows
+    sec10_table_rows = [r for r in (re.findall(r'^\|.*\|$', sec10_body, re.M) if sec10_body else [])
+                        if not re.match(r'^\|[\s:\-]+\|$', r)
+                        and "多头观点" not in r]
+    if not sec10_table_rows:
+        gate.issues.append(Issue("Section", "E10a", P1,
+            "§10市场分歧为空——必须输出4-6行多空对照四列表", "r11b-P1"))
+    valid_db = [r for r in sec10_table_rows]
+    if len(valid_db) < 4:
+        gate.issues.append(Issue("Section", "E10b", P1,
+            f"§10仅{len(valid_db)}行有效分歧(期望4-6行)", "r11b-P1"))
+    elif len(valid_db) > 6:
+        gate.issues.append(Issue("Section", "E10d", P1,
+            f"§10有效分歧超过6行(当前{len(valid_db)}行)", "r11d-P1"))
+    if sec10_body:
+        for tbl in _extract_tables(sec10_body):
+            lines = [l for l in tbl.splitlines() if l.strip().startswith("|")]
+            if not lines:
+                continue
+            header = [c.strip() for c in lines[0].split("|")[1:-1]]
+            if not any("多头" in h for h in header):
+                continue
+            if len(header) != 4:
+                gate.issues.append(Issue("Section", "E10_SCHEMA", P1,
+                    "§10市场分歧必须是4列表格: 多头观点|证据|空头观点|验证点", "r11d-P1"))
+            data = []
+            for line in lines[2:]:
+                if re.match(r'^\|\s*:?-+', line):
+                    continue
+                cells = [c.strip() for c in line.split("|")[1:-1]]
+                if len(cells) < 4:
+                    continue
+                data.append(cells)
+                if any(not re.sub(r'\[\d+\]', '', c).strip() for c in cells[:4]):
+                    gate.issues.append(Issue("Section", "E10_EMPTY_CELL", P1,
+                        "§10市场分歧存在空单元格", "r11d-P1"))
+                if not _cell_refs(cells[1]):
+                    gate.issues.append(Issue("Section", "E10_EVIDENCE_REF", P1,
+                        "§10证据列缺少引用", "r11d-P1"))
+                if not _cell_refs(cells[3]):
+                    gate.issues.append(Issue("Section", "E10_VALIDATION_REF", P1,
+                        "§10验证点缺少引用", "r11d-P1"))
+                for cell in cells:
+                    refs = _cell_refs(cell)
+                    if len(refs) != len(set(refs)):
+                        gate.issues.append(Issue("Section", "E10_REF_DUP", P1,
+                            "§10单元格存在重复引用", "r11d-P1"))
+                        break
+                if _topic_jaccard(cells[0], cells[2]) >= 0.75:
+                    gate.issues.append(Issue("Section", "E10_NOT_OPPOSING", P1,
+                        "§10多头和空头疑似同义改写，未形成真实对立", "r11d-P1"))
+            topic_cells = [re.sub(r'\[\d+\]', '', r[0] + r[2]) for r in data]
+            for i in range(len(topic_cells)):
+                for j in range(i + 1, len(topic_cells)):
+                    if _topic_jaccard(topic_cells[i], topic_cells[j]) >= 0.62:
+                        gate.issues.append(Issue("Section", "E10_TOPIC_DUP", P1,
+                            "§10市场分歧主题高度重复，应去重保留质量最高行", "r11d-P1"))
+                        break
+                else:
+                    continue
+                break
+    sec11_1 = _find_section(content, [r'### 11\.1 ' + '.*?(?=### 11\\.[23]|\\Z)'])
+    if sec11_1:
+        tp_rows = re.findall(r'^\|.*\|$', sec11_1, re.M)
+        data_rows = [r for r in tp_rows if r.strip("| :-\n") and "目标价口径" not in r and "机构" not in r]
+        bases = []; assumptions = []; orgs = []
+        banned = ["收入增长与需求兑现","产品迭代与客户转化","业务发展","盈利改善","估值修复","基本面改善","关注后续进展"]
+        allowlisted_bases = {"研报披露目标价,正文未披露估值方法", "研报披露目标价，正文未披露估值方法"}
+        for row in data_rows:
+            cells = [c.strip() for c in row.strip("|").split("|")]
+            if len(cells) >= 5: bases.append(cells[4])
+            if len(cells) >= 6: assumptions.append(cells[5])
+            if len(cells) >= 1: orgs.append(cells[0])
+        # E11a: 仅对旧模板/非缺失口径相同/ID不匹配触发
+        old_template = "结构化目标价字段；方法未明示"
+        if bases and all(old_template in b for b in bases):
+            gate.issues.append(Issue("Section", "E11a", P1,
+                "§11.1目标价口径全部为旧模板'结构化目标价字段；方法未明示'——每家机构应独立提取", "r11b-P1"))
+        elif len(bases) > 1 and len(set(bases)) == 1 and not all(b in allowlisted_bases for b in bases):
+            gate.issues.append(Issue("Section", "E11a", P1,
+                "§11.1目标价口径全部相同且非统一缺失口径——每家机构应独立提取", "r11b-P1"))
+        # E11b: banned phrases in key assumptions
+        all_text = " ".join(assumptions)
+        for phrase in banned:
+            if phrase in all_text:
+                gate.issues.append(Issue("Section", "E11b", P1,
+                    f"§11.1关键假设含禁用泛化短语: '{phrase}'", "r11b-P1"))
+                break
+        # E11d: cross-institution assumption duplication
+        fail_closed_marker = "正文未披露可验证的关键假设"
+        norm_assumptions = []
+        for a in assumptions:
+            na = re.sub(r'\[\d+\]', '', a)
+            na = re.sub(r'[\s,，、；;。.]', '', na).lower()
+            norm_assumptions.append(na)
+        non_fail_closed = [na for i, na in enumerate(norm_assumptions)
+                           if fail_closed_marker not in assumptions[i]]
+        if len(non_fail_closed) >= 3:
+            uniq = list(set(non_fail_closed))
+            dup_ratio = 1 - len(uniq) / len(non_fail_closed) if non_fail_closed else 0
+            if dup_ratio >= 0.5:
+                gate.issues.append(Issue("Section", "E11d", P1,
+                    f"§11.1关键假设跨机构重复率过高({dup_ratio:.0%}，{len(non_fail_closed)}家中{len(uniq)}个不同)——应逐机构独立提取", "r11b-P1"))
+        concrete_assumptions = []
+        for a in assumptions:
+            plain = re.sub(r'\[\d+\]', '', a)
+            if "正文未披露可验证的关键假设" in plain:
+                continue
+            parts = [p.strip() for p in re.split(r'[；;、]', plain) if p.strip()]
+            if len(parts) >= 2 and any(re.search(r'\d|20\d{2}|客户|订单|出货|ASP|毛利|收入|利润|量产|认证|份额|渗透', p, re.I) for p in parts):
+                concrete_assumptions.append(plain)
+        if len(data_rows) >= 3 and len(concrete_assumptions) < 3:
+            gate.issues.append(Issue("Section", "E11_ASSUMPTION_COVERAGE", P1,
+                f"§11.1具备2条以上具体关键假设的机构不足3家(当前{len(concrete_assumptions)}家)", "r11d-P1"))
+        method_like = [b for b in bases if re.search(r'PE|P/E|DCF|SOTP|EV/S|P/S|PB|P/B|202\dE|FY202\d|盈利预测', re.sub(r'\[\d+\]', '', b), re.I)]
+        if bases and not method_like:
+            gate.issues.append(Issue("Section", "E11_METHOD_DISCLOSURE", P2,
+                "§11.1未发现明确估值方法或预测年份；允许缺失但需保留证据不足口径", "r11d-P2"))
+        tp_values = []
+        for row in data_rows:
+            m = re.search(r'(\d+(?:\.\d+)?)(?:港元|美元)/', row)
+            if m: tp_values.append(float(m.group(1)))
+        if len(tp_values) >= 4 and len(tp_values) % 2 == 0:
+            sv = sorted(tp_values)
+            correct = round((sv[len(sv)//2 - 1] + sv[len(sv)//2]) / 2, 2)
+            sec11_2 = _find_section(content, [r'### 11\.2 ' + '.*?(?=### 11\\.[34]|\\Z)'])
+            if sec11_2:
+                rep = re.search(r'中位数为\s*(\d+(?:\.\d+)?)', sec11_2)
+                if rep and abs(float(rep.group(1)) - correct) > 0.1:
+                    gate.issues.append(Issue("Section", "E11c", P1,
+                        f"§11.2中位数错误: 报告写{float(rep.group(1)):g}，应为{correct:g}", "r11b-P1"))
+    sec11_3 = _find_section(content, [r'### 11\.3 ' + '.*?(?=### 11\\.[4]|## 12|\\Z)'])
+    if sec11_3:
+        required_terms = ["目标价分布", "估值分歧来源", "验证框架"]
+        missing_terms = [t for t in required_terms if t not in sec11_3]
+        if missing_terms:
+            gate.issues.append(Issue("Section", "E11_3_STRUCTURE", P1,
+                f"§11.3缺少必要分析段: {missing_terms}", "r11d-P1"))
+        if not re.search(r'\[\d+\]', sec11_3):
+            gate.issues.append(Issue("Section", "E11_3_REFS", P1,
+                "§11.3缺少来自§11.1机构研报的引用", "r11d-P1"))
+        if re.search(r'中位附近机构[^。；\n]{0,12}中位数目标价|称为中位数目标价', sec11_3):
+            gate.issues.append(Issue("Section", "E11_3_MEDIAN_LABEL", P1,
+                "§11.3不得把中位附近机构目标价称为中位数目标价", "r11d-P1"))
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -2178,6 +2389,10 @@ def check_peer_comparison_source_trace(content: str, market: str, source_trace_p
         if len(row) <= max(idx.values()):
             continue
         company_cell = row[idx["公司"]]
+        row_text = " ".join(row)
+        if re.search(r'未上市|华为', row_text) or (re.search(r'客户|供应商|合作方|投资方', row_text) and not re.search(r'竞争|同业|可比|对标', row_text)):
+            gate.issues.append(Issue("Peer", "P9_18", P1,
+                f"§9疑似将客户、供应商、合作方或未上市主体作为同行: {company_cell}", "AUDIT-P1"))
         if target_name and target_name in company_cell:
             gate.issues.append(Issue("Peer", "P9_10", P1, f"peer行再次出现目标公司: {company_cell}", "AUDIT-P1"))
         key = re.sub(r'\[\d+\]|[（）()].*', '', company_cell).strip()
@@ -2189,8 +2404,8 @@ def check_peer_comparison_source_trace(content: str, market: str, source_trace_p
             if not refs_by_col.get(col):
                 gate.issues.append(Issue("Peer", "P9_12", P1, f"{company_cell}{col}无引用", "AUDIT-P1"))
             for rn in refs_by_col.get(col, []):
-                if ref_sources and ref_sources.get(rn, {}).get("source_role") != "target_research":
-                    gate.issues.append(Issue("Peer", "P9_13", P1, f"{company_cell}{col}引用[{rn}]不是target_research", "AUDIT-P1"))
+                if ref_sources and ref_sources.get(rn, {}).get("source_role") not in ("target_research", "peer_discovery"):
+                    gate.issues.append(Issue("Peer", "P9_13", P1, f"{company_cell}{col}引用[{rn}]不是target_research或peer_discovery", "AUDIT-P1"))
         for col in ("行业地位", "商业模式", "目标客户群体", "核心产品"):
             refs = refs_by_col.get(col, [])
             if not refs:

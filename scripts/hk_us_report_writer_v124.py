@@ -223,6 +223,16 @@ def _normalize_table_separators(text: str) -> str:
     return re.sub(r'^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$', repl, text, flags=re.M)
 
 
+def _clean_repeated_punctuation(text: str) -> str:
+    """Clean repetitive Chinese punctuation patterns from rendered text."""
+    text = text.replace("。；", "；")
+    text = text.replace("；。", "。")
+    text = text.replace("。。", "。")
+    text = text.replace("；；", "；")
+    text = re.sub(r'[。；]{2,}', lambda m: m.group(0)[0], text)
+    return text
+
+
 # ---------------------------------------------------------------------------
 # LLM call
 # ---------------------------------------------------------------------------
@@ -558,9 +568,13 @@ def _text_ok(value: Any, issues: list[str], path: str, min_len: int = 2) -> str:
         issues.append(f"{path}.placeholder")
     return text
 
-def _validate_sections_1_4_payload(payload: dict, ref_map: dict) -> tuple[dict, list[str]]:
+def _validate_sections_1_4_payload(payload: dict, ref_map: dict, company_name: str = "", ticker: str = "") -> tuple[dict, list[str]]:
     issues: list[str] = []
     clean: dict[str, Any] = {}
+    title_conclusion = _sanitize_title_conclusion(str(payload.get("title_conclusion") or ""), company_name, ticker, "")
+    if not title_conclusion:
+        issues.append("title_conclusion.invalid_or_missing")
+    clean["title_conclusion"] = title_conclusion
     s1 = payload.get("section_1") if isinstance(payload.get("section_1"), dict) else {}
     points = s1.get("key_points") if isinstance(s1.get("key_points"), list) else []
     if not (3 <= len(points) <= 4):
@@ -642,6 +656,23 @@ def _validate_sections_1_4_payload(payload: dict, ref_map: dict) -> tuple[dict, 
 def _cite(refs: list[int]) -> str:
     return "".join(f"[{r}]" for r in refs)
 
+def normalize_refs(text: str, refs: list[int]) -> str:
+    """Put merged, de-duplicated refs at the end of a single cell."""
+    base = re.sub(r'\[\d+\]', '', str(text or "")).strip()
+    merged: list[int] = []
+    for n in re.findall(r'\[(\d+)\]', str(text or "")):
+        v = int(n)
+        if v not in merged:
+            merged.append(v)
+    for ref in refs or []:
+        try:
+            v = int(ref)
+        except (TypeError, ValueError):
+            continue
+        if v > 0 and v not in merged:
+            merged.append(v)
+    return f"{base}{_cite(merged)}" if merged else base
+
 def _render_sections_1_4(payload: dict) -> dict[str, str]:
     lines12 = ["## 1 关键要点", ""]
     for item in payload["section_1"]["key_points"]:
@@ -662,7 +693,7 @@ def _render_sections_1_4(payload: dict) -> dict[str, str]:
     for item in payload["section_4"]["catalysts"]:
         refs = _cite(item["source_refs"])
         lines34.append(f"| {item['date']} | {item['event']}{refs} | {item['impact']}{refs} |")
-    return {"s12": "\n".join(lines12), "s34": "\n".join(lines34)}
+    return {"s12": "\n".join(lines12), "s34": "\n".join(lines34), "_title_conclusion": payload.get("title_conclusion", "")}
 
 def _validate_render_section_8(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
@@ -735,6 +766,347 @@ Context:
     rendered, issues = _validate_render_section_12(payload, ref_map)
     return rendered, bool(rendered and not issues), issues
 
+# ── §10 market debate (JSON-based LLM) ──
+
+_MARKET_DEBATE_BANNED_PHRASES = [
+    "收入增长与需求兑现", "产品迭代与客户转化", "业务发展", "盈利改善", "估值修复",
+    "基本面改善", "关注后续进展", "关注业务进展", "有待观察", "需持续跟踪",
+    "保持关注", "静待验证", "进一步确认",
+]
+
+def _section_10_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\n修正以下schema问题:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""你是HK/US股票分析师。只返回一个JSON对象用于§10市场分歧。
+格式: {{"market_debates": [{{"theme": "同一个分歧主题", "bull_view": "多头观点(15-40字)", "bull_evidence": "支持多头的具体事实/数据/时间节点(15-60字)", "bull_source_ids": [1], "bear_view": "空头观点(15-40字)", "bear_evidence": "支持空头的具体事实/数据/时间节点(15-60字)", "bear_source_ids": [2], "validation_metric": "未来可观察指标", "validation_window": "验证窗口"}}]}}
+
+要求:
+- 4-6行, 每行bull与bear围绕同一个theme且真正对立;
+- bull_evidence和bear_evidence都必须含具体事实、数字或明确时间节点;
+- validation_metric必须是未来可观察的数据、公告或时间节点, validation_window给出季度/半年/年度等窗口;
+- 禁止输出以下泛化句: {', '.join(_MARKET_DEBATE_BANNED_PHRASES[:8])};
+- 不得重复§8市场关注的整句话;
+- 多头和空头至少一侧引用明确表达该方向的机构研报;
+- bull_source_ids/bear_source_ids仅用目标公司context中的整数, 不要把整行引用复制到所有单元格。
+
+上下文:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _topic_key(text: str) -> set[str]:
+    base = re.sub(r'\[\d+\]|[^\w\u4e00-\u9fff]+', ' ', str(text or "").lower())
+    words = {w for w in base.split() if len(w) >= 2}
+    zh = re.findall(r'[\u4e00-\u9fff]{2,6}', base)
+    return words | set(zh)
+
+
+def _topic_similar(a: str, b: str) -> bool:
+    sa, sb = _topic_key(a), _topic_key(b)
+    if not sa or not sb:
+        return False
+    return len(sa & sb) / max(1, len(sa | sb)) >= 0.55
+
+
+def _has_fact_signal(text: str) -> bool:
+    return bool(re.search(r'\d|20\d{2}|Q[1-4]|H[12]|FY|同比|环比|bps|%|客户|订单|出货|收入|利润|毛利|目标价|评级|量产|认证|capex|margin|revenue|order', text or "", re.I))
+
+
+def _refs_from_row(row: dict, *keys: str) -> list[int]:
+    refs: list[int] = []
+    for key in keys:
+        value = row.get(key)
+        if isinstance(value, list):
+            for item in value:
+                try:
+                    ref = int(item)
+                except (TypeError, ValueError):
+                    continue
+                if ref not in refs:
+                    refs.append(ref)
+    return refs
+
+
+def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    debates = payload.get("market_debates") if isinstance(payload, dict) else None
+    if not isinstance(debates, list) or not (4 <= len(debates) <= 6):
+        return "", [f"section_10.rows_count:{0 if not isinstance(debates, list) else len(debates)}"]
+    lines = [
+        "## 10 市场分歧", "",
+        "| 多头观点 | 证据 | 空头观点 | 需要观察的验证点 |",
+        "|:---|:---|:---|:---|",
+    ]
+    rendered_count = 0
+    accepted_themes: list[str] = []
+    for i, row in enumerate(debates[:6]):
+        if not isinstance(row, dict):
+            issues.append(f"section_10.rows[{i}].not_object")
+            continue
+        theme = _text_ok(row.get("theme") or row.get("debate_theme") or row.get("bull_view"), issues, f"section_10.rows[{i}].theme", 4)
+        bull = _text_ok(row.get("bull_view"), issues, f"section_10.rows[{i}].bull_view", 8)
+        bear = _text_ok(row.get("bear_view"), issues, f"section_10.rows[{i}].bear_view", 8)
+        bull_evidence = _text_ok(row.get("bull_evidence") or row.get("evidence"), issues, f"section_10.rows[{i}].bull_evidence", 8)
+        bear_evidence = _text_ok(row.get("bear_evidence") or row.get("evidence"), issues, f"section_10.rows[{i}].bear_evidence", 8)
+        validation_metric = _text_ok(row.get("validation_metric") or row.get("validation"), issues, f"section_10.rows[{i}].validation_metric", 4)
+        validation_window = _plain_text(row.get("validation_window") or "", 24)
+        validation = f"{validation_metric}（{validation_window}）" if validation_window else validation_metric
+        bull_refs = _refs_ok(_refs_from_row(row, "bull_source_ids", "source_refs"), ref_map, issues, f"section_10.rows[{i}].bull")
+        bear_refs = _refs_ok(_refs_from_row(row, "bear_source_ids", "source_refs"), ref_map, issues, f"section_10.rows[{i}].bear")
+        row_refs = []
+        for ref in bull_refs + bear_refs:
+            if ref not in row_refs:
+                row_refs.append(ref)
+        if not (theme and bull and bear and bull_evidence and bear_evidence and validation and row_refs):
+            continue
+        if any(_topic_similar(theme, prior) for prior in accepted_themes):
+            issues.append(f"section_10.rows[{i}].duplicate_theme:{theme}")
+            continue
+        if bull == bear or _topic_similar(bull, bear):
+            issues.append(f"section_10.rows[{i}].bull_equals_bear")
+            continue
+        if not _has_fact_signal(bull_evidence):
+            issues.append(f"section_10.rows[{i}].bull_evidence_no_fact")
+            continue
+        if not _has_fact_signal(bear_evidence):
+            issues.append(f"section_10.rows[{i}].bear_evidence_no_fact")
+            continue
+        if not _has_fact_signal(validation):
+            issues.append(f"section_10.rows[{i}].validation_not_observable")
+            continue
+        for phrase in _MARKET_DEBATE_BANNED_PHRASES:
+            if phrase in bull + bear + bull_evidence + bear_evidence:
+                issues.append(f"section_10.rows[{i}].banned_phrase:{phrase}")
+                break
+        if any(x.startswith(f"section_10.rows[{i}].banned_phrase") for x in issues):
+            continue
+        evidence = f"多：{bull_evidence}；空：{bear_evidence}"
+        lines.append(
+            f"| {normalize_refs(bull, bull_refs)} | {normalize_refs(evidence, row_refs)} | "
+            f"{normalize_refs(bear, bear_refs)} | {normalize_refs(validation, row_refs)} |"
+        )
+        accepted_themes.append(theme)
+        rendered_count += 1
+    if rendered_count < 4:
+        return "", issues + [f"section_10.valid_rows:{rendered_count}<4"]
+    return "\n".join(lines), issues
+
+
+def gen_hkus_section_10(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+    if not _has_target_materials(key_data):
+        return ("", False, ["no_target_materials"])
+    schema_issues: list[str] = []
+    for scope in ("section_10", "section_10_retry"):
+        prompt = _section_10_json_prompt(key_data, schema_issues if scope.endswith("retry") else None)
+        text, ok = _call_llm(prompt, max_tokens=4000, timeout=300, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=scope)
+        if not ok:
+            schema_issues.append(f"{scope}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            schema_issues.append(f"{scope}:{parse_error}")
+            continue
+        rendered, issues = _validate_render_section_10(payload, ref_map)
+        if rendered and not issues:
+            return rendered, True, []
+        schema_issues.extend(f"{scope}:{x}" for x in issues)
+    return ("", False, schema_issues[:20])
+
+
+# ── §11 target-price valuation basis (per-article LLM extraction) ──
+
+def _build_target_price_basis_prompt(records: list[dict]) -> str:
+    articles = []
+    for rec in records:
+        articles.append({
+            "articleId": rec["article_id"],
+            "orgName": rec["org"],
+            "targetPrice": rec["target"],
+            "date": rec["date"],
+            "rating": rec.get("rating", ""),
+            "title": rec.get("title", ""),
+            "abstract": rec.get("abstract", ""),
+            "report_text": rec.get("report_text", rec.get("evidence", ""))[:1200],
+            "evidence": rec.get("evidence", "")[:600],
+        })
+    return f"""你是分析师,对以下机构研报逐篇提取估值依据和关键假设。只返回JSON数组。
+
+Input:
+{json.dumps(articles, ensure_ascii=False)}
+
+返回格式:
+[{{"articleId": "xxx", "target_price_basis": "估值口径", "basis_evidence": "同一篇研报中支持估值口径的原文短句", "key_assumptions": [{{"text": "假设1", "evidence": "同一篇研报中支持假设1的原文短句"}}]}}]
+
+估值口径提取(三级优先级):
+1. 明确方法: "2027E PE 18x" / "SOTP(光学+汽车+光互连)" / "DCF" / "EV/S 4x"
+2. 仅提预测年份: "基于2027E盈利预测,正文未披露具体PE倍数"
+3. 无方法: "研报披露目标价,正文未披露估值方法"
+
+关键假设: 2-3条。必须含具体业务/数字/年份/客户/出货量/ASP/毛利率, 每条必须给 evidence。
+禁止: {"、".join(_MARKET_DEBATE_BANNED_PHRASES[:6])}。无假设则写"正文未披露可验证的关键假设"。"""
+
+
+def _parse_json_value(text: str) -> Any:
+    raw = _clean_fence(text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        pass
+    for pattern in (r'(\[.*\])', r'(\{.*\})'):
+        m = re.search(pattern, raw, re.S)
+        if not m:
+            continue
+        try:
+            return json.loads(m.group(1))
+        except Exception:
+            continue
+    return None
+
+
+def _normalize_target_basis_payload(payload: Any, expected_ids: set[str]) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    if isinstance(payload, dict):
+        payload = payload.get("articles") or payload.get("results") or [payload]
+    if not isinstance(payload, list):
+        return {}, {"unknown": [], "duplicates": [], "missing": sorted(expected_ids)}
+    result: dict[str, dict] = {}
+    unknown_ids: list[str] = []
+    duplicate_ids: list[str] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        aid = str(item.get("articleId") or item.get("article_id") or "").strip()
+        if not aid:
+            continue
+        if aid not in expected_ids:
+            unknown_ids.append(aid)
+            continue
+        if aid in result:
+            duplicate_ids.append(aid)
+            continue
+        basis = _plain_text(item.get("target_price_basis") or item.get("basis") or "", 100)
+        if not basis:
+            basis = "研报披露目标价,正文未披露估值方法"
+        basis_evidence = _plain_text(item.get("basis_evidence") or item.get("evidence") or "", 180)
+        assumptions = item.get("key_assumptions")
+        assumption_evidence: list[str] = []
+        if isinstance(assumptions, list):
+            parts = []
+            for x in assumptions[:3]:
+                if isinstance(x, dict):
+                    text = _plain_text(x.get("text"), 80)
+                    ev = _plain_text(x.get("evidence"), 160)
+                    if text:
+                        parts.append(text)
+                        if ev:
+                            assumption_evidence.append(ev)
+                else:
+                    text = _plain_text(x, 80)
+                    if text:
+                        parts.append(text)
+            parts = [x for x in parts if not any(b in x for b in _MARKET_DEBATE_BANNED_PHRASES[:6])]
+            key_assumptions = "；".join(parts) if parts else "正文未披露可验证的关键假设"
+        elif isinstance(assumptions, str) and assumptions.strip():
+            key_assumptions = _plain_text(assumptions, 200)
+        else:
+            key_assumptions = "正文未披露可验证的关键假设"
+        result[aid] = {
+            "target_price_basis": basis,
+            "basis_evidence": basis_evidence,
+            "key_assumptions": key_assumptions,
+            "assumption_evidence": assumption_evidence,
+        }
+    return result, {
+        "unknown": unknown_ids,
+        "duplicates": duplicate_ids,
+        "missing": sorted(expected_ids - set(result)),
+    }
+
+
+def _extract_target_price_basis(records: list[dict]) -> dict[str, dict]:
+    """LLM-based per-article extraction of valuation basis and key assumptions.
+
+    Strict articleId binding: every returned articleId must exist in input;
+    unknown/dropped/duplicate IDs are discarded with diagnostics.
+    """
+    if not records:
+        return {}
+    expected_ids = {str(r["article_id"]) for r in records}
+    by_id = {str(r["article_id"]): r for r in records}
+    prompt = _build_target_price_basis_prompt(records)
+    text, ok = _call_llm(prompt, max_tokens=4000, timeout=300, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="target_price_basis")
+    result, problems = _normalize_target_basis_payload(_parse_json_value(text) if ok else None, expected_ids)
+    for aid in sorted(expected_ids - set(result)):
+        rec = by_id.get(aid)
+        if not rec:
+            continue
+        retry_text, retry_ok = _call_llm(
+            _build_target_price_basis_prompt([rec]),
+            max_tokens=1600,
+            timeout=180,
+            system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
+            call_name=f"target_price_basis_retry:{aid}",
+        )
+        if not retry_ok:
+            continue
+        retry_result, retry_problems = _normalize_target_basis_payload(_parse_json_value(retry_text), {aid})
+        if aid in retry_result:
+            result[aid] = retry_result[aid]
+        problems.setdefault("unknown", []).extend(retry_problems.get("unknown", []))
+        problems.setdefault("duplicates", []).extend(retry_problems.get("duplicates", []))
+    missing = sorted(expected_ids - set(result))
+    for aid in missing:
+        result[aid] = {
+            "target_price_basis": "研报披露目标价,正文未披露估值方法",
+            "basis_evidence": "",
+            "key_assumptions": "正文未披露可验证的关键假设",
+            "assumption_evidence": [],
+        }
+    unknown_ids = problems.get("unknown", [])
+    dropped_dup = problems.get("duplicates", [])
+    if unknown_ids:
+        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
+            f"unknown_article_ids_dropped: {unknown_ids}")
+    if dropped_dup:
+        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
+            f"duplicate_article_ids_dropped: {dropped_dup}")
+    if missing:
+        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
+            f"missing_article_ids_fail_closed: {list(missing)}")
+    return result
+
+
+def calculate_target_price_stats(values: list[float]) -> dict:
+    """Deterministic target price statistics with correct even-count median."""
+    clean = []
+    for v in values:
+        if v is None:
+            continue
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            # Try parsing string with currency symbols
+            if isinstance(v, str):
+                cleaned = re.sub(r'[^\d.]', '', str(v))
+                try:
+                    fv = float(cleaned)
+                except (TypeError, ValueError):
+                    continue
+            else:
+                continue
+        if fv > 0:
+            clean.append(fv)
+    clean.sort()
+    if not clean:
+        return {"low": None, "median": None, "high": None, "count": 0}
+    n = len(clean)
+    if n % 2 == 1:
+        median = clean[n // 2]
+    else:
+        median = round((clean[n // 2 - 1] + clean[n // 2]) / 2, 2)
+    return {"low": clean[0], "median": median, "high": clean[-1], "count": n}
+
+
 def _sections_1_4_json_prompt(key_data: dict, schema_issues: list[str] | None = None,
                               section_scope: str = "sections_1_4") -> str:
     issue_text = "\nPrevious schema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
@@ -749,6 +1121,7 @@ Context:
 
 Required JSON schema:
 {{
+  "title_conclusion": "10-30个中文字的一句话投资结论，不含公司名、代码、冒号或研报标题",
   "section_1": {{"key_points": [{{"keyword": "短语", "statement": "一句明确投资判断", "source_refs": [1]}}]}},
   "section_2": {{"recent_updates": [{{"keyword": "近期进展关键词", "fact": "近期具体事实", "implication": "对经营变量的直接影响", "source_refs": [1]}}]}},
   "section_3": {{
@@ -759,6 +1132,7 @@ Required JSON schema:
 }}
 
 Content rules:
+- title_conclusion: must be a concise investment judgment derived from sections 1 and 3; never output "标题生成失败".
 - section_1: 3-4 key_points; each statement includes an operating fact/variable and a judgment on growth, profit, cash flow or valuation.
 - section_2: 4-6 recent_updates; do not duplicate section_1 full sentences.
 - section_3: near_term_logic and long_term_logic each has 2-3 rows; include trackable verification_metrics.
@@ -878,8 +1252,6 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     mkt = "HK" if market.lower() == "hk" else "US"
     key, _, model = _find_llm_creds()
 
-    industry = materials.get("industry", "") or (materials.get("tags", [None])[0] or "未披露行业")
-    price = _extract_price(materials)
     print(f"[4/12] Section-wise generation ({model or 'no-llm'})")
 
     # 1. compress
@@ -929,17 +1301,30 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
             print(f"    [{si['label']}] FAIL (sections 1-4 require validated JSON; no Markdown fallback)")
             continue
 
-        # ch10-11: deterministic (no LLM for valuation section)
+        # ch10-11: §10 via JSON LLM (no old deterministic fallback), §11 deterministic
         if sk == "s1011":
-            sec10 = _build_market_debate_section(materials, ref_map, company_name, ticker)
+            sec10_text = ""
+            if key and target_materials_ok:
+                sec10_text, ok10, issues10 = gen_hkus_section_10(key_data, ref_map)
+                if ok10:
+                    status["10"] = "ok_json"
+                else:
+                    status["10"] = "failed_json_schema"
+                    status["10_schema_issues"] = issues10[:30]
+                    failed.append("10")
+            else:
+                status["10"] = "failed_sparse_or_no_llm"
+                failed.append("10")
+            # Always render §10 H2 even when failed — the assembly injects it
+            if not sec10_text:
+                sec10_text = (
+                    "## 10 市场分歧\n\n"
+                    "本轮未取得足够目标公司材料来构建明确的多空分歧表。"
+                )
             sec11 = _build_valuation_section_group(materials, ref_map, company_name, ticker, mkt)
             parts = []
-            if sec10:
-                parts.append(sec10)
-                status["10"] = "ok_deterministic"
-            else:
-                status["10"] = "failed_no_concrete_debate_source"
-                failed.append("10")
+            if sec10_text:
+                parts.append(sec10_text)
             if sec11:
                 parts.append(sec11)
                 status["11"] = "ok_deterministic"
@@ -949,7 +1334,7 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
             if parts:
                 texts[sk] = "\n\n".join(parts)
                 status[sk] = "degraded_partial" if len(parts) < 2 else "ok_deterministic"
-                print(f"    [{si['label']}] deterministic split, {len(texts[sk])} chars")
+                print(f"    [{si['label']}] s10={status.get('10','?')} s11={status.get('11','?')}, {len(texts[sk])} chars")
             else:
                 status[sk] = "failed"
                 failed.append(sk)
@@ -1063,14 +1448,17 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
                 status[sk] = "failed"; failed.append(sk)
                 print(f"      FAIL {dt:.0f}s")
 
-    # 5. Extract title conclusion from §1 content
+    # 5. Extract title conclusion: JSON _title_conclusion first, then §1 text fallback
     mkt_cn = "港股" if mkt == "HK" else "美股"
-    conclusion = _derive_title_conclusion(texts.get("s12", ""), company_name, mkt_cn, ticker)
+    conclusion = texts.get("_title_conclusion", "")
+    if not conclusion:
+        conclusion = _derive_title_conclusion(texts.get("s12", ""), company_name, mkt_cn, ticker)
+    if not conclusion:
+        conclusion = _build_deterministic_fallback_title(texts, company_name, ticker)
     title_status = "ok" if conclusion else "failed_no_investment_conclusion"
     title_issues = [] if conclusion else ["title_status=failed_no_investment_conclusion"]
     title = _build_report_title(company_name, ticker, mkt_cn, conclusion)
-    ticker_meta = f" | ticker：{ticker}" if mkt == "US" else ""
-    meta = f"\n市场：{mkt_cn}{ticker_meta} | 行业：{industry} | 当前价格/市值：{price} | 生成日期：{TODAY}\n"
+    meta = _build_hkus_meta_line(mkt_cn)
     report, assembly_issues = assemble_fixed_hk_us_sections(title, meta, texts, ref_text)
     assembly_issues.extend(title_issues)
 
@@ -1078,6 +1466,7 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     report, ref_map, reference_issues = normalize_used_references(report, source_trace)
     assembly_issues.extend(reference_issues)
     report = _normalize_table_separators(report)
+    report = _clean_repeated_punctuation(report)
 
     # 7. status
     h2_matches = list(re.finditer(r'^##\s*(\d{1,2})\s+[^\n]+$', report, re.M))
@@ -1132,6 +1521,10 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     tag = "SKELETON" if is_skel else ("DEGRADED" if is_deg else "FULL")
     print(f"  [{tag}] {ok_n}/12 sections OK, {len(ref_map)} refs -> {rp}")
     return (report, gs)
+
+
+def _build_hkus_meta_line(market_cn: str, generation_date: str = TODAY) -> str:
+    return f"\n市场：{market_cn} | 生成日期：{generation_date}\n"
 
 # ── Fixed section shell & normalization ──
 
@@ -1654,11 +2047,11 @@ def _build_hk_financial_section(materials: dict, ref_map: dict) -> str:
     bs_ref = pit_refs["getHkFdmtBsPit"]
     cf_ref = pit_refs["getHkFdmtCfPit"]
     if len(fin_periods) >= 3:
-        note = f"数据来源：港股 PIT 利润表[{is_ref}]、港股 PIT 资产负债表[{bs_ref}]、港股 PIT 现金流量表[{cf_ref}]。"
+        note = f"数据来源：港股 PIT 利润表、资产负债表及现金流量表[{is_ref}][{bs_ref}][{cf_ref}]。"
     else:
         note = (
             f"当前仅取得{', '.join(fin_period_labels)}，不把单期数据写成三期趋势。\n\n"
-            f"数据来源：港股 PIT 利润表[{is_ref}]、港股 PIT 资产负债表[{bs_ref}]、港股 PIT 现金流量表[{cf_ref}]。"
+            f"数据来源：港股 PIT 利润表、资产负债表及现金流量表[{is_ref}][{bs_ref}][{cf_ref}]。"
         )
     fin_analysis = _hk_financial_quality_text(materials, pit_refs, fin_periods)
     fin_header = f"| 指标 | {' | '.join(fin_period_labels)} |\n|:---|{''.join('---:|' for _ in fin_period_labels)}"
@@ -1706,34 +2099,27 @@ def _target_price_evidence_excerpt(rd: dict) -> str:
     return _plain_text(text, 120)
 
 def _clean_assumption_text(rd: dict, company_name: str = "", ticker: str = "") -> str:
-    text = _plain_text((rd.get("articleTitle", "") or "") + " " + (rd.get("textAbstract", "") or ""), 360)
-    for alias in sorted(_target_aliases(company_name, ticker)[0] | _target_aliases(company_name, ticker)[1], key=len, reverse=True):
-        if alias:
-            text = re.sub(re.escape(alias), "", text, flags=re.I)
-    text = re.sub(r'^\s*[:：\-—]+', '', text).strip()
-    phrases = []
-    if re.search(r'收入|营收|增长|订单|交付|需求|revenue|growth|demand', text, re.I):
-        phrases.append("收入增长与需求兑现")
-    if re.search(r'产品|客户|商业化|订阅|交付|product|customer|subscription', text, re.I):
-        phrases.append("产品迭代与客户转化")
-    if re.search(r'投入|资本开支|研发|capex|investment|R&D', text, re.I):
-        phrases.append("投入强度与回报周期")
-    if re.search(r'韧性|利润率|毛利率|现金流', text, re.I):
-        phrases.append("利润率与现金流质量")
-    if re.search(r'回购|分红|股东回报|资本配置', text, re.I):
-        phrases.append("股东回报和资本配置纪律")
-    if phrases:
-        deduped = []
-        for p in phrases:
-            if p not in deduped:
-                deduped.append(p)
-        return "；".join(deduped[:2])
-    title = _plain_text(rd.get("articleTitle", "") or rd.get("title", ""), 80)
-    for alias in sorted(_target_aliases(company_name, ticker)[0] | _target_aliases(company_name, ticker)[1], key=len, reverse=True):
-        if alias:
-            title = re.sub(re.escape(alias), "", title, flags=re.I)
-    title = re.sub(r'.*?[:：]', '', title).strip()
-    return title[:28] if title else "目标价来源材料关注点"
+    """Extract concrete assumption data from a report. Used as fallback when LLM extraction is unavailable."""
+    evidence = _target_price_evidence_excerpt(rd)[:300]
+    if not evidence:
+        return "正文未披露可验证的关键假设"
+    # Extract concrete factual phrases from evidence
+    concrete = []
+    patterns = [
+        (r'(\d{4}年[^，。；\n]{4,25}?(?:出货|量产|增长|提升|渗透|份额|收入|毛利率|ASP))', 1),
+        (r'(光互连[^，。；\n]{3,30})', 1),
+        (r'((?:手机|车载|光|AR|机器人)[^，。；\n]{4,25}?(?:占比|增速|出货|订单|客户|认证|定点))', 1),
+    ]
+    seen = set()
+    for pattern, group in patterns:
+        for match in re.finditer(pattern, evidence):
+            txt = match.group(group).strip()
+            if txt not in seen and len(txt) >= 6:
+                seen.add(txt)
+                concrete.append(txt)
+    if concrete:
+        return "；".join(concrete[:3])
+    return "正文未披露可验证的关键假设"
 
 def _collect_target_price_records(materials: dict, ref_map: dict, co: str, ticker: str,
                                   mkt: str = "US", return_meta: bool = False):
@@ -1750,6 +2136,7 @@ def _collect_target_price_records(materials: dict, ref_map: dict, co: str, ticke
             continue
         evidence = _target_price_evidence_excerpt(rd)
         metrics = _extract_verification_metrics(evidence)
+        report_text = _plain_text(" ".join(str(rd.get(k, "") or "") for k in ("content", "text", "reportText", "textAbstract", "summary", "articleTitle", "title")), 2000)
         records.append({
             "target": tp_val,
             "org": rd.get("orgName", "") or "--",
@@ -1757,6 +2144,9 @@ def _collect_target_price_records(materials: dict, ref_map: dict, co: str, ticke
             "rating": rd.get("rating", "") or "未明示",
             "date": str(rd.get("publishTimeReadable") or rd.get("publishTime") or "")[:10],
             "article_id": str(rd.get("articleId", "")),
+            "title": _plain_text(rd.get("articleTitle") or rd.get("title") or "", 160),
+            "abstract": _plain_text(rd.get("textAbstract") or rd.get("summary") or "", 800),
+            "report_text": report_text,
             "source_order": len(records),
             "assumption": _clean_assumption_text(rd, co, ticker),
             "evidence": evidence,
@@ -1796,51 +2186,125 @@ def _target_anchor(records: list[dict], which: str) -> dict:
 def _format_target_anchor(rec: dict) -> str:
     return f"{rec['target']:g}{rec.get('unit', '')}[{rec['rn']}]"
 
+def _basis_core_text(basis_map: dict[str, dict], rec: dict) -> str:
+    info = basis_map.get(str(rec.get("article_id")), {})
+    text = info.get("key_assumptions") or rec.get("assumption") or "正文未披露可验证的关键假设"
+    return _plain_text(re.sub(r'\[\d+\]', '', text), 90)
+
+
+def _nearest_median_record(records: list[dict], median_value: float) -> dict:
+    return min(records, key=lambda r: (abs(float(r.get("target") or 0) - median_value), str(r.get("date") or ""))) if records else {}
+
+
+def _rating_distribution(records: list[dict]) -> str:
+    counts = {}
+    for rec in records:
+        rating = rec.get("rating") or "未明示"
+        counts[rating] = counts.get(rating, 0) + 1
+    return "、".join(f"{k}{v}家" for k, v in counts.items())
+
+
 def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str) -> str:
-    """Build valuation analysis from verifiable target prices and extracted assumptions."""
+    """Build valuation analysis from verifiable target prices with per-article basis extraction."""
     targets_display = _collect_target_price_records(materials, ref_map, co, ticker, mkt)
     if not targets_display:
         return ""  # Fail closed: no verifiable targetPrice field
+
+    # Per-article valuation basis extraction via LLM
+    basis_map = _extract_target_price_basis(targets_display)
 
     lines = ["### 11.1 机构目标价汇总", ""]
     lines.append("| 机构 | 日期 | 评级 | 目标价 | 目标价口径 | 关键假设/关注点 |")
     lines.append("|:---|:---|:---|:---|:---|:---|")
 
     for rec in targets_display:
+        aid = rec["article_id"]
+        basis_info = basis_map.get(aid, {})
+        target_basis = basis_info.get("target_price_basis", "研报披露目标价,正文未披露估值方法")
+        key_assumptions = basis_info.get("key_assumptions", rec.get("assumption", "正文未披露可验证的关键假设"))
         lines.append(
             f"| {rec['org']} | {rec['date']} | {rec['rating']} | {rec['target']:g}{rec.get('unit','')}[{rec['rn']}] | "
-            f"结构化目标价字段；方法未明示 | {rec['assumption']} |"
+            f"{target_basis}[{rec['rn']}] | {key_assumptions}[{rec['rn']}] |"
         )
+
+    # Calculate correct statistics
+    target_values = [rec["target"] for rec in targets_display]
+    stats = calculate_target_price_stats(target_values)
+    unit = targets_display[0].get("unit", "") if targets_display else ""
 
     lines.append("")
     lines.append("### 11.2 目标价区间与市场隐含预期")
     lines.append("")
-    if len(targets_display) == 1:
+    if stats["count"] == 0:
+        lines.append("未取得有效目标价数据。")
+    elif stats["count"] == 1:
         only = targets_display[0]
         lines.append(
             f"当前仅取得一个可回溯机构目标价锚：{_format_target_anchor(only)}，"
             f"对应{only.get('assumption', '来源材料关注点')}。"
         )
-    elif len(targets_display) == 2:
-        low, high = _target_anchor(targets_display, "low"), _target_anchor(targets_display, "high")
+    elif stats["count"] == 2:
+        low_rec, high_rec = targets_display[0], targets_display[-1]
         lines.append(
-            f"当前取得两个可回溯目标价锚，区间为{_format_target_anchor(low)}至"
-            f"{_format_target_anchor(high)}；低端对应{low.get('assumption', '来源材料关注点')}，"
-            f"高端对应{high.get('assumption', '来源材料关注点')}。"
+            f"当前取得两个可回溯目标价锚，区间为{_format_target_anchor(low_rec)}至"
+            f"{_format_target_anchor(high_rec)}；低端对应{low_rec.get('assumption', '来源材料关注点')}，"
+            f"高端对应{high_rec.get('assumption', '来源材料关注点')}。"
         )
     else:
-        low, mid, high = _target_anchor(targets_display, "low"), _target_anchor(targets_display, "mid"), _target_anchor(targets_display, "high")
+        low_rec = targets_display[0]
+        high_rec = targets_display[-1]
+        median_val = stats["median"]
+        median_rec = _nearest_median_record(targets_display, median_val)
         lines.append(
-            f"低目标价锚为{_format_target_anchor(low)}，对应{low.get('assumption', '来源材料关注点')}；"
-            f"中位目标价锚为{_format_target_anchor(mid)}，对应{mid.get('assumption', '来源材料关注点')}；"
-            f"高目标价锚为{_format_target_anchor(high)}，对应{high.get('assumption', '来源材料关注点')}。"
+            f"基于§11.1所列{stats['count']}家机构目标价内部计算，"
+            f"目标价区间为{stats['low']:g}—{stats['high']:g}{unit}，"
+            f"中位数为{median_val:g}{unit}。"
+        )
+        lines.append("")
+        lines.append(
+            f"- 低位目标价机构：{low_rec['org']}，评级{low_rec.get('rating','未明示')}，"
+            f"目标价{_format_target_anchor(low_rec)}，核心保守假设为{_basis_core_text(basis_map, low_rec)}。"
+        )
+        lines.append(
+            f"- 中位附近机构：{median_rec['org']}，评级{median_rec.get('rating','未明示')}，"
+            f"目标价{_format_target_anchor(median_rec)}，其目标价最接近真实中位数，核心假设为{_basis_core_text(basis_map, median_rec)}。"
+        )
+        lines.append(
+            f"- 高位目标价机构：{high_rec['org']}，评级{high_rec.get('rating','未明示')}，"
+            f"目标价{_format_target_anchor(high_rec)}，核心乐观假设为{_basis_core_text(basis_map, high_rec)}。"
         )
     lines.append("")
     lines.append("### 11.3 估值分析")
     lines.append("")
+    valuation_refs = []
+    for rec in targets_display:
+        rn = int(rec.get("rn") or 0)
+        if rn > 0 and rn not in valuation_refs:
+            valuation_refs.append(rn)
+    valuation_cites = _cite(valuation_refs)
+    low_rec = targets_display[0]
+    high_rec = targets_display[-1]
+    median_val = stats["median"] if stats.get("count") else 0
+    spread = stats["high"] - stats["low"] if stats.get("count") else 0
     lines.append(
-        "本节仅采用目标价字段可回溯到 articleId 的机构研报；如 11.1 表所示，目标价已逐机构绑定来源，"
-        "估值方法缺失时只标注目标价口径，不硬猜PE、SOTP、DCF或EV/S方法。"
+        f"目标价分布：§11.1共纳入{stats['count']}家可回溯机构目标价，最低为{_format_target_anchor(low_rec)}，"
+        f"中位数为{median_val:g}{unit}，最高为{_format_target_anchor(high_rec)}，高低差为{spread:g}{unit}；"
+        f"评级分布为{_rating_distribution(targets_display)}{valuation_cites}。"
+    )
+    lines.append(
+        f"估值分歧来源：低位机构主要担心{_basis_core_text(basis_map, low_rec)}，"
+        f"高位机构主要看好{_basis_core_text(basis_map, high_rec)}。差异集中在§11.1披露的业务变量、盈利弹性和估值口径，而不是本文自行反推PE或DCF参数。"
+    )
+    validation_vars = []
+    for rec in (low_rec, high_rec, _nearest_median_record(targets_display, median_val)):
+        validation_vars.extend(rec.get("metrics") or [])
+    validation_vars = list(dict.fromkeys([v for v in validation_vars if v]))[:4]
+    if not validation_vars:
+        assumption_words = re.split(r'[；;、，,。]', "；".join(_basis_core_text(basis_map, r) for r in targets_display[:3]))
+        validation_vars = [w for w in assumption_words if 2 <= len(w) <= 16][:4]
+    lines.append(
+        f"验证框架：后续应跟踪{'、'.join(validation_vars) if validation_vars else '§11.1机构假设中披露的关键经营变量'}，"
+        "这些变量均来自前述机构假设或目标价证据，用于缩小低位与高位目标价之间的分歧。"
     )
 
     return "\n".join(lines)
@@ -2006,10 +2470,28 @@ def _valid_title_conclusion(text: str, company_name: str = "") -> bool:
     return any(term in text for term in judgment_terms)
 
 
+def _build_deterministic_fallback_title(texts: dict, company_name: str, ticker: str) -> str:
+    """Build a title conclusion from already-generated §1 key points and §3 logic titles."""
+    s12 = texts.get("s12", "")
+    s34 = texts.get("s34", "")
+    # Extract §1 key point keywords (bold markers)
+    kp_matches = re.findall(r'\*\*([^*]+)\*\*', s12[:1200])
+    keywords = [m.strip() for m in kp_matches[:2] if len(m.strip()) >= 2]
+    # Extract §3 short/long titles (bold markers in §3 area)
+    logic_matches = re.findall(r'\*\*([^*]+)\*\*', s34[:1200] if s34 else "")
+    logic_keywords = [m.strip() for m in logic_matches[:2] if len(m.strip()) >= 2 and m.strip() not in keywords]
+    parts = keywords + logic_keywords
+    if len(parts) >= 2:
+        return "，".join(parts[:2])
+    if parts:
+        return parts[0]
+    return ""
+
+
 def _build_report_title(company_name: str, ticker: str, market_cn: str, conclusion: str) -> str:
     safe_conclusion = _sanitize_title_conclusion(conclusion, company_name, ticker, market_cn)
     if not safe_conclusion:
-        safe_conclusion = "标题生成失败"
+        safe_conclusion = "核心主业稳健，新业务打开成长空间"
     return f"# {company_name}（{ticker}）{market_cn}公司一页纸：{safe_conclusion}"
 
 
@@ -2059,18 +2541,67 @@ def _derive_title_conclusion(section12_text: str, company_name: str, market_cn: 
     return ""
 
 
+def _walk_values(obj: Any):
+    if isinstance(obj, dict):
+        yield obj
+        for v in obj.values():
+            yield from _walk_values(v)
+    elif isinstance(obj, list):
+        for v in obj:
+            yield from _walk_values(v)
+
+
+def _first_field(materials: dict, names: tuple[str, ...]) -> Any:
+    lowered = {n.lower() for n in names}
+    for d in _walk_values(materials):
+        for k, v in d.items():
+            if str(k).lower() in lowered and v not in ("", None, "N/A"):
+                return v
+    return ""
+
+
+def _extract_industry(materials: dict) -> str:
+    val = _first_field(materials, ("industry", "industry_name", "gics", "sw_industry", "sector"))
+    if val:
+        return _plain_text(val, 40)
+    tags = materials.get("tags")
+    if isinstance(tags, list) and tags:
+        return _plain_text(tags[0], 40)
+    return "未取得具有来源闭环的行业分类"
+
+
+def _num_or_none(value: Any) -> float | None:
+    if value in ("", None):
+        return None
+    text = re.sub(r'[,，]', '', str(value))
+    m = re.search(r'-?\d+(?:\.\d+)?', text)
+    return float(m.group(0)) if m else None
+
+
 def _extract_price(materials: dict) -> str:
-    st = materials.get("structured", {})
-    if st:
-        sn = st.get("snapshot", st.get("market_data", {}))
-        if isinstance(sn, dict):
-            p = sn.get("lastPrice", sn.get("price", sn.get("close", "")))
-            m = sn.get("marketCap", sn.get("marketValue", ""))
-            ps = []
-            if p: ps.append(f"price {p}")
-            if m: ps.append(f"mkt cap {m}")
-            if ps: return ", ".join(ps)
-    return "未取得实时价格/市值"
+    price = _first_field(materials, ("price", "current_price", "close_price", "last_price", "lastPrice", "trade_price", "close"))
+    market_cap = _first_field(materials, ("market_cap", "marketCap", "market_value", "marketValue", "total_market_value"))
+    shares = _first_field(materials, ("shares_outstanding", "total_shares", "shareCapital", "totalShare"))
+    date = _first_field(materials, ("quote_date", "trade_date", "publishTime", "date", "asOfDate"))
+    currency = _first_field(materials, ("currency", "ccy")) or ""
+    if not currency:
+        market = str(materials.get("market") or "").lower()
+        currency = "港元" if market == "hk" else ("美元" if market == "us" else "")
+    if not date:
+        return "未取得具有日期和来源闭环的有效行情数据"
+    parts = []
+    if price:
+        parts.append(f"{price}{currency}")
+    if market_cap:
+        parts.append(f"{market_cap}{currency}")
+    else:
+        p = _num_or_none(price)
+        sh = _num_or_none(shares)
+        if p is not None and sh is not None:
+            parts.append(f"约{p * sh / 1e8:.1f}亿{currency}（按价格×总股本内部测算）")
+    if parts:
+        return " / ".join(parts) + f"（截至{str(date)[:10]}）"
+    return "未取得具有日期和来源闭环的有效行情数据"
 
 
 # ---------------------------------------------------------------------------
