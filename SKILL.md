@@ -19,14 +19,14 @@ metadata:
 当前文档只描述 **v1.2.4 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
-运行 hk_us_report_writer_v124.py 时 Bash timeout 必须设为 1200000ms（20分钟），
+运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
 默认 300s 不足以完成全管线。
 
 ## 0. Core Principles
 - 真实数据优先，禁止编造、拼接或臆测数值。
 - 报告文件是唯一交付物，聊天窗口只用于进度、路径和阻断原因。
 - 不输出占位符、模板壳、内部工程话术、"已隐藏原因"或假通过结论。
-- P0 和 P1 都是阻断项，必须修复后才能交付；P2 只能在规则允许时修复或保留为明确说明。
+- 严重质量问题必须在 writer 内修复、fail closed 或明确记录降级原因，不能假通过。
 - 任何正文事实、数值、结论、比较、推演都必须能回溯到真实来源。
 - 同一规则只保留一处权威写法；历史信息只出现在 Appendix。
 - 不降低当前质量标准，不因为单一来源缺失就跳过核心门禁。
@@ -67,7 +67,7 @@ metadata:
 ## 3. A-Share Pipeline
 
 ### 3.1 Entry Rules
-- A 股主路径是 `fetch_data.py` → `report_writer.py`。
+- A 股主路径是 `a_share_fetch_data.py` → `a_share_report_writer.py`。
 - 必须先通过元信息接口发现 API URL 和参数，不允许自己拼接业务 API URL。
 - 每个业务接口只接受元信息接口返回的调用 URL；如果元信息查不到或接口失败，就跳过该接口，不要自行重试构造 URL。
 - 数据获取优先级固定为：
@@ -83,7 +83,7 @@ metadata:
 - 当 A 股公司名或代码存在歧义时，先运行：
 
 ```bash
-python3 -X utf8 <skill_root>/scripts/fetch_data.py \
+python3 -X utf8 <skill_root>/scripts/a_share_fetch_data.py \
   --ticker "{用户输入}" \
   --token "{DATAYES_TOKEN}" \
   --resolve-only
@@ -98,22 +98,22 @@ python3 -X utf8 <skill_root>/scripts/fetch_data.py \
 - 运行数据采集脚本时，`entity_id` 只允许使用 6 位纯数字，不加 `.SH` / `.SZ`，也不使用其他响应字段替代。
 
 ```bash
-python3 -X utf8 <skill_root>/scripts/fetch_data.py \
+python3 -X utf8 <skill_root>/scripts/a_share_fetch_data.py \
   --ticker "{6位股票代码}" \
   --token "{DATAYES_TOKEN}" \
   --output "{输出目录}/{股票代码}_data.json"
 ```
 
-- 采集完成后直接进入 `report_writer.py`。
+- 采集完成后直接进入 `a_share_report_writer.py`。
 
 ```bash
-python3 -X utf8 <skill_root>/scripts/report_writer.py \
+python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
   --data "{输出目录}/{股票代码}_data.json" \
   --output "{输出目录}/{公司名}（{股票代码}）公司一页纸.md" \
   --docx "{输出目录}/{公司名}（{股票代码}）公司一页纸.docx"
 ```
 
-- `report_writer.py` 负责生成正文、自动修复和 DOCX 导出；不要把对话窗口当成正文输出区。
+- `a_share_report_writer.py` 负责生成正文、自动修复和 DOCX 导出；不要把对话窗口当成正文输出区。
 
 ### 3.4 A-Share Adapters
 - 特殊行业必须使用各自适配的指标体系，不要强行套用通用消费品模板。
@@ -127,7 +127,7 @@ python3 -X utf8 <skill_root>/scripts/report_writer.py \
 ## 4. HK/US Pipeline
 
 ### 4.1 Entry Rules
-- 港美股主路径是 `fetch_materials.py` → `hk_us_report_writer_v124.py`。
+- 港美股主路径是 `fetch_materials.py` → `hk_us_report_writer.py`。
 - 入参至少包含：
   - `market=HK` 或 `market=US`
   - 公司名或 ticker
@@ -168,19 +168,26 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
   - fiscal year 与 calendar year
   - 人民币 / 美元币种
   - 普通股 / ADS 口径
-- US 若缺少结构化三表，只能记为 `skipped_with_reason` 或 `N/A`，不能写成“检查通过”。
+- US 若缺少结构化三表，诊断文件只能记为 `skipped_with_reason` 或 `N/A`，不能写成“检查通过”；报告正文只能从研报/财报点评抽取财务数据，不用 `N/A` 填正文。
 - 港美股特殊行业必须使用适配的指标体系，不得套用不适用的通用消费模板。
 
 ### 4.5 HK/US Writer
-- `hk_us_report_writer_v124.py` 是首选自动 writer，负责：
+- `hk_us_report_writer.py` 是首选自动 writer，负责：
   1. 采集材料
   2. 生成 `source_trace.json` / `id_audit.json`
-  3. 生成章节正文
-  4. 执行 post-repair
-  5. 运行质量检查
-  6. 导出 DOCX
-- writer 失败时，按 `references/hk-us-report-structure.md` 手工降级，并按 `references/hk-us-quality-checklist.md` 自检。
-- 不允许把失败包装成成功，也不允许跳过质量检查直接交付。
+  3. 生成章节正文，并对 JSON、引用、表格行数和章节完整性做内置校验
+  4. 按最终有效章节连续重编号，写入 `section_number_mapping`
+  5. 生成 MD 后直接转 DOCX（港美股已移除 post-repair 和 checker 阻断）
+- 无 LLM API Key 时自动降级为材料直写模式，从采集材料手动拼装各章节并标注引用来源。
+- §3 投资逻辑：短期与长期并行生成；任一侧失败时使用一次合并短重试，仍不合格则整章 fail closed。
+- §4 催化事件：LLM 空响应、超时或 schema 失败时，允许从目标公司研报摘要确定性生成 4-7 行 source-backed 催化表；时间轴应同时覆盖近期已发生验证事件和未来可跟踪催化，不能把券商评级/目标价调整当催化。
+- §5.2 分业务表现：优先输出近三年已完成年度 actual 分业务收入/占比/毛利率；没有最近一年收入或占比时，不硬造表格，改为 `§5.2 业务深度`，用分点叙述，分点小标题加粗。
+- §6 产销链与生态：目标输出至少 4 行；补充调用最多补 1 行，不能用空补充覆盖主调用合格结果；最终 3 行可作为 `partial_json` 输出，少于 3 行或证据不足则 fail closed，不做通用确定性补行。
+- §8 市场关注/调研大纲：JSON 解析失败时必须 retry；港股调研议题允许截断为 3-4 个，合法后输出。
+- §9 行业对比：LLM 返回后必须校验目标公司只出现一次，且至少包含 3 家非目标 peer；peer 行必须有引用，且引用证据需包含该 peer 公司名或 ticker；不再使用 peer context/raw snippet 兜底，证据不足则 fail closed。
+- §10 市场分歧：`section_10_a` / `section_10_b` 并行生成并合并 3 行；合并失败时走一次 compact short retry，允许 2 行 `partial_json_short_retry`；不再使用确定性原文摘录兜底。
+- §11 估值与预测：大段估值 LLM 调用只做 1 次主 attempt；`EMPTY_TEXT_RESPONSE` / `NETWORK_TEMPORARY` 可由 `_call_llm` 触发轻量 compact retry；§11.1 盈利预测表必须删除所有数据行均为空/破折号的预测年份列；失败后按既有规则省略 §11 并重编号。
+- 慢章节耗时控制：港股 §4、§10、§11 及 §11 前置 target-price basis 不做 LLM repair 叠加；单次 LLM 调用使用 `HKUS_LLM_SLOW_SECTION_TIMEOUT_SECONDS` 硬预算（默认 90 秒，最高 120 秒），§10 两个 split part 保持并行。轻量重试由 `HKUS_LLM_LIGHT_RETRY` 控制，默认开启。
 
 ### 4.6 HK Financials
 - 港股 PIT 三表补齐由 `hk_financials.py` 负责。
@@ -189,37 +196,19 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 ## 5. Quality Gates
 
 ### 5.1 Blocking Levels
-- `P0`：立即阻断，必须修复。
-- `P1`：立即阻断，必须修复。
-- `P2`：允许保留为明确说明，但不能伪装成通过项。
+- 质检脚本（checker）已移除，不再有 P0/P1/P2 阻断。
+- 生成 MD 后直接调用 `build_docx.py` 转 Word，不做质检过滤。
 
 ### 5.2 Required Content
 - 所有必填章节必须非空。
-- 章节编号必须和对应模板一致，H3 必须继承父级 H2 编号，同级编号不能重复或倒序。
-- 必需章节缺失时，优先修复或补齐，不要直接留空。
 - 不能输出模板壳、占位符、`N/A` 大面积充数、无来源空表。
-- 不能出现“已隐藏原因”“内部 pipeline”“checker 通过”等内部工程话术。
 
 ### 5.3 Citation Closure
-- 正文中的关键事实、财务数据、经营指标、行业格局、估值、催化与风险都必须带行内 `[N]` 引用。
-- 参考资料与正文必须双向闭环：
-  - 正文引用集合必须能在参考资料中找到
-  - 参考资料中被列出的条目必须至少被正文使用一次
-- 不得出现正文引用的 `[N]` 在参考资料中不存在。
-- 不得出现参考资料列出但正文从未使用的死引用。
-- `source_trace.json` 必须与正文引用集合一致，`refs_missing=0`、`refs_synthetic=0`、`raw_payload_file` 全部存在。
+- 正文中的关键事实、财务数据、经营指标都应带行内 `[N]` 引用。
+- 参考资料与正文保持双向闭环。
 
 ### 5.4 Reference Metadata
-- 参考资料必须逐字复制：
-  - `title`
-  - `organization`
-  - `publishTime`
-  - `url`
-  - 结构化接口回来的真实 ID
-- 仅限 Datayes 研报的 `organization` 字段可以使用脚本里已有的标准简称映射，且只能使用标准简称；除此之外所有来源的 `organization` 仍必须逐字复制，不得自行改写、猜测、补写或删除机构信息。
-- `title` 必须逐字复制，不得截断、改写、删除前后缀。
-- 公开网页引用必须保留完整 URL。
-- 若某来源只能通过降级链路拿到，则要记录其来源原因，不能伪装成原始 material_id。
+- 参考资料必须逐字复制 `title`、`organization`、`publishTime`。
 
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 只表示已发生或已披露事实。
@@ -231,22 +220,21 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 ### 5.6 Tables, Sparse Data and Peer Comparison
 - 同业比较表必须是正式 Markdown 表格，不能只用纯文字描述行业格局。
 - 表头必须中文。
-- 港美股统一同业比较表 schema 为 10 列：
+- 港美股统一同业比较表 schema 为 9 列：
   - 竞争关系
-  - 公司
+  - 公司（代码）
+  - 市场
   - 可比业务
   - 行业地位
-  - 可比维度
+  - 相关业务进展
   - 商业模式
   - 目标客户群体
   - 核心产品
-  - 最新业务进展
-  - 进展日期
 - Markdown 表头必须保持可正常渲染，示例：
 
 ```markdown
-| 竞争关系 | 公司 | 可比业务 | 行业地位 | 可比维度 | 商业模式 | 目标客户群体 | 核心产品 | 最新业务进展 | 进展日期 |
-|---|---|---|---|---|---|---|---|---|---|
+| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
+|:--|:--|:--|:--|:--|:--|:--|:--|:--|
 ```
 
 - 不能只留下口语描述。
@@ -255,10 +243,10 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 - 不能大面积用 `—` / `N/A` / `未披露` 填充。
 - 同业比较最低要求：
   1. 目标公司必须为第一行，且只能出现一次；
-  2. 至少 2 家有独立 peer-specific 来源的真实可比公司；
+  2. 至少 3 家有独立 peer-specific 来源的真实可比公司；
   3. 每个可比公司必须经过证券解析、上市状态确认和业务重合验证；
   4. 客户、供应商、合作方、投资方和未上市主体不能作为 peer；
-  5. 最新业务进展必须具体可验证，且引用 peer 自己的材料和进展日期；
+  5. 相关业务进展必须具体可验证，且引用 peer 自己的材料；引用证据必须包含该 peer 公司名或 ticker；
   6. 表格必须能被 Markdown 正常渲染；
   7. 表头必须中文。
 - 稀疏数据规则：
@@ -271,14 +259,16 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 - 情景推演必须写出可验证公式、基础数据、核心假设和单位。
 - 不能只写“乐观 / 中性 / 悲观”三档而没有具体数值。
 - 每个情景至少给出 2-3 个核心变量，必须能够算出目标值或估值区间。
-- 若使用模型推导，正文必须保留推导公式和 sanity check。
+- 情景推演里的核心变量、核心假设和经营含义有 `[N]` 引用即可，不额外写“来源：公司年度报告”“来源：行业一致预期”等括号来源说明。
+- 情景推演不得输出“基于[N]推算”“内部测算”等过程标签；估值含义直接写 `EPS＝X.XX元 × PE=Yx = Z.ZZ元` 算式。
+- 情景推演表同一单元格内的多个小点必须用 `<br>` 换行，不能挤在同一长句里。
+- 若使用模型推导，正文必须保留推导公式和 sanity check，但不输出内部过程标签。
 - 无法完整复核时，只保留定性判断，不要报出不可验证的数字。
 
-### 5.8 Post-Repair and Checker
-- 生成正文后先做 post-repair，再做 checker，最后导出 DOCX。
-- A 股和港美股的自动修复脚本都属于当前生效规则的一部分，不能跳过。
-- 质量检查只允许把问题标成阻断、修复中或明确跳过，不允许把未验证项记为通过。
-- 检查发现的空章节、空表、空预测、空催化、空情景、空比较表都应优先修复或删除，不可硬留。
+### 5.8 Final Normalization
+- 港美股生成正文后执行脚本内置的引用闭环、表格清洗、章节连续重编号和 DOCX 导出，不再运行独立 post-repair/checker 阻断链路。
+- A 股仍按 A 股 writer 的自动修复与质量检查规则执行。
+- 港美股检查发现的空章节、空表、空预测、空催化、空情景、空比较表应在 writer 内 fail closed、省略并重编号，或写入 `generation_status.json` 的降级原因，不可硬留空壳。
 
 ## 6. Fallback Policy
 - 自动 writer 失败时，优先调用脚本内置修复；仍失败时才进入手工降级。
@@ -342,10 +332,10 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 - 增加内部 checker 术语泄漏检查和 pipeline 结尾内容清理。
 
 ### v1.2.4
-- 增加生成后自动修复能力。
-- 增加港美股 post-repair 流程。
 - 增加港股 PIT 三表聚合。
 - 增加近况跟踪句首加粗规则。
 - 增加参考资料时效性约束和空预测节省略规则。
 - 增加港美股特殊行业 GAAP / non-GAAP 等适配。
+- 港美股 writer 移除独立 post-repair/checker 阻断链路，改为脚本内置引用清洗、表格清洗和连续重编号。
+- 强化港美股 §5.2、§6、§8、§9、§10、§11：年度分业务证据优先；§5.2 缺表时转分点业务深度；§6 三行 partial、少于三行 fail closed；§9 peer 证据校验且不做 raw snippet 兜底；§10 compact short retry、禁用确定性摘录兜底；§11 保留轻量空响应/网络重试。
 

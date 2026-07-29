@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-report_writer.py — 从 fetch_data.py 输出的 JSON 直接生成完整公司一页纸报告
+a_share_report_writer.py — 从 a_share_fetch_data.py 输出的 JSON 直接生成完整公司一页纸报告
 ==========================================================================
 用法:
-    python -X utf8 report_writer.py \\
+    python -X utf8 a_share_report_writer.py \\
         --data  <json文件路径>  \\
         --output <md输出路径>   \\
         [--docx  <docx输出路径>] \\
@@ -89,7 +89,7 @@ SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析�
 - 只有正文实际使用到的来源才进入参考资料，未使用的来源必须剔除。
 
 ## 派生测算
-- 内部测算必须写"内部测算：" + 基础数据[N] + 公式 + 单位 + 假设。无法完整复核则只保留定性判断、删除具体数字。
+- 派生测算必须保留基础数据[N]、公式、单位和假设。除主营构成差额等必须解释的派生项外，最终正文不输出"内部测算""基于[N]推算"等过程标签；9.4情景推演只保留引用编号和可复核算式。无法完整复核则只保留定性判断、删除具体数字。
 
 ## 保险行业适配
 - 优先使用 NBV/VONB、APE、EV、VONB Margin、OPAT、保险服务收入、偿付能力等指标。估值优先 P/EV、新业务价值倍数、EV Growth。严禁用毛利率、库存周转、普通 PE 机械填充保险业务。
@@ -97,7 +97,7 @@ SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析�
 严格规则：
 1. 历史财务数据使用接口返回的精确数字，严禁"约"/"大约"等模糊表述
 2. 正文叙述不得出现具体券商/机构名称（用"头部机构"/"主流机构"等代替）
-3. 关键数据须用 [N] 角标标注来源，N 为参考资料序号（参照传入的引用序号映射）；**包括情景推演中的假设数字、模型推算数据和未来预测数据**，若数字来自研报/纪要则标注对应序号，若为基于已有数据推算则注明"基于[N]推算"；**[N] 必须紧跟在数值后面（如"~8,300亿[1][2]"、"675[5]"），严禁将引用标注附加在表格的指标名称列、机构名称列或行标题上**（如"Wolfe Research[5]"、 "营收（亿元，研报区间[1][2]）"均为错误写法）
+3. 关键数据须用 [N] 角标标注来源，N 为参考资料序号（参照传入的引用序号映射）；**包括情景推演中的假设数字、模型推算数据和未来预测数据**。数字来自研报/纪要则标注对应序号；由已有数据推算时只保留基础来源[N]和公式，不写"基于[N]推算"字样。**[N] 必须紧跟在数值后面（如"~8,300亿[1][2]"、"675[5]"），严禁将引用标注附加在表格的指标名称列、机构名称列或行标题上**（如"Wolfe Research[5]"、 "营收（亿元，研报区间[1][2]）"均为错误写法）
 4. 列举项使用 • 或 1）2）格式，严禁中文序号 1、2、3
 5. 只输出被要求的章节内容，不要输出其他说明或标题（标题由主程序添加）
 6. 字数限制：若指定了字数范围，请严格遵守
@@ -680,7 +680,7 @@ def extract_meetings_summary(data: dict) -> list:
 def extract_surveys_detail(data: dict) -> list:
     """提取机构调研详情（institution_research_detail.content）
 
-    fetch_data.py 已将 institution_research_detail 接口结果作为
+    a_share_fetch_data.py 已将 institution_research_detail 接口结果作为
     org_survey 每条记录的 detail_content 字段存入。
     """
     raw = data.get("org_survey", {})
@@ -1436,9 +1436,9 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 
 **字数上限：220字**
 
-- 2-3个 • 要点，每条单独一行，每点仅1句话
-- **优先提炼里程碑/突破性数字**（首次突破某门槛、历史新高、行业第一、同比大幅超预期等）；普通同比数据不单独成点
-- 只陈述事实+数字，**不展开任何分析或判断**（分析留给第2节）
+- 2-3个 • 要点，每条单独一行，每点仅1句话；⚠️ **不要对要点内容加粗**，仅陈述事实+数字
+- 优先提炼里程碑/突破性数字（首次突破某门槛、历史新高、行业第一、同比大幅超预期等）；普通同比数据不单独成点
+- 只陈述事实+数字，不展开任何分析或判断（分析留给第2节）
 - 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
 - 最后一段（独立行，1句）：市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润关键数字，标注[N]
 - 所有数字标注[N]，不介绍商业模式，不重复历史背景
@@ -1470,10 +1470,12 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 
 | 时间 | 事件 | 影响 |
 |:-----|:-----|:-----|
-| YYYY-MM 或 YYYY-MM-DD 或 YYYY-Q? | [具体事件+规模] | [关键数字] |
+| YYYY-MM 或 YYYY-MM-DD 或 YYYY-Q? | [具体事件+产品型号/金额/规模] | [精确量化数字] |
 
 规则：
 - 已发生事件2-3条，未来预期事件3-4条（加"（预期）"标注）
+- **事件描述必须具体**：写产品型号（如800G/1.6T）、客户类型（如北美云厂商）、金额或产能规模，不写「业绩发布」「产品升级」等无信息量描述
+- **影响列必须量化**：写具体数字（如「毛利率+Xpct」「营收增速加速至X%」），不写「利好业绩」「提振估值」等定性描述
 - 严禁列入券商发布研究报告、机构盈利预测、目标价更新等分析师行为
 - 严禁在表格单元格中出现任何引用标注（如[N]）
 
@@ -1615,8 +1617,8 @@ def gen_section1(client, key_data: dict) -> str:
 结构化数据引用：fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}], consensus=[{ref_map.get('consensus',{}).get('n','')}]
 
 【格式要求】220字严格上限，超出必须压缩。
-- 2-3个 • 要点：**每个要点必须单独占一行**（• 开头，换行分隔），每点仅1句话，**优先提炼里程碑/突破性数字**（首次突破某门槛、历史新高、行业第一、同比大幅超预期等），这类数字比普通增速更有冲击力；普通同比数据不单独成点
-- 要点聚焦近1-3个月核心事件+1个最具代表性数字，**不展开分析**（分析在第2节）
+- 2-3个 • 要点：每个要点必须单独占一行（• 开头，换行分隔），每点仅1句话，⚠️ 不要对要点内容加粗，只陈述事实和数字；优先提炼里程碑/突破性数字（首次突破某门槛、历史新高、行业第一、同比大幅超预期等），这类数字比普通增速更有冲击力；普通同比数据不单独成点
+- 要点聚焦近1-3个月核心事件+1个最具代表性数字，不展开分析（分析在第2节）
 - 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
 - 最后一段（独立行，1句）：一致预期未来两年营收/净利润关键数字，格式"市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润分别为…"，标注[N]
 - 不要重复历史背景，不要介绍商业模式，所有数字标注[N]
@@ -1868,13 +1870,13 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
 
 
 def gen_section4_survey_qa(client, key_data: dict) -> str:
-    """4.5 建议调研问题与分析关注点
+    """4.5 机构调研核心问答
 
     数据优先级：
     1. surveys（institution_research_detail.content）— 官方机构调研接口，内容最完整
     2. meetings（getMeetingSummaryDetail.aiQa）— 会议纪要 AI 摘要，作为补充
     任意来源有数据即可生成本节；两者均无数据则跳过。
-    仅在有真实管理层原话时使用 Q/A 格式，否则用'建议调研：'开头。
+    只输出真实 Q/A 格式，不编造建议调研问题。
     """
     surveys  = key_data.get("surveys", [])   # institution_research_detail
     meetings = key_data.get("meetings", [])
@@ -1909,21 +1911,21 @@ def gen_section4_survey_qa(client, key_data: dict) -> str:
     qa_text = "\n\n".join(qa_blocks)
     meeting_refs = _meeting_refs_str(meetings, ref_map, n=5)
 
-    prompt = f"""你是顶级券商分析师，正在为{name}撰写公司一页纸报告的"建议调研问题与分析关注点"小节。
+    prompt = f"""你是顶级券商分析师，正在为{name}撰写公司一页纸报告的"机构调研核心问答"小节。
 
 以下是最近机构调研/业绩说明会/路演的原始内容（来源：机构调研接口 + 会议纪要）：
 {qa_text}
 
 ---
-任务：从以上内容中精选 3-5 个最有基本面价值的关注点，聚焦以下类型：
+任务：从以上内容中精选 3-5 个最有基本面价值的真实问答，聚焦以下类型：
 • 盈利能力变化原因（毛利率/净利率涨跌驱动）
 • 新产品/新业务落地进展（含具体数据节点）
 • 主要风险点（商誉减值、客户集中、竞争加剧等，需有数据支撑）
 • 资本开支/产能/现金流展望
 
 输出格式要求：
-- ⚠️ **仅在有真实管理层原话时才使用 **Q：** / **A：** 格式**
-- 若无法确认是管理层原话，**严禁编造Q/A**——改用"建议调研："开头，列出需要向管理层核实的具体量化问题
+- ⚠️ **只能使用真实管理层原话，使用 **Q：** / **A：** 格式输出**
+- ⚠️ **严禁编造 Q/A，严禁输出"建议调研："等任何建议性问题**
 - 每条末尾标注引用 [N]（若有对应引用编号）
 - 不引入原文中没有的信息
 - 不含券商/机构具体名称
@@ -2029,11 +2031,12 @@ def gen_section4(client, key_data: dict) -> dict:
         if has_qa else ""
     )
     qa_instruction = (
-        "### 4.5 建议调研问题与分析关注点\n"
-        "⚠️ **仅在有真实管理层原话时才使用 Q：/A： 格式**；判断标准如下：\n"
+        "### 4.5 机构调研核心问答\n"
+        "⚠️ **只输出真实管理层原话的 Q：/A： 格式**；判断标准如下：\n"
         "- 若原始内容中明确有管理层回答（管理层原话、公司回应），则使用 **Q：** / **A：** 格式标注引用\n"
-        "- **若无法确认是管理层原话，严禁编造Q/A**——改为每个关注点用 建议调研： 开头，列出需要向管理层核实的具体问题\n"
-        "精选3-5个最有基本面价值的关注点；不引入原文没有的信息；不含机构具体名称；总字数400字以内；\n"
+        "- **严禁编造Q/A，严禁输出'建议调研：'等任何建议性问题**\n"
+        "- 若原始内容中完全没有可确认的管理层原话，则跳过本节（不输出任何内容）\n"
+        "精选3-5组最有基本面价值的真实问答；不引入原文没有的信息；不含机构具体名称；总字数400字以内；\n"
         "**与4.1已描述的商业模式不重复**。"
         if has_qa else
         ""  # 无数据时完全跳过，不留空标题
@@ -2082,7 +2085,7 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
     if not s45 and has_qa:
         # 宽松切分：容忍 deepseek 等模型用 ## / ** / 无标题等变体
         fb_parts = re.split(
-            r'(?:#{2,4}\s*)?4\.5[^\n]*?(?:机构调研|核心问答|调研问答|Q&A|QA)[^\n]*\n?',
+            r'(?:#{2,4}\s*)?4\.5[^\n]*?(?:机构调研|核心问答|调研问答|Q&A|QA|建议调研)[^\n]*\n?',
             result, maxsplit=1, flags=re.IGNORECASE
         )
         if len(fb_parts) > 1:
@@ -2194,7 +2197,7 @@ def gen_section6_health(client, key_data: dict) -> str:
 【引用映射】
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
-【格式要求】**每条不超过100字**，输出以下四条，每条单独一行，紧凑精炼：
+【格式要求】**每条不超过100字**，输出以下四条，每条单独一行，紧凑精炼，**每条必须以加粗的小标题开头**（如 **盈利能力**：）：
 
 ⚠️ **因果归因规则（强制执行）**：
 - fdmtNew结构化接口仅提供数字变化，**不提供因果解释**
@@ -2303,6 +2306,8 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
     result = call_claude(client, prompt, max_tokens=900)
     # 清理引用映射失败时 LLM 可能生成的占位符
     result = re.sub(r'\[research\]', '', result)
+    # 去掉 LLM 可能自带的 "### 8.1 行业格局" 标题（由 assemble_report 统一输出，避免重复）
+    result = re.sub(r'^###\s*8\.1[^\n]*\n', '', result, count=1).lstrip('\n')
     # 只保留 ### 8.1 行业格局 的内容，截断任何 LLM 自行添加的后续子章节
     # 同时也删除 LLM 可能生成的 "## 9" 或单独表格行
     lines = result.splitlines()
@@ -2393,7 +2398,7 @@ def gen_section9_valuation(client, key_data: dict) -> str:
                 f"一致预期EPS={_eps_f}元，当前PE={_pe_f}x\n"
                 f"基准目标价 = {_eps_f} × {_pe_f} = {_tp_neutral}元\n"
                 f"（乐观/悲观PE由模型根据业务情景调整，但需写明计算过程）\n"
-                f"⚠️ 目标价 = EPS × PE，必须写完整公式，不得写约数。情景概率必须标注'内部测算'。"
+                f"⚠️ 目标价 = EPS × PE，必须写完整公式，不得写约数。估值含义直接写算式，不加内部测算、基于推算等说明。"
             )
         except (TypeError, ValueError):
             pass
@@ -2426,33 +2431,39 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 **重要**：上方表格已按实际有数据的维度生成，**只填写每行的"解读"列，不新增行、不删除行、不修改前两列**。
 
 ### 9.4 情景推演
-**核心变量**（3-5个）：
+**核心变量**
 ⚠️ **核心变量必须是驱动业务的输入侧指标**，例如：出货量/装机量、单价/单瓦盈利、产能利用率、市占率、毛利率、扩产节奏、原材料成本等——取决于行业特性。
 ⚠️ **严禁将营收、净利润、EPS、归母净利润等财务结果填为核心变量**，这些是预测的输出，不是输入。
 ⚠️ **每个变量必须来自不同来源**（研报/纪要/公告等），不得所有变量统一标注同一个引用如[N]。
 ⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
-• **[业务驱动变量1]**：基准值X [N]（来源：研报/纪要）
-• **[业务驱动变量2]**：基准值X [N]（来源：研报/纪要，不同于变量1的来源）
+⚠️ **每个核心变量只写当前数值和选择该变量作为核心驱动因素的理由，不要写敏感性区间**。
+⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
+• **[业务驱动变量1]** [数值][N]；[一句话说明为何是核心变量]
+• **[业务驱动变量2]** [数值] [N]；[一句话说明，不同于变量1的来源]
 • ...（3-5个，每个变量有自己的独立引用）
 
 **情景推演表**：
 
-⚠️ **币种统一规则**：本报告主体为A股({name})，股价、目标价、EPS、股息率必须统一使用**人民币/A股口径**。若公司公告以港元宣派股息，必须写明原文"公司公告港元口径X港元"，折算A股股息率时需说明汇率假设。
+⚠️ **情景推演表必须基于上方列出的核心变量，写出每个情景下核心变量的具体取值**，不得出现「基于核心变量乐观假设」等无信息量的模板话术。
 
-⚠️ **目标价必须由公式自动计算，严禁自由填写**：
+⚠️ **币种统一规则**：本报告主体为A股({name})，股价、目标价、EPS、股息率必须统一使用**人民币/A股口径**。
+
+⚠️ **目标价必须由公式自动计算，严禁自由填写；估值含义只写算式**：
   目标价 = 使用的EPS × PE倍数
-  示例：6.34 × 16 = 101.44元（不是107元）
-  每个情景必须写明：EPS取值(元) × PE倍数 = 目标价(元)
+  示例：EPS＝6.34元 × PE=16x = 101.44元（不是107元）
+  每个情景必须写明：EPS＝X.XX元 × PE=Yx = Z.ZZ元
+  不要写"基于2026年EPS"、"给予PEG对应PE"、"基于[N]推算"、"内部测算"等额外说明。
 
-⚠️ **三种情景概率之和必须为100%，且每个概率均标注"内部测算"**。
+⚠️ **三种情景概率之和必须为100%，概率只写在情景名中，不标注"内部测算"**。
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（内部测算 概率~X%） | [各变量乐观值，含具体数字，各变量分别标注引用] | [对应的收入/利润结果，含公式或来源] | [基于NX年EPS X.XX元 × PEx = XXX元，写完整计算过程，标注引用] |
-| 中性（内部测算 概率~Y%） | [各变量基准值，各变量分别标注引用] | [基准预测] | [基于NX年EPS X.XX元 × PEx = XXX元] |
-| 悲观（内部测算 概率~Z%） | [各变量悲观值，各变量分别标注引用] | [下行结果] | [基于NX年EPS X.XX元 × PEx = XXX元] |
+| 乐观（概率~X%） | 1）核心变量1取乐观值X[N]<br>2）核心变量2取乐观值Y[N] | 1）营收/利润结果<br>2）EPS结果 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |
+| 中性（概率~Y%） | 1）核心变量1取基准值X[N]<br>2）核心变量2取基准值Y[N] | 1）基准预测<br>2）EPS结果 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |
+| 悲观（概率~Z%） | 1）核心变量1取悲观值X[N]<br>2）核心变量2取悲观值Y[N] | 1）下行预测<br>2）EPS结果 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |
 
-X+Y+Z=100%，每个假设数字须标注引用来源[N]或"基于[N]推算"。
+X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多个小点，必须用 `<br>` 分隔换行。
+⚠️ **表格格式强制规则**：每行必须严格 4 列（以 | 分隔，开头和结尾各一个 |），单元格内容不得包含未转义的 | 符号；不得合并单元格；三档情景必须各占独立一行，单元格内换行只使用 `<br>`。
 """
     return call_claude(client, prompt, max_tokens=1800)
 
@@ -2630,16 +2641,18 @@ def gen_peer_table(client, key_data: dict) -> str:
 {table_sep}
 {table_example}
 | [竞争类型] | [可比公司]（[代码]） | [市场] | [重叠业务] | [行业地位] | [进展][N] | — | [模式] | [客群] | [产品] |
-...（含4-6家可比公司，如有相关海外龙头也需列入）
+...（含至少3家可比公司，加上本公司共≥4行；如有相关海外龙头也需列入）
 
 **可比公司选择规则（按优先级）**：
-1. 优先选择与 {name} 存在**直接业务竞争关系**的上市公司（相同核心业务/客群/渠道）
-2. 次选主营中有较大重叠比例的上市公司（间接竞争或业务交叉）
-3. 如素材/研报未明确提及竞争对手，**根据行业知识**补充直接竞争对手，不得以旁观行业公司凑数
-4. 金融机构、非同业公司一律排除（除非 {name} 本身就是金融公司）
-5. **每行必须填满10列**，数据不足列填"—"，不可省略列
-6. 相关业务进展列必须有来源引用[N]（至少第1行标的公司行）
-7. 如果某可比公司相关信息无法获取，该列填"—"，整行仍保留
+1. ⚠️ **第一行必须是本公司 {name}（{ticker}）作为基准行，竞争关系列填"—（基准）"**
+2. 之后至少3家可比公司，合计表格≥4行（含本公司行）
+3. 优先选择与 {name} 存在**直接业务竞争关系**的上市公司（相同核心业务/客群/渠道）
+4. 次选主营中有较大重叠比例的上市公司（间接竞争或业务交叉）
+5. 如素材/研报未明确提及竞争对手，**根据行业知识**补充直接竞争对手，不得以旁观行业公司凑数
+6. 金融机构、非同业公司一律排除（除非 {name} 本身就是金融公司）
+7. **每行必须填满10列**，数据不足列填"—"，不可省略列
+8. ⚠️ **相关业务进展列每行都必须有具体描述和来源引用[N]**，不能填"—"或"见报告正文"
+9. 如果某可比公司相关信息无法获取，该列填"—"，整行仍保留
 
 {fin_col_instruction}
 """
@@ -2848,11 +2861,77 @@ def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) ->
     }
 
 
+def _ensure_self_row_first(table_md: str, name: str, ticker: str, profile: dict, ref: str = "") -> str:
+    """确保同业比较表的第一数据行是本公司（基准行）。
+    若本公司行已存在但不在首行，移到首行；若不存在，插入首行。
+    同时确保表格至少有4行数据（含本公司）。
+    """
+    if not table_md or '|' not in table_md:
+        return table_md
+    lines = table_md.strip().split('\n')
+    table_lines = [l for l in lines if '|' in l]
+    other_lines = [l for l in lines if '|' not in l]
+
+    if len(table_lines) < 2:
+        return table_md
+
+    header = table_lines[0]
+    sep = table_lines[1] if len(table_lines) > 1 and re.match(r'^\|[-: |]+\|', table_lines[1]) else None
+    data_start = 2 if sep else 1
+    data_rows = table_lines[data_start:]
+
+    # 识别本公司行（含 ticker 或 name）
+    self_row = None
+    other_rows = []
+    for row in data_rows:
+        if ticker and ticker in row:
+            self_row = row
+        elif name and name[:4] in row:
+            self_row = row
+        else:
+            other_rows.append(row)
+
+    # 构建标准本公司基准行
+    self_row_std = (
+        f"| —（基准） | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} "
+        f"| {profile.get('recent_progress', '见研究报告正文')}{ref} "
+        f"| {profile['model']} | {profile['customers']} | {profile['products']} |"
+    )
+    if self_row is None:
+        self_row = self_row_std
+
+    # 重组：本公司首行 + 其他可比行
+    new_data = [self_row] + other_rows
+
+    # 若数据行不足3行（本公司+2家可比），用 profile.peers 补充
+    peers = profile.get("peers", [])
+    peer_idx = 0
+    while len(new_data) < 4 and peer_idx < len(peers):
+        p = peers[peer_idx]
+        peer_row = "| " + " | ".join(str(x) for x in p) + " |"
+        # 不重复添加
+        if not any(p[1] if len(p) > 1 else "" in r for r in new_data):
+            new_data.append(peer_row)
+        peer_idx += 1
+
+    rebuilt = [header]
+    if sep:
+        rebuilt.append(sep)
+    rebuilt.extend(new_data)
+    return '\n'.join(rebuilt)
+
+
 def _build_a_share_peer_table(name: str, ticker: str, ref: str = "", existing: str = "") -> str:
     profile = _a_share_profile(name, ticker)
+
+    # 优先使用 LLM 生成的表格（existing），并确保本公司在首行
+    if existing and "|" in existing and ("竞争关系" in existing or "可比业务" in existing):
+        return _ensure_self_row_first(existing.strip(), name, ticker, profile, ref)
+
+    # 降级：用 profile 静态数据构建
     if profile["peers"]:
         rows = [
-            f"| — | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} | 见报告正文{ref} | {profile['model']} | {profile['customers']} | {profile['products']} |"
+            f"| —（基准） | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} | {profile.get('recent_progress', '见报告正文')}{ref} | {profile['model']} | {profile['customers']} | {profile['products']} |"
         ]
         for p in profile["peers"]:
             rows.append("| " + " | ".join(str(x) for x in p) + " |")
@@ -2861,8 +2940,6 @@ def _build_a_share_peer_table(name: str, ticker: str, ref: str = "", existing: s
             "|:---------|:-----|:-----|:---------|:---------|:-------------|:---------|:-------------|:---------|\n"
             + "\n".join(rows)
         )
-    if existing and "|" in existing and "竞争关系" in existing and "可比业务" in existing:
-        return existing.strip()
     return ""
 
 
@@ -2920,7 +2997,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     s4_survey_block = ""
     if s4_survey_qa and len(s4_survey_qa.strip()) > 30:
         s4_survey_block = f"""
-### 4.5 建议调研问题与分析关注点
+### 4.5 机构调研核心问答
 
 {s4_survey_qa}
 
@@ -2957,8 +3034,6 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     md = f"""{title_line}
 
 **日期**：{date}　｜　**PE(TTM)**：{pe_str}{pe_pb_ref}　｜　**PB**：{pb_str}{pe_pb_ref}
-
----
 
 ## 1 公司近况跟踪
 
@@ -3011,6 +3086,8 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {sections['s7']}
 
 ## 8 行业分析及同业对比
+
+### 8.1 行业格局
 
 {sections['s8_industry']}
 {peer_section_block}
@@ -3187,8 +3264,21 @@ def _postprocess_v123(md_content: str, ref_map: dict) -> str:
     """
     import re, hashlib
 
-    # ── 阶段 0: 分离正文与参考资料 ──
+    # ── 阶段 0: 若正文中存在多个 "## 参考资料"，只保留最后一处（其余均为 LLM 在章节内嵌的内容） ──
     ref_header = "## 参考资料"
+    occurrences = [m.start() for m in re.finditer(re.escape(ref_header), md_content)]
+    if len(occurrences) > 1:
+        # 删除非最后一处的参考资料块（到下一个 ## 或文末）
+        segments_to_remove = []
+        for pos in occurrences[:-1]:
+            end = md_content.find('\n## ', pos + 1)
+            if end < 0:
+                end = len(md_content)
+            segments_to_remove.append((pos, end))
+        for start, end in reversed(segments_to_remove):
+            md_content = md_content[:start] + md_content[end:]
+
+    # ── 阶段 0b: 分离正文与参考资料 ──
     if ref_header not in md_content:
         return md_content
 
@@ -3264,9 +3354,15 @@ def _postprocess_v123(md_content: str, ref_map: dict) -> str:
     # ── 阶段 5.5: 清理模板装饰符（⭐ 等权重标记，只能作为内部权重提示，不能进入最终输出） ──
     result = re.sub(r'[⭐🌟🔥⚠️✅❌]+', '', result)
 
-    # ── 阶段 5.6: 清理 HTML 标签（<br> 等，Markdown 不应使用 HTML 换行） ──
-    result = re.sub(r'<br\s*/?>', '\n', result)
-    result = re.sub(r'<[^>]+>', '', result)  # 清理所有残留 HTML 标签
+    # ── 阶段 5.6: 清理 HTML 标签；保留 <br> 供情景推演表单元格内换行 ──
+    result = re.sub(r'<br\s*/?>', '<br>', result)
+    result = re.sub(r'<(?!br>)[^>]+>', '', result)  # 清理除 <br> 之外的残留 HTML 标签
+
+    # ── 阶段 5.7: 删除所有 > 注：… 行（不对读者展示内部注记）──
+    result = re.sub(r'^>[ \t]*注：[^\n]*\n?', '', result, flags=re.MULTILINE)
+
+    # ── 阶段 5.8: 删除正文中所有 --- 分隔线（章节间不用分隔符）──
+    result = re.sub(r'(?m)^---+\s*$\n?', '', result)
 
     # ── 阶段 6: 清理孤立的空小节标题 ──
     result = _remove_orphan_subsections(result)
@@ -3275,28 +3371,36 @@ def _postprocess_v123(md_content: str, ref_map: dict) -> str:
     result = _sparse_cleanup(result)
 
     # ── 阶段 7.5: 情景推演表兜底 ──
-    # 如果情景推演表标题存在但后续无实际三行情景表格，插入最小兜底模板
+    # 如果情景推演表标题存在但后续无实际三行情景表格，调用 LLM 补写（传入核心变量）
     scenario_header = "**情景推演表**："
     if scenario_header in result:
-        # 找到情景推演表标题后的内容
         sh_idx = result.index(scenario_header)
         after_header = result[sh_idx + len(scenario_header):]
-        # 找到下一个 ## 或 --- 的位置
         next_break = len(after_header)
-        for marker in ["\n## ", "\n---"]:
+        for marker in ["\n## "]:
             pos = after_header.find(marker)
             if 0 <= pos < next_break:
                 next_break = pos
         scenario_section = after_header[:next_break]
-        # 检查是否有至少3行表格数据（乐观/中性/悲观）
         scenario_rows = re.findall(r'^\| (乐观|中性|悲观).*\|$', scenario_section, re.M)
         if len(scenario_rows) < 3:
+            # 提取核心变量文本供 LLM 使用
+            _cv_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)',
+                                  result[:sh_idx + len(scenario_header)], re.DOTALL)
+            _cv_text = _cv_match.group(1).strip()[:2000] if _cv_match else ""
+            # 传入 key_data（如果可用）或直接用最小兜底
+            if _cv_text:
+                _fallback_key = {"_scenario_core_vars": _cv_text}
+                _fallback_key.update({k: v for k, v in locals().items()
+                                      if k in ('name', 'ticker', 'fin', 'forecasts', 'valuation')
+                                      and not callable(v)})
+                # 这里无法访问 key_data，用最小有效兜底（含 EPS×PE 公式占位）
             fallback_table = (
                 "\n\n| 情景 | 核心假设 | 经营含义 | 估值含义 |\n"
                 "|:-----|:---------|:---------|:---------|\n"
-                "| 乐观（内部测算 概率~25%） | 基于核心变量乐观假设 | 收入与利润上修 | 基于EPS×PE=目标价 |\n"
-                "| 中性（内部测算 概率~50%） | 基于核心变量基准假设 | 基准预期 | 基于EPS×PE=目标价 |\n"
-                "| 悲观（内部测算 概率~25%） | 基于核心变量悲观假设 | 收入与利润下修 | 基于EPS×PE=目标价 |\n"
+                "| 乐观（概率~25%） | 1）核心驱动变量取乐观值<br>2）盈利弹性高于基准 | 收入/利润超预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
+                "| 中性（概率~50%） | 1）核心驱动变量取基准值<br>2）盈利兑现符合预期 | 收入/利润符合预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
+                "| 悲观（概率~25%） | 1）核心驱动变量取悲观值<br>2）盈利弹性低于基准 | 收入/利润低于预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
             )
             result = result[:sh_idx + len(scenario_header)] + fallback_table + after_header[next_break:]
 
@@ -3693,17 +3797,10 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
                         rf'\1{fallback_title}', md_content, flags=re.M)
     md_content = md_content.replace("User Points Not Enough", "")
 
-    # A-share header metadata expected by RC checker.
-    if "市场：" not in md_content[:800]:
-        md_content = re.sub(
-            r'(\*\*日期\*\*：[^\n]+\n)',
-            rf'\1\n市场：A股 | 股票代码：{ticker} | 生成日期：{TODAY} | 当前价格/市值口径：PE/PB 使用估值接口\n',
-            md_content,
-            count=1
-        )
+    # A-share header metadata line intentionally removed (v1.2.4+).
 
     # Ensure §3 has a concrete catalyst table when LLM repair is unavailable.
-    cat_pat = r'(## 3 催化事件时间表.*?)(?=\n---\n\n## 4 )'
+    cat_pat = r'(## 3 催化事件时间表.*?)(?=\n## 4 |\n---\n\n## 4 )'
     cat = re.search(cat_pat, md_content, re.DOTALL)
     cat_rows = re.findall(r'^\|\s*(?!:?-{2,})(?!时间\b).+\|$', cat.group(1), re.M) if cat else []
     if cat and len(cat_rows) < 3:
@@ -3721,14 +3818,21 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
         md_content = re.sub(cat_pat, catalyst, md_content, count=1, flags=re.DOTALL)
 
     # Ensure §8.2 peer table keeps self row and complete schema after sparse cleanup.
-    peer_body = _build_a_share_peer_table(short_name, ticker, main_ref)
+    # 提取现有 8.2 表格内容，用 _build_a_share_peer_table 确保本公司首行+>=4行
+    _peer_match = re.search(r'### 8\.2 同业比较\n+(.*?)(?=\n## )', md_content, re.DOTALL)
+    _existing_peer = _peer_match.group(1).strip() if _peer_match else ""
+    peer_body = _build_a_share_peer_table(short_name, ticker, main_ref, _existing_peer)
     if peer_body:
-        peer_table = f"### 8.2 同业比较\n\n**数据来源**：公司主营构成与同业公开研究整理{main_ref}\n\n{peer_body}"
-        md_content = re.sub(r'### 8\.2 同业比较.*?(?=\n---\n\n## 9 )',
-                            peer_table + "\n", md_content, count=1, flags=re.DOTALL)
+        peer_table_str = f"### 8.2 同业比较\n\n{peer_body}"
+        if '### 8.2 同业比较' in md_content:
+            md_content = re.sub(r'### 8\.2 同业比较.*?(?=\n## )',
+                                peer_table_str + "\n", md_content, count=1, flags=re.DOTALL)
+        else:
+            # 8.2 整节不存在时，在 ## 9 前插入
+            md_content = re.sub(r'(?=\n## 9 )', f"\n{peer_table_str}\n", md_content, count=1)
 
     # Ensure risk section contains publishable bullets if LLM returned a short error.
-    risk_pat = r'(## 10 风险提示\n\n)(.*?)(?=\n---\n\n## 参考资料)'
+    risk_pat = r'(## 10 风险提示\n\n)(.*?)(?=\n## 参考资料|\n---\n\n## 参考资料)'
     risk = re.search(risk_pat, md_content, re.DOTALL)
     if risk and len(re.findall(r'^\s*[-*]\s+', risk.group(2), re.M)) < 4:
         risk_body = "\n".join(f"- **{r.split('可能')[0].rstrip('，。')}风险**：{r}" for r in profile["risks"][:4])
@@ -3993,22 +4097,23 @@ def _sparse_cleanup(md_content: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _fix_scenario_table_columns(md_text: str) -> str:
-    """修复情景推演表：将 LLM 输出的 2 列表格拆为 4 列 (情景|核心假设|经营含义|估值含义)。
+    """修复情景推演表格式，确保输出为标准4列表格（情景|核心假设|经营含义|估值含义）。
 
-    在 _normalize_markdown_tables 连接跨行内容后执行。
-    LLM 常输出 "| 情景 | 核心假设 |" 两列表格，用 " / • " 分隔三段内容。
+    处理以下常见问题：
+    1. LLM 输出 2 列表格，用 " / • " 分隔三段内容 → 拆为 4 列
+    2. 列数 >4 → 合并多余列到最后一列
+    3. 列数正好是 4 但分隔行格式错误 → 修正分隔行
+    4. 情景行内容换行（被 _normalize 展开后仍有问题）→ 清理
     """
     if '情景推演表' not in md_text:
         return md_text
     # 找到情景推演表区域
     sce_idx = md_text.index('情景推演表')
-    # 找下一个 ## 或 ---
+    end_idx = len(md_text)
     for end_marker in ['\n## ', '\n---']:
-        end_idx = md_text.find(end_marker, sce_idx)
-        if end_idx > sce_idx:
-            break
-    if end_idx < 0:
-        end_idx = len(md_text)
+        pos = md_text.find(end_marker, sce_idx)
+        if 0 < pos < end_idx:
+            end_idx = pos
     prefix = md_text[:sce_idx]
     suffix = md_text[end_idx:]
     sce_block = md_text[sce_idx:end_idx]
@@ -4017,36 +4122,138 @@ def _fix_scenario_table_columns(md_text: str) -> str:
     out = []
     for line in lines:
         stripped = line.rstrip()
-        # 只处理以 | 开头的表格行
         if not stripped.startswith('|'):
             out.append(line)
             continue
-        # 统计 | 的数量判断列数
-        parts = [p for p in stripped.split('|')]
-        # parts = ['', ' col1 ', ' col2 ', ''] for 2-col table
-        # 去掉首尾空
-        inner = [p.strip() for p in parts[1:-1]]
-        if len(inner) != 2:
+
+        # 解析单元格
+        parts = stripped.split('|')
+        inner = [p.strip() for p in parts[1:-1]]  # 去掉首尾空
+
+        n = len(inner)
+
+        if n == 0:
             out.append(line)
             continue
-        col1, col2 = inner[0], inner[1]
-        # 分隔行
-        if re.match(r'^[: -]+$', col1) and re.match(r'^[: -]+$', col2):
-            out.append('|:-----|:---------|:------------|:--------------|')
+
+        # ── 分隔行：统一输出标准4列分隔 ──
+        if all(re.match(r'^[: \-]+$', c) for c in inner):
+            out.append('|:-----|:---------|:----------|:----------|')
             continue
-        # 表头行
-        if re.match(r'^情景', col1):
+
+        # ── 表头行 ──
+        if re.match(r'^情景', inner[0]):
             out.append('| 情景 | 核心假设 | 经营含义 | 估值含义 |')
             continue
-        # 数据行: 按 " / • " 拆分 col2
-        segs = [s.strip() for s in re.split(r'\s*/\s*•\s*', col2)]
-        if len(segs) >= 3:
-            out.append(f'| {col1} | • {segs[0]} | • {segs[1]} | • {segs[2]} |')
-        elif len(segs) == 2:
-            out.append(f'| {col1} | • {segs[0]} | • {segs[1]} | — |')
+
+        # ── 数据行：统一处理为4列 ──
+        if n == 4:
+            # 已经是4列，直接输出；保留 <br> 供 Markdown/DOCX 做单元格内换行
+            cleaned = [c.replace('\n', ' ').replace('<br/>', '<br>').replace('<br />', '<br>') for c in inner]
+            out.append('| ' + ' | '.join(cleaned) + ' |')
+        elif n == 2:
+            # 2列：col2 按 " / • " 拆分为3段
+            col1, col2 = inner[0], inner[1]
+            segs = [s.strip() for s in re.split(r'\s*/\s*•\s*|\s*;\s*(?=[^；])', col2)]
+            if len(segs) >= 3:
+                out.append(f'| {col1} | {segs[0]} | {segs[1]} | {segs[2]} |')
+            elif len(segs) == 2:
+                out.append(f'| {col1} | {segs[0]} | {segs[1]} | — |')
+            else:
+                # 只有1段，尝试按关键词切分
+                m1 = re.search(r'(收入|利润|营收|EPS|毛利|净利)', col2)
+                m2 = re.search(r'(目标价|估值|元.*×|×.*元|EPS.*×)', col2)
+                if m2:
+                    split2 = m2.start()
+                    split1 = m1.start() if m1 and m1.start() < split2 else split2 // 2
+                    out.append(f'| {col1} | {col2[:split1].strip()} | {col2[split1:split2].strip()} | {col2[split2:].strip()} |')
+                else:
+                    out.append(f'| {col1} | {col2} | — | — |')
+        elif n == 3:
+            # 3列：补第4列为"—"
+            out.append('| ' + ' | '.join(inner) + ' | — |')
+        elif n > 4:
+            # >4列：合并最后若干列到第4列
+            out.append('| ' + ' | '.join(inner[:3]) + ' | ' + ' '.join(inner[3:]) + ' |')
         else:
             out.append(line)
+
     return prefix + '\n'.join(out) + suffix
+
+
+def _format_scenario_cell_breaks(text: str) -> str:
+    """Use <br> for scenario-table sub-points without breaking Markdown tables."""
+    if not text:
+        return text
+    text = re.sub(r'\s*<br\s*/?>\s*', '<br>', text)
+    text = re.sub(r'[；;]\s*', '<br>', text)
+    text = re.sub(r'\s*<br>\s*', '<br>', text)
+    return text.strip()
+
+
+def _clean_scenario_disclosure_text(text: str) -> str:
+    """Remove reader-facing process/source labels from scenario analysis."""
+    if not text:
+        return text
+    text = re.sub(r'[（(]\s*内部测算\s*概率\s*~', '（概率~', text)
+    text = re.sub(r'[（(]\s*内部测算\s+', '（', text)
+    text = re.sub(r'[（(][^）)]*(?:来源[:：]|基于\[\d+\]|内部测算|推算|测算)[^）)]*[）)]', '', text)
+    text = re.sub(r'基于\[\d+\][^。；;|]*?(?:推算|测算)', '', text)
+    text = re.sub(r'内部测算[:：]?', '', text)
+    text = re.sub(r'基于(?:\d{4}年)?\s*EPS\s*', 'EPS＝', text)
+    text = re.sub(r'×\s*给予.*?PE\s*=', '× PE=', text)
+    text = re.sub(r'×\s*PE\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*倍', r'× PE=\1x', text)
+
+    def _formula(m):
+        eps, pe, target = m.group(1), m.group(2), m.group(3)
+        return f"EPS＝{eps}元 × PE={pe}x = {target}元"
+
+    text = re.sub(
+        r'EPS[＝=\s]*([0-9]+(?:\.[0-9]+)?)\s*元?\s*[×xX*]\s*PE\s*=?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:x|倍)?\s*=\s*([0-9,.]+)\s*元',
+        _formula,
+        text,
+    )
+    text = re.sub(r'\s+([，。；;])', r'\1', text)
+    text = re.sub(r'[；;]\s*([。])', r'\1', text)
+    return text.strip()
+
+
+def _format_scenario_analysis(md_text: str) -> str:
+    """Normalize A-share 9.4 scenario wording and table cell line breaks."""
+    has_scenario_table_only = bool(re.search(r'^\|\s*(?:乐观|中性|悲观)', md_text or '', re.M))
+    if '情景推演' not in md_text and not has_scenario_table_only:
+        return md_text
+
+    start_match = re.search(r'###\s*9\.4\s*情景推演', md_text)
+    if start_match:
+        start = start_match.start()
+    else:
+        marker = md_text.find('情景推演')
+        if marker >= 0:
+            start = marker
+        elif has_scenario_table_only:
+            start = 0
+        else:
+            return md_text
+
+    end = len(md_text)
+    for marker in ('\n## 10 ', '\n## 风险提示', '\n### 9.5 ', '\n---'):
+        pos = md_text.find(marker, start + 1)
+        if 0 < pos < end:
+            end = pos
+
+    block = _clean_scenario_disclosure_text(md_text[start:end])
+    lines = []
+    for line in block.split('\n'):
+        stripped = line.strip()
+        if stripped.startswith('|') and not re.match(r'^\|\s*:?-+', stripped):
+            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            if cells and re.match(r'^(乐观|中性|悲观)', cells[0]):
+                cells = [_clean_scenario_disclosure_text(c) for c in cells]
+                cells[1:] = [_format_scenario_cell_breaks(c) for c in cells[1:]]
+                line = '| ' + ' | '.join(cells) + ' |'
+        lines.append(line)
+    return md_text[:start] + '\n'.join(lines) + md_text[end:]
 
 
 CHART_CAPTIONS = {
@@ -4342,38 +4549,54 @@ def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
         "基于EPS×PE=目标价", "收入与利润上修", "收入与利润下修", "基准预期"
     ]
     _has_template = any(p in _sce_sec for p in _template_patterns)
-    _has_concrete_numbers = bool(re.search(r'(?:目标价|估值)[^\n]*?\d+[元港元美元]', _sce_sec))
-    _sce_valid = _has_concrete_numbers and not _has_template
+    _has_concrete_numbers = bool(re.search(r'(?:目标价|估值|EPS)[^\n]*?\d+[\.\d]*[元x×倍]', _sce_sec))
+    # 有3行情景表格且核心变量写得好时，放宽判断
+    _has_3_scenario_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) == 3
+    _has_good_core_vars = bool(re.search(r'为何|驱动|选为|核心变量|输入侧', _sce_sec))
+    # 若情景表不足3行（如只有2行），强制修复补写悲观行
+    _missing_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) < 3
+    _sce_valid = (not _missing_rows) and ((_has_concrete_numbers and not _has_template) or (_has_3_scenario_rows and _has_good_core_vars and not _has_template))
 
     if not _sce_valid:
         repair_log.append("情景推演含模板话术或无数值→LLM补写")
+        # 提取已生成的核心变量文本注入 key_data，供 _gen_scenario_table 使用
+        _core_vars_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)', _sce_sec, re.DOTALL)
+        if _core_vars_match:
+            key_data["_scenario_core_vars"] = _core_vars_match.group(1).strip()[:2000]
         _sce_fix = _gen_scenario_table(key_data)
         if _sce_fix:
-            _old_start = md_content.find("情景推演")
-            if _old_start > 0:
-                _old_end = md_content.find("## 10 ", _old_start)
-                if _old_end < 0:
-                    _old_end = md_content.find("## 风险提示", _old_start)
-                if _old_end > 0:
-                    md_content = md_content[:_old_start] + _sce_fix + "\n\n" + md_content[_old_end:]
+            # 只替换「**情景推演表**：」之后的表格，保留核心变量文本
+            _table_marker = "**情景推演表**："
+            _table_pos = md_content.find(_table_marker)
+            if _table_pos > 0:
+                _table_end = md_content.find("## 10 ", _table_pos)
+                if _table_end < 0:
+                    _table_end = md_content.find("## 风险提示", _table_pos)
+                if _table_end > 0:
+                    md_content = md_content[:_table_pos + len(_table_marker)] + "\n\n" + _sce_fix + "\n\n" + md_content[_table_end:]
                     repair_log[-1] += " ✅"
                 else:
                     repair_log[-1] += " ❌(未找到下一章节)"
             else:
-                repair_log[-1] += " ❌(未找到情景推演章节)"
+                # 找不到情景推演表标记时，整体替换 9.4 区域
+                _old_start = md_content.find("情景推演")
+                if _old_start > 0:
+                    _old_end = md_content.find("## 10 ", _old_start)
+                    if _old_end < 0:
+                        _old_end = md_content.find("## 风险提示", _old_start)
+                    if _old_end > 0:
+                        md_content = md_content[:_old_start] + "情景推演\n\n" + _sce_fix + "\n\n" + md_content[_old_end:]
+                        repair_log[-1] += " ✅"
+                    else:
+                        repair_log[-1] += " ❌(未找到下一章节)"
+                else:
+                    repair_log[-1] += " ❌(未找到情景推演章节)"
 
-    # ── 检查3: 注记行 trailing * 清除 ──
-    md_content = re.sub(r'(> 注：[^*\n]+)\*', r'\1', md_content)
+    # ── 检查3: 注记行清除（不对读者展示内部注记）──
+    md_content = re.sub(r'^>[ \t]*注：[^\n]*\n?', '', md_content, flags=re.MULTILINE)
 
     # ── 检查4: 情景推演 EPS×PE 公式兜底（无条件注入，避免checker check14 P1）──
-    if '情景推演表' in md_content or '情景推演' in md_content:
-        _sce_marker = md_content.find("情景推演")
-        if _sce_marker > 0:
-            _sce_end = md_content.find("## 10 ", _sce_marker) if md_content.find("## 10 ", _sce_marker) > 0 else md_content.find("## 风险提示", _sce_marker)
-            if _sce_end > 0 and 'EPS×PE' not in md_content[_sce_marker:_sce_end] and '目标价=EPS' not in md_content[_sce_marker:_sce_end]:
-                _inject = "\n\n> 注：以上为内部测算，基于参考资料中的收入、利润、估值或业务假设推导。目标价=EPS×PE。\n"
-                md_content = md_content[:_sce_end] + _inject + md_content[_sce_end:]
-                repair_log.append("情景推演公式兜底: 注入 EPS×PE 说明")
+    # 已改为在情景表内直接写公式，不再注入 > 注 行
 
     # ── v1.2.4 body format fixes ──
     # 1. Strip non-numeric bracket refs like [2026-03-30电话会议] — only [N] allowed in body
@@ -4516,33 +4739,48 @@ def _gen_catalyst_table(key_data: dict) -> str:
     meetings = key_data.get("meetings", [])
     announcements = key_data.get("announcements", [])
 
-    # 收集已有的催化事件线索
-    _hints = []
-    for r in reports[:8]:
+    # 传入研报全文摘要，给 LLM 足够的素材
+    _report_bodies = []
+    for r in reports[:6]:
         _t = r.get("title", "") or r.get("articleTitle", "")
         _d = r.get("publishTime", "") or r.get("date", "")
-        if _t:
-            _hints.append(f"  [{_d}] {_t[:120]}")
-    for m in meetings[:5]:
+        _body = r.get("text", "") or r.get("abstract", "") or r.get("abstractText", "")
+        if _t or _body:
+            _report_bodies.append(f"[{_d}] {_t[:80]}\n{_body[:1500]}")
+    _mtg_bodies = []
+    for m in meetings[:3]:
         _t = m.get("title", "") or m.get("summary", "")
         _d = m.get("publishTime", "") or m.get("date", "")
+        _qa = m.get("qa", "") or m.get("text", "")
+        if _t or _qa:
+            _mtg_bodies.append(f"[{_d}] 纪要: {_t[:80]}\n{_qa[:1500]}")
+    _ann_bodies = []
+    for a in announcements[:3]:
+        _t = a.get("title", "") or ""
+        _d = a.get("publishTime", "") or a.get("date", "") or ""
+        _detail = (a.get("detail") or {})
+        _content = _detail.get("content", "") or "" if isinstance(_detail, dict) else ""
         if _t:
-            _hints.append(f"  [{_d}] 纪要: {_t[:120]}")
+            _ann_bodies.append(f"[{_d}] 公告: {_t[:80]}\n{_content[:800]}")
+
+    _all_material = "\n\n---\n\n".join(_report_bodies + _mtg_bodies + _ann_bodies)
 
     prompt = (
-        f"为{name}（{ticker}）生成催化事件时间表。\n\n"
+        f"为{name}（{ticker}）生成催化事件时间表，基于以下真实素材提取具体事件。\n\n"
+        "【素材（研报/纪要/公告原文，请从中提取真实事件节点）】\n"
+        f"{_all_material[:6000]}\n\n"
         "要求：\n"
-        "1. 至少6行，覆盖过去1-3个月已发生事件和未来3-12个月预期事件\n"
-        "2. 时间列精确到月或季度，预期事件注明「（预期）」\n"
-        "3. 事件描述具体（含金额/规模/节点），影响列量化\n"
-        "4. 不得包含「券商发布研究报告」「机构上调目标价」等分析师行为\n"
-        "5. 输出格式为 Markdown 表格：\n"
-        "## 3 催化事件时间表\n\n"
+        "1. 至少6行，覆盖过去1-6个月已发生事件和未来3-12个月预期事件\n"
+        "2. 时间列精确到月或季度（YYYY-MM格式），预期事件注明「（预期）」\n"
+        "3. 事件描述必须具体：含产品型号/客户名称/金额/规模/出货量等可验证信息，不写泛泛而谈的笼统描述\n"
+        "4. 影响列必须量化：写具体数字（如「毛利率提升X pct」「营收增速加速至X%」「产能扩充至Xk片/月」）\n"
+        "5. 不得包含「券商发布研究报告」「机构上调目标价」等分析师行为\n"
+        "6. 如素材中实在找不到某方向的具体数字，可用行业知识补充，但必须注明「（内部测算）」\n"
+        "7. 输出格式为 Markdown 表格，只输出表格不输出其他文字：\n"
         "| 时间 | 事件 | 影响 |\n"
         "|:-----|:-----|:-----|\n"
-        "| YYYY-MM | 具体事件描述 | 量化影响描述 |\n"
-        "...至少6行...\n\n"
-        f"参考素材（可从以下提取事件）：\n" + "\n".join(_hints[:15])
+        "| YYYY-MM | 具体事件+规模/型号/金额 | 量化影响数字 |\n"
+        "...至少6行...\n"
     )
 
     result = call_claude(None, prompt, max_tokens=2000).strip()
@@ -4563,49 +4801,61 @@ def _gen_catalyst_table(key_data: dict) -> str:
 
 
 def _gen_scenario_table(key_data: dict) -> str:
-    """调用 LLM 补写情景推演表。"""
+    """调用 LLM 补写情景推演表（基于已生成的核心变量文本）。"""
     name = key_data.get("name", "")
     ticker = key_data.get("ticker", "")
     fin = key_data.get("fin", {})
     forecasts = key_data.get("consensus_forecasts", [])
     valuation = key_data.get("valuation", {})
+    # 从 key_data 中提取已生成的核心变量文本（由调用方注入）
+    core_vars_text = key_data.get("_scenario_core_vars", "")
 
-    # 提取基准数据
-    _latest = fin.get("latest", {})
-    _latest_rev = _latest.get("revenue", "") or _latest.get("营业总收入", "")
-    _latest_profit = _latest.get("net_profit", "") or _latest.get("归母净利润", "")
+    # 提取一致预期基准数据
+    years_fin = fin.get("years", []) if isinstance(fin, dict) else []
+    base_yr = int(years_fin[0]) if years_fin else 2025
+    fc_eps, fc_pe = None, None
+    if forecasts:
+        fc0 = forecasts[0]
+        fc_eps = fc0.get("conEps")
+        fc_pe  = fc0.get("conPe")
+    _tp_neutral = round(float(fc_eps) * float(fc_pe), 2) if (fc_eps and fc_pe) else None
+
+    # 提取基准财务数据
     _latest_pe = ""
     if valuation:
-        _vals = valuation.get("data", [])
-        if isinstance(_vals, list) and _vals:
-            _latest_pe = _vals[0].get("pe", "") or _vals[0].get("PE", "")
+        pe_item = valuation.get("items", {}).get("市盈率PE", {})
+        _latest_pe = pe_item.get("val", "")
+
+    core_vars_block = f"\n【已生成的核心变量（必须基于这些变量写情景假设，不得写模板话术）】\n{core_vars_text}\n" if core_vars_text else ""
+    tp_block = f"\n基准目标价参考：EPS＝{fc_eps}元 × PE={fc_pe}x = {_tp_neutral}元（中性情景参考基准）" if _tp_neutral else ""
 
     prompt = (
-        f"为{name}（{ticker}）生成情景推演章节。\n\n"
+        f"为{name}（{ticker}）生成情景推演**表格**部分（仅表格，不重复核心变量文字）。\n\n"
+        f"{core_vars_block}"
+        f"{tp_block}\n\n"
         "要求：\n"
-        "1. 核心变量：列出3-5个关键驱动因素，附基准值和敏感性（标注「内部测算」）\n"
-        "2. 三档情景：乐观/中性/悲观，每条含具体数值（非模板话术如「基于核心变量乐观假设」）\n"
-        "3. 估值含义：含EPS×PE=目标价的可复核公式\n"
-        "4. 概率之和=100%\n"
-        "5. 输出格式：\n"
-        "### 9.4 情景推演\n\n"
-        "**核心变量**（3-5个，含基准值与敏感性）:\n\n"
-        "**情景推演表**：\n"
+        "1. 三档情景（乐观/中性/悲观），每档必须写出核心变量的**具体数值**（如「800G出货量X万件」「毛利率X%」），不得写「基于核心变量乐观假设」等模板话术\n"
+        "2. 经营含义：对应收入/利润具体结果（如「营收预计Xxx亿、利润Xxx亿」）\n"
+        "3. 估值含义：只写EPS×PE=目标价的可复核公式（如「EPS＝X.XX元 × PE=Yx = Z.ZZ元」），不要写基于、给予、推算、内部测算等说明\n"
+        "4. 三档概率之和=100%，概率只写在情景名中，不标注'内部测算'\n"
+        "5. 有引用编号[N]即可，不要写括号来源、'基于[N]推算'或'内部测算'\n"
+        "6. 每个单元格内若有多个小点，必须使用 <br> 换行\n"
+        "7. 只输出 Markdown 表格，不输出其他文字\n\n"
+        "输出格式：\n"
         "| 情景 | 核心假设 | 经营含义 | 估值含义 |\n"
         "|:-----|:---------|:---------|:---------|\n"
-        "| 乐观（概率 ~XX%） | 具体假设数字 | 收入/利润结果 | EPS×PE=目标价 |\n"
-        "| 中性（概率 ~XX%） | ... | ... | ... |\n"
-        "| 悲观（概率 ~XX%） | ... | ... | ... |\n\n"
-        f"可用基准数据：营收约{_latest_rev}，净利约{_latest_profit}，PE约{_latest_pe}。"
+        "| 乐观（概率~XX%） | 1）变量1=乐观值[N]<br>2）变量2=乐观值[N] | 1）营收~XX亿<br>2）净利~XX亿 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
+        "| 中性（概率~XX%） | 1）变量1=基准值[N]<br>2）变量2=基准值[N] | 1）营收~XX亿<br>2）净利~XX亿 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
+        "| 悲观（概率~XX%） | 1）变量1=悲观值[N]<br>2）变量2=悲观值[N] | 1）营收~XX亿<br>2）净利~XX亿 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
     )
 
-    result = call_claude(None, prompt, max_tokens=2500).strip()
-    # Strip HTML tags (<br>, <br/>, etc.) from LLM output
+    result = call_claude(None, prompt, max_tokens=1500).strip()
     result = re.sub(r'<br\s*/?>', '\n', result)
-    # Strip leading "### 9.4 情景推演" header to avoid duplicate when inserted by _v124_post_repair
+    # 去掉 LLM 可能加的标题
     result = re.sub(r'^###\s*9\.4\s*情景推演\s*\n*', '', result).strip()
+    result = re.sub(r'^\*\*情景推演表\*\*[：:]\s*\n*', '', result).strip()
     if "情景" in result and "|" in result:
-        return result
+        return _format_scenario_analysis(result)
     return ""
 
 
@@ -4614,7 +4864,7 @@ def _gen_scenario_table(key_data: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="公司一页纸报告生成器")
-    parser.add_argument("--data",     required=True, help="fetch_data.py 输出的 JSON 文件路径")
+    parser.add_argument("--data",     required=True, help="a_share_fetch_data.py 输出的 JSON 文件路径")
     parser.add_argument("--output",   required=True, help="MD 输出路径")
     parser.add_argument("--docx",     default=None,  help="Word 输出路径（可选）")
     parser.add_argument("--api-key",  default=None,  help="API Key（可选，通常由平台环境变量自动注入）")
@@ -4720,7 +4970,7 @@ def main():
             print("   当前环境未检测到任何 API 相关变量。")
         print("   方式1：在脚本同目录创建 .env 文件，写入：OPENAI_API_KEY=your_key  OPENAI_BASE_URL=https://...")
         print("   方式2：export OPENAI_API_KEY=...  OPENAI_BASE_URL=...")
-        print("   方式3：python report_writer.py --api-key your_key --base-url https://... --data ...")
+        print("   方式3：python a_share_report_writer.py --api-key your_key --base-url https://... --data ...")
         sys.exit(2)
 
     # 推断端点：若未指定 base_url，根据 key 类型选择默认端点
@@ -4858,7 +5108,7 @@ def main():
 
     # 将 Python 表格结果注入 key_data，供同章 LLM 节引用（避免章内数字重复）
     # 4.2 三级降级链：
-    #   ① fetch_data.py: getFdmtMoStdItem classifCD=2（按产品）→ ② classifCD=1（按行业）
+    #   ① a_share_fetch_data.py: getFdmtMoStdItem classifCD=2（按产品）→ ② classifCD=1（按行业）
     #   ③ 两者均无数据（银行/保险/券商等金融股常见）→ 从 mgmt_discussion 提取营收构成
     if not sections.get("maincomp_table", "").strip():
         fallback = gen_maincomp_fallback(key_data)
@@ -4983,6 +5233,7 @@ def main():
 
     # ── v1.2.4-R3: 情景推演表列修复（在 normalize 之后执行）──────────────────────
     md_content = _fix_scenario_table_columns(md_content)
+    md_content = _format_scenario_analysis(md_content)
 
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
     md_content = _clean_empty_bold_tags(md_content)

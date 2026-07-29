@@ -102,6 +102,8 @@ Authorization: Bearer {DATAYES_TOKEN}
 
 ## 缺口处理
 
-- 美股三大表、完整财务指标、分业务历史序列缺失时，从研报全文、图表和财报点评中抽取；没有明确来源就省略。
+- 美股没有可用的三表结构化接口；三大表、完整财务指标、分业务历史序列缺失时，只能从研报全文、图表、财报点评、公司公告/IR 材料中抽取；没有明确来源就省略。
+- 港美股正文缺章时，writer 应省略空章节并对后续章节连续重编号；`generation_status.json` 记录 `section_number_mapping`、`omitted_original_sections` 和 `reference_display_section`。
+- §9/§10 这类高风险章节不得用目标公司原文片段硬填同行或多空证据；LLM 与 compact retry 均失败时 fail closed，由重编号消除跳号。
 - 不要把接口失败写入报告正文；可在最终进度里简短说明“部分接口无数据，已用研报/纪要补充”。
 - 财务单位必须保留来源口径：人民币、港元、美元；IFRS、US GAAP、non-GAAP、经调整口径不要混用。

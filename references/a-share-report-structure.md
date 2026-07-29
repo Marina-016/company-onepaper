@@ -418,7 +418,7 @@
 完整示例：
 
 ```text
-[1]Materials V2研报 | 2026-03-15 | ID：8464540 | 开源证券 | 英伟达（NVDA）：VR系列有望承接GB推动出货 | API：getMaterialsV2
+[1]Materials V2研报 | 2026-03-15 | ID：8464540 | 机构名称 | 示例公司产品周期点评标题 | API：getMaterialsV2
 [2]Datayes研报 | 2026-03-12 | ID：8456789 | 中信证券 | 公司深度报告：关注AI商业化进展 | API：batchGetReportContent（研报全文）
 [3]Datayes纪要 | 2026-02-20 | ID：M20260220001 | 国泰君安 | 公司2025年度业绩交流会 | API：getMeetingSummaryDetail
 [4]Datayes公告 | 2026-03-10 | ID：A20260310001 | — | 关于XX事项的公告 | API：getAnnouncementDetail

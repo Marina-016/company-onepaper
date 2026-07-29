@@ -230,7 +230,6 @@ Authorization: Bearer {DATAYES_TOKEN}
   - `sortField`: 排序字段，固定传 `thisWriteDate`
   - `sortType`: 排序方向，固定传 `desc`（降序，最新在前）
   - `pageSize`: 建议传 `20`
-- **用途**: 盈利预测与估值章节的核心数据来源
 
 ### 30. 盈利预测历史数据（注：A股专用，港美股已停用）
 - **nameEn**: `research_sec_foredata`
@@ -238,7 +237,6 @@ Authorization: Bearer {DATAYES_TOKEN}
 - **ticker格式**: **6位纯数字代码**（如 `600030`），**不带** `.SH`/`.SZ` 后缀
 - **⚠️ 日期格式**: 该接口使用 `yyyy-MM-dd` 格式（不同于其他接口的 `yyyyMMdd`）
 - **⚠️ 参数名称**: 股票代码参数为 `tickers`（**不是** `ticker`）
-- **用途**: 供 `fetch_data.py` 采集盈利预测历史对比数据，存入 JSON 的 `profit_forecast` 字段
 - **⚠️ 注意**: 该接口仅 A 股可用；港美股已将其列入停用接口列表
 
 ### 31. 会议纪要搜索

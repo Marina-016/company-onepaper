@@ -492,6 +492,7 @@ def call_llm(
     system: str = "",
     max_tokens: int = 8000,
     timeout: int | None = None,
+    max_attempts: int = 2,
     config: LLMConfig,
 ) -> LLMResult:
     started = time.time()
@@ -502,7 +503,8 @@ def call_llm(
     # retry bounded: the same HTTP-scale prompt should not repeat three times on
     # 504/temporary network errors. JSON repair is handled by the writer's
     # schema-aware small-task retry, not by another full HTTP attempt here.
-    attempts = [(max_tokens, timeout or config.timeout), (max_tokens, timeout or config.timeout)]
+    max_attempts = max(1, min(int(max_attempts or 1), 2))
+    attempts = [(max_tokens, timeout or config.timeout) for _ in range(max_attempts)]
     last_error = ""
     last_type = ""
     last_status: int | None = None

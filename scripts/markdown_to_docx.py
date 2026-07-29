@@ -298,13 +298,20 @@ def add_inline_text(run_adder, text: str, base_size_pt: float, base_color: RGBCo
     run_adder: 函数，接收 (text, bold, italic) → 返回一个run
     para: 若提供，用于添加上标run
     """
-    pattern = re.compile(r'\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[\^(\d+)\]')
+    text = re.sub(r'<br\s*/?>', '<br>', text or '')
+    pattern = re.compile(r'<br>|\*\*(.+?)\*\*|\*(.+?)\*|`(.+?)`|\[\^(\d+)\]')
     last = 0
     for m in pattern.finditer(text):
         if m.start() > last:
             r = run_adder(text[last:m.start()], base_bold, False)
             set_run_font(r, base_size_pt, base_bold, base_color)
-        if m.group(1):  # **bold**
+        if m.group(0) == '<br>':
+            if para is not None:
+                para.add_run().add_break()
+            else:
+                r = run_adder("\n", base_bold, False)
+                set_run_font(r, base_size_pt, base_bold, base_color)
+        elif m.group(1):  # **bold**
             r = run_adder(m.group(1), True, False)
             set_run_font(r, base_size_pt, True, base_color)
         elif m.group(2):  # *italic*

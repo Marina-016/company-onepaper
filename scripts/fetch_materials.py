@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import datetime as dt
 import json
 import os
@@ -249,6 +250,8 @@ def _company_match_status(row: dict, company: str, ticker: str) -> str:
         return "exact_target"
     peer_terms = {
         "NVDA": ["AMD", "INTC", "Intel", "Broadcom", "AVGO", "Marvell", "MRVL", "TSMC", "TSM"],
+        "00700": ["Alibaba", "BABA", "9988", "网易", "NTES", "美团", "3690", "快手", "01024", "百度", "BIDU", "京东", "JD"],
+        "700": ["Alibaba", "BABA", "9988", "网易", "NTES", "美团", "3690", "快手", "01024", "百度", "BIDU", "京东", "JD"],
         "03690": ["Alibaba", "BABA", "9988", "JD", "9618", "PDD", "Kuaishou", "01024"],
         "META": ["Alphabet", "GOOGL", "SNAP", "Pinterest", "PINS", "TikTok", "ByteDance"],
     }
@@ -302,13 +305,35 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
     selected = selected[:max_reports]
     ids = [x.get("id") for x in selected if x.get("id")]
     selected_by_id = {str(x.get("id")): x for x in selected}
+
+    # ── 并发拉取每篇报告的 detail / graph / viewpoint ──
+    def _fetch_report_trio(rid: str) -> tuple[str, Any, Any, Any]:
+        detail = data_of(safe_call(client, errors, "getReportDetail", {"reportId": rid}))
+        graph   = data_of(safe_call(client, errors, "report_graph",   {"reportId": rid}))
+        vp      = data_of(safe_call(client, errors, "core_viewpoint/", {"rrId": rid}))
+        return rid, detail, graph, vp
+
     details = []
     detail_ids = []
     graphs = []
     viewpoints = []
 
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        fut_map = {ex.submit(_fetch_report_trio, rid): rid for rid in ids[:max_reports]}
+        trio_results: dict[str, tuple] = {}
+        for fut in concurrent.futures.as_completed(fut_map):
+            try:
+                rid, detail, graph, vp = fut.result()
+                trio_results[str(rid)] = (detail, graph, vp)
+            except Exception as exc:
+                errors.append({"api": "report_trio", "message": str(exc)[:300]})
+
+    # 按原始顺序整理结果，过滤非目标公司
     for rid in ids[:max_reports]:
-        detail = data_of(safe_call(client, errors, "getReportDetail", {"reportId": rid}))
+        trio = trio_results.get(str(rid))
+        if trio is None:
+            continue
+        detail, graph, vp = trio
         if isinstance(detail, dict):
             detail["company_match"] = _company_match_status(detail, company, ticker)
             if detail["company_match"] != "exact_target":
@@ -318,9 +343,8 @@ def collect_research(client: DatayesClient, company: str, ticker: str, market: s
                 continue
         details.append(detail)
         detail_ids.append(rid)
-        graphs.append({"reportId": rid, "data": data_of(safe_call(client, errors, "report_graph", {"reportId": rid}))})
-        viewpoints.append({"reportId": rid, "data": data_of(safe_call(client, errors, "core_viewpoint/", {"rrId": rid}))})
-        time.sleep(1.05)
+        graphs.append({"reportId": rid, "data": graph})
+        viewpoints.append({"reportId": rid, "data": vp})
 
     # Split report IDs by orgType: domestic (Chinese org name) → batchGetReportContentDomestic,
     # foreign (non-Chinese org name) → batchGetReportContentForeign
@@ -376,9 +400,22 @@ def collect_meetings(client: DatayesClient, company: str, ticker: str, market: s
                 found[mid] = row.get("data") or row
 
     details = []
-    for mid in list(found)[:max_meetings]:
-        details.append({"id": mid, "data": data_of(safe_call(client, errors, "getMeetingSummaryDetail", {"id": mid}))})
-        time.sleep(1.05)
+    mids = list(found)[:max_meetings]
+
+    def _fetch_meeting(mid: str) -> dict:
+        return {"id": mid, "data": data_of(safe_call(client, errors, "getMeetingSummaryDetail", {"id": mid}))}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        futs = {ex.submit(_fetch_meeting, mid): mid for mid in mids}
+        mid_results: dict[str, dict] = {}
+        for fut in concurrent.futures.as_completed(futs):
+            try:
+                res = fut.result()
+                mid_results[res["id"]] = res
+            except Exception as exc:
+                errors.append({"api": "getMeetingSummaryDetail", "message": str(exc)[:300]})
+    # 保持顺序
+    details = [mid_results[mid] for mid in mids if mid in mid_results]
     return {"list": list(found.values())[:max_meetings], "details": details}
 
 
@@ -450,11 +487,14 @@ def build_material_questions(company: str, ticker: str, market: str) -> list[dic
     market_map = {"HK": "港股", "US": "美股", "A": "A股"}
     market_name = market_map.get(market, "港股")
     return [
+        {"topic": "business_segments_history", "question": f"{name} 2023 annual report 2024 annual report 2025 annual report segment revenue revenue mix revenue share value-added services online advertising fintech business services"},
         {"topic": "recent_updates", "question": f"{name} {market_name} 近况 业绩 指引 催化 资本市场 事件"},
         {"topic": "investment_logic", "question": f"{name} 投资逻辑 增长驱动 商业模式 竞争优势 风险"},
         {"topic": "business_financials", "question": f"{name} 业务拆分 收入 毛利率 利润率 ARR 客户 订单 财务预测"},
+        {"topic": "business_segments_annual", "question": f"{name} 近三年 年报 分业务收入 占比 毛利率 FY2023 FY2024 FY2025 segment revenue"},
         {"topic": "supply_chain_ecosystem", "question": f"{name} 客户 供应商 渠道 生态伙伴 产业链 合作"},
         {"topic": "valuation_consensus", "question": f"{name} 估值 目标价 盈利预测 市场分歧 多空观点 同业对比"},
+        {"topic": "peer_discovery", "question": f"{name} 同业 可比公司 竞争对手 上市公司 最新业务进展 peer comparable competitor"},
         {"topic": "market_focus", "question": f"{name} 市场关注 调研问题 风险 解禁 监管 竞争 下一次验证点"},
     ]
 
@@ -470,9 +510,9 @@ def collect_materials_v2(
 ) -> dict[str, Any]:
     start, end = dates(days_back)
     query_scope = "research,meetingSummary,marketView,wechat"
-    results = []
+    questions = build_material_questions(company, ticker, market)
 
-    for item in build_material_questions(company, ticker, market):
+    def _fetch_one_query(item: dict[str, str]) -> dict[str, Any]:
         body = {
             "queryScope": query_scope,
             "question": item["question"],
@@ -482,8 +522,19 @@ def collect_materials_v2(
             "endTime": end,
         }
         data = data_of(safe_call(client, errors, "getMaterialsV2", body))
-        results.append({"topic": item["topic"], "question": item["question"], "data": data})
-        time.sleep(0.8)
+        return {"topic": item["topic"], "question": item["question"], "data": data}
+
+    # 多条 query 并发，限制 3 个并发避免限流
+    results: list[dict[str, Any]] = [{}] * len(questions)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as ex:
+        fut_map = {ex.submit(_fetch_one_query, item): i for i, item in enumerate(questions)}
+        for fut in concurrent.futures.as_completed(fut_map):
+            idx = fut_map[fut]
+            try:
+                results[idx] = fut.result()
+            except Exception as exc:
+                errors.append({"api": "getMaterialsV2", "message": str(exc)[:300]})
+                results[idx] = {"topic": questions[idx]["topic"], "question": questions[idx]["question"], "data": None}
 
     # ── 相关性过滤：去除不涉及目标公司的无关条目 ──
     keywords = []
@@ -528,10 +579,16 @@ def collect_materials_v2(
             continue
         before = len(items)
         kept = []
+        topic = query.get("topic", "")
         for it in items:
-            if not isinstance(it, dict) or not _is_relevant(it):
+            if not isinstance(it, dict):
                 continue
-            it["company_match"] = _mark_material(it)
+            match_status = _mark_material(it)
+            if topic != "peer_discovery" and not _is_relevant(it):
+                continue
+            if topic == "peer_discovery" and match_status == "unrelated":
+                continue
+            it["company_match"] = match_status
             if it["company_match"] in ("exact_target", "industry_background", "related_peer"):
                 kept.append(it)
         query["data"] = kept
@@ -607,6 +664,25 @@ def main() -> int:
 
     exchange = target.get("exchange", "")
     full_ticker = target.get("full_ticker", ticker)
+
+    # ── 四大采集函数并发执行 ──
+    print("[fetch] 并发采集：materials_v2 / structured / research / meetings", flush=True)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
+        fut_mv2   = ex.submit(collect_materials_v2, client, company, ticker, market, errors,
+                              args.materials_days, args.materials_size)
+        fut_struct = ex.submit(collect_structured, client, ticker, market, errors)
+        fut_res   = ex.submit(collect_research, client, company, ticker, market, errors, args.max_reports)
+        fut_meet  = ex.submit(collect_meetings, client, company, ticker, market, errors, args.max_meetings)
+        fut_ann   = ex.submit(
+            collect_announcements, client, company, ticker, errors, args.max_announcements
+        ) if market in ("HK", "A") else None
+
+        materials_v2_data  = fut_mv2.result()
+        structured_data    = fut_struct.result()
+        research_data      = fut_res.result()
+        meetings_data      = fut_meet.result()
+        announcements_data = fut_ann.result() if fut_ann else {"list": [], "details": []}
+
     output = {
         "__meta__": {
             "company": company,
@@ -616,11 +692,11 @@ def main() -> int:
             "full_ticker": full_ticker,
             "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         },
-        "materials_v2": collect_materials_v2(client, company, ticker, market, errors, args.materials_days, args.materials_size),
-        "structured": collect_structured(client, ticker, market, errors),
-        "research": collect_research(client, company, ticker, market, errors, args.max_reports),
-        "meetings": collect_meetings(client, company, ticker, market, errors, args.max_meetings),
-        "announcements": collect_announcements(client, company, ticker, errors, args.max_announcements) if market in ("HK", "A") else {"list": [], "details": []},
+        "materials_v2":  materials_v2_data,
+        "structured":    structured_data,
+        "research":      research_data,
+        "meetings":      meetings_data,
+        "announcements": announcements_data,
         "errors": errors,
     }
 
