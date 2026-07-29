@@ -1,6 +1,6 @@
 # Changelog
 
-## v1.2.7
+## v1.2.8
 
 Status: Title generation refactored — full-context post-generation across all markets.
 
@@ -24,7 +24,7 @@ Status: Title generation refactored — full-context post-generation across all 
 
 - `scripts/a_share_report_writer.py`: 标题逻辑重构 + `None` 防护 ×3
 - `scripts/hk_us_report_writer.py`: 标题逻辑重构 + `normalize_refs` 全角修复
-- `SKILL.md`: 版本号 + Appendix A 新增 v1.2.7
+- `SKILL.md`: 版本号 + Appendix A 新增 v1.2.8
 - `README.md`: 版本号 + 变更表 + 验证状态
 - `CHANGELOG.md`: this entry
 
