@@ -1985,6 +1985,24 @@ def _fallback_qa_from_raw(qa_blocks: list) -> str:
     return "\n\n".join(qa_pairs) if qa_pairs else ""
 
 
+def _normalize_survey_qa_markdown(text: str) -> str:
+    """Normalize 4.5 survey Q/A so Q and A render on separate lines."""
+    if not text:
+        return ""
+    t = str(text).strip()
+    t = re.sub(r'\r\n?', '\n', t)
+    t = re.sub(r'\*\*Q[:：]\s*(.*?)\s*A[:：]\*\*', r'**Q：** \1\n**A：**', t, flags=re.S)
+    t = re.sub(r'\*\*Q[:：]\*\*\s*', '**Q：** ', t)
+    t = re.sub(r'\*\*A[:：]\*\*\s*', '**A：** ', t)
+    t = re.sub(r'(?<!\n)\*\*A[:：]\*\*', r'\n**A：**', t)
+    t = re.sub(r'([？?])\s*A[:：]\s*', r'\1\n**A：** ', t)
+    t = re.sub(r'(?<!\n)(\*\*Q[:：]\*\*)', r'\n\1', t)
+    t = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', t)
+    t = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', t)
+    t = re.sub(r'\n{3,}', '\n\n', t)
+    return t.strip()
+
+
 def gen_section4(client, key_data: dict) -> dict:
     """4.1盈利方式 + 4.5机构调研核心问答 — 合并一次LLM调用，避免章内内容重复"""
     mc = key_data["mc"]
@@ -2095,6 +2113,7 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
         # 仍失败：用原始调研数据提取 Q&A 兜底生成 4.5 节内容
         if not s45:
             s45 = _fallback_qa_from_raw(qa_blocks)
+    s45 = _normalize_survey_qa_markdown(s45)
 
     return {"s4_profit_model": s41, "s4_survey_qa": s45}
 
@@ -2747,95 +2766,6 @@ def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) ->
     main_ref = ""
     if key_data:
         main_ref = key_data.get("main_ref", "")
-    if t == "002594" or "比亚迪" in n:
-        return {
-            "business": "新能源汽车/动力电池",
-            "position": "全球新能源汽车龙头",
-            "model": "整车+电池垂直整合",
-            "customers": "个人/企业/海外经销商",
-            "products": "新能源乘用车/刀片电池/储能",
-            "peers": [
-                ("直接竞争", "特斯拉（TSLA）", "美股", "新能源汽车", "全球电动车龙头", "新车型和自动驾驶迭代", "整车+软件", "全球消费者", "Model系列/FSD"),
-                ("直接竞争", "理想汽车（LI）", "美股/港股", "新能源乘用车", "中国新势力头部", "增程和纯电产品矩阵扩张", "整车销售+服务", "家庭用户", "L系列/MEGA"),
-                ("直接竞争", "长城汽车（601633）", "A股/H股", "新能源与SUV", "自主品牌头部", "新能源转型与出口推进", "整车制造", "大众/海外用户", "哈弗/魏牌/欧拉"),
-                ("局部竞争", "吉利汽车（0175.HK）", "港股", "新能源乘用车", "自主品牌龙头", "极氪与银河产品推进", "整车+品牌矩阵", "大众/高端用户", "极氪/银河"),
-            ],
-            "catalysts": [
-                ("2026-Q2（预期）", "新能源汽车月度销量和出口数据披露", "验证销量、海外拓展与产品结构"),
-                ("2026-Q3（预期）", "新车型交付和智能化配置升级", "影响ASP、订单和品牌结构"),
-                ("2026-Q4（预期）", "动力电池和储能业务订单更新", "验证第二增长曲线与利润率"),
-                ("2027-Q1（预期）", "年度业绩和经营指引披露", "验证收入增速、净利率和现金流质量"),
-            ],
-            "risks": [
-                "新能源车价格竞争加剧可能压缩单车毛利和经销渠道利润。",
-                "海外市场关税、贸易壁垒或本地化认证变化可能影响出口节奏。",
-                "动力电池原材料价格波动可能影响电池和整车成本。",
-                "智能驾驶、车型迭代或质量事件若低于预期，可能削弱品牌溢价。",
-            ],
-            "chain": "- **上游**：重点关注锂、镍、电子元器件、车规芯片和电池材料供给。\n- **中游**：公司以整车制造、动力电池、电驱电控和垂直整合能力构成核心壁垒。\n- **下游**：需求来自国内外个人用户、网约/商用客户、储能和海外经销网络。",
-            "questions": "- 新能源车价格竞争对单车毛利率和订单结构影响如何？\n- 海外出口、本地化建厂和关税政策对销量节奏影响如何？\n- 动力电池、储能和手机部件业务的利润率是否改善？\n- 智能驾驶和新车型周期能否支撑品牌向上？",
-            "profit": "公司收入主要来自新能源汽车整车销售，并叠加动力电池、储能、手机部件及组装等业务；垂直整合能力决定成本和交付弹性。",
-            "deep": "业务深度分析重点关注新能源车销量、单车ASP、动力电池成本、海外拓展和智能化投入的匹配度，核心变量应与汽车及电池业务一致。",
-        }
-    if t == "300308" or "中际旭创" in n:
-        return {
-            "business": "光模块",
-            "position": "光模块龙头",
-            "model": "研发+制造+客户认证",
-            "customers": "云厂商/通信设备商",
-            "products": "800G/1.6T光模块",
-            "peers": [
-                ("直接竞争", "新易盛（300502）", "A股", "高速光模块", "国内前三", "800G/1.6T出货放量", "Fabless+封装", "云厂商/设备商", "800G/1.6T光模块"),
-                ("直接竞争", "天孚通信（300394）", "A股", "光器件/光引擎", "光器件龙头", "CPO布局+FAU组件", "器件+引擎代工", "光模块厂商/CSP", "光引擎/FAU"),
-                ("直接竞争", "光迅科技（002281）", "A股", "光模块/光芯片", "国内主要厂商", "800G批量+1.6T送样", "IDM光芯片+模块", "设备商/云厂商", "800G/相干模块"),
-            ],
-            "catalysts": [
-                ("2026-Q2（预期）", "高速光模块需求持续兑现", "支撑收入与利润高增长"),
-                ("2026-Q3（预期）", "800G/1.6T订单与出货节奏跟踪", "验证核心产品放量"),
-                ("2026-Q4（预期）", "年度业绩预告或经营数据更新", "验证利润率兑现"),
-                ("2027-Q1（预期）", "新一代高速光模块客户验证进展", "影响后续订单能见度"),
-            ],
-            "risks": [
-                "AI资本开支节奏若放缓，高速光模块订单兑现可能低于预期。",
-                "1.6T等新产品验证或量产节奏慢于预期，收入结构升级可能推迟。",
-                "行业竞争加剧可能导致ASP和毛利率承压。",
-                "核心客户需求变化可能放大季度收入和利润波动。",
-            ],
-            "chain": "- **上游**：重点关注光芯片、DSP、光器件等关键物料供给和成本变化。\n- **中游**：公司承担高速光模块研发、封装测试和规模交付，良率与交付能力决定利润率。\n- **下游**：需求主要来自云厂商、通信设备商和AI算力基础设施建设。",
-            "questions": "- 800G/1.6T产品当前订单能见度、客户验证进度和量产良率如何变化？\n- 海外云厂商资本开支节奏对公司季度出货和产品结构的影响如何？\n- 高端产品占比提升对毛利率、费用率和现金流转换的贡献是否可持续？\n- 关键物料供应、产能扩张和价格竞争是否会改变利润率中枢？",
-            "profit": "公司以高速光模块和相关光通信产品为核心收入来源，收入确认与客户订单、出货节奏及产品结构升级相关。",
-            "deep": "业务深度分析重点关注高速光模块代际升级、客户验证周期、良率爬坡和产能交付能力，核心变量与主营构成及研报跟踪一致。",
-        }
-    if t == "600519" or "贵州茅台" in n or "茅台" in n:
-        return {
-            "business": "白酒/茅台酒",
-            "position": "高端白酒龙头",
-            "model": "品牌溢价+配额渠道+直营提升",
-            "customers": "经销商/直营渠道/终端消费者",
-            "products": "飞天茅台/系列酒",
-            "peers": [
-                ("直接竞争", "五粮液（000858）", "A股", "高端白酒", "高端白酒龙头", "普五批价和渠道库存跟踪", "品牌+经销渠道", "经销商/团购/消费者", "普五/系列酒"),
-                ("直接竞争", "泸州老窖（000568）", "A股", "高端及次高端白酒", "浓香型龙头", "国窖1573价格和动销跟踪", "品牌+渠道", "经销商/消费者", "国窖1573/特曲"),
-                ("区域龙头", "山西汾酒（600809）", "A股", "清香型白酒", "清香龙头", "青花系列全国化推进", "品牌+渠道扩张", "经销商/消费者", "青花汾酒/玻汾"),
-                ("次高端对标", "洋河股份（002304）", "A股", "次高端白酒", "苏酒龙头", "梦之蓝价格带和渠道调整", "品牌矩阵+渠道", "经销商/消费者", "梦之蓝/海之蓝"),
-            ],
-            "catalysts": [
-                ("2026-Q2（预期）", "飞天茅台批价和渠道库存跟踪", "验证高端白酒需求韧性和渠道信心"),
-                ("2026-Q3（预期）", "中秋国庆旺季动销和回款数据", "影响全年收入和利润兑现节奏"),
-                ("2026-Q4（预期）", "年度经销商大会和下一年投放节奏", "影响配额、价格和渠道预期"),
-                ("2027-Q1（预期）", "春节旺季动销与一季报披露", "验证全年增长质量和现金流"),
-            ],
-            "risks": [
-                "高端白酒需求若弱于预期，飞天批价和渠道回款可能承压。",
-                "渠道库存若持续偏高，可能影响发货节奏和经销商利润。",
-                "产品结构升级或直营占比提升慢于预期，可能压制利润率改善。",
-                "宏观消费环境和商务需求波动可能影响高端白酒估值中枢。",
-            ],
-            "chain": "- **上游**：重点关注基酒产能、包装材料和渠道配额供给。\n- **中游**：公司以品牌、基酒储备、直营和经销渠道构成核心壁垒。\n- **下游**：需求来自商务宴请、礼赠、自饮和收藏消费，批价和库存是核心温度计。",
-            "questions": "- 飞天茅台批价、库存和回款是否稳定？\n- 直营占比和产品结构变化是否继续支撑利润率？\n- 系列酒增长能否形成第二增长曲线？\n- 渠道政策和投放节奏是否影响经销商利润？",
-            "profit": "公司收入主要来自茅台酒和系列酒销售，利润弹性取决于飞天茅台价格体系、直营占比、产品结构和费用控制。",
-            "deep": "业务深度分析应围绕高端白酒需求、飞天批价、渠道库存、直营改革、系列酒放量和现金流质量展开。",
-        }
     return {
         "business": "核心主业",
         "position": "行业公司",
@@ -4063,17 +3993,9 @@ def _sparse_cleanup(md_content: str) -> str:
         new_header_cells = [h for i, h in enumerate(header_cells) if i in remaining_col_indices]
         new_lines = ["| " + " | ".join(new_header_cells) + " |"]
 
-        # 重构分隔行（需要匹配原始分隔行格式）
-        sep_cols = re.findall(r':?-+:?', parsed['header_line'])
-        sep_cols_stripped = [c.strip() for c in parsed['header_line'].split("|")]
-        sep_cols_stripped = [c for c in sep_cols_stripped if c]  # 去掉空首尾
-        if len(sep_cols_stripped) >= col_count:
-            new_sep = "| " + " | ".join(
-                sep_cols_stripped[i] if i in remaining_col_indices else ":--"
-                for i in range(min(col_count, len(sep_cols_stripped)))
-            ) + " |"
-        else:
-            new_sep = "| " + " | ".join([":--"] * len(new_header_cells)) + " |"
+        # 重构分隔行。这里必须生成标准 separator，不能复用 header_line；
+        # 复用表头会把“业务板块/收入/毛利率”等表头文本污染成数据行。
+        new_sep = "| " + " | ".join([":---"] * len(new_header_cells)) + " |"
         new_lines.append(new_sep)
 
         for row_idx in rows_to_keep:
@@ -4294,6 +4216,44 @@ def _clean_empty_bold_tags(md_text: str) -> str:
     md_text = re.sub(r'^[  \t]*[•·●►-]\s*(?::|：)\s*', '• ', md_text, flags=re.M)
     # v1.2.4-R2: 修复残缺图表 markdown "!(http" → "![图表](http"
     md_text = re.sub(r'!\(https?://', '![图表](https://', md_text)
+    return md_text
+
+
+def _strip_bold_from_markdown_headings(md_text: str) -> str:
+    """Headings carry structure; bold markers inside H2/H3/H4 leak into Word."""
+    if not md_text:
+        return md_text
+    md_text = re.sub(r'(?m)^(#{2,6}\s*)\*\*([^*\n]+?)\*\*\s*$', r'\1\2', md_text)
+    md_text = re.sub(r'(?m)^(#{2,6}\s+\d[\d.]*\s+)\*\*([^*\n]+?)\*\*\s*$', r'\1\2', md_text)
+    return md_text
+
+
+def _normalize_section1_recent_format(md_text: str) -> str:
+    """§1 recent updates should not bold the whole bullet."""
+    marker = "## 1 公司近况跟踪"
+    start = md_text.find(marker)
+    if start < 0:
+        return md_text
+    end = md_text.find("\n## ", start + len(marker))
+    if end < 0:
+        end = len(md_text)
+    block = md_text[start:end]
+    fixed_lines = []
+    for line in block.splitlines():
+        if re.match(r'^\s*[•·●►-]\s+', line):
+            line = re.sub(r'\*\*([^*\n]+?)\*\*', r'\1', line)
+        fixed_lines.append(line)
+    return md_text[:start] + "\n".join(fixed_lines) + md_text[end:]
+
+
+def _normalize_final_markdown_format(md_text: str) -> str:
+    """Final format guardrails for LLM markdown drift."""
+    if not md_text:
+        return md_text
+    md_text = _strip_bold_from_markdown_headings(md_text)
+    md_text = _normalize_section1_recent_format(md_text)
+    md_text = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', md_text)
+    md_text = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', md_text)
     return md_text
 
 
@@ -5237,6 +5197,7 @@ def main():
 
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
     md_content = _clean_empty_bold_tags(md_content)
+    md_content = _normalize_final_markdown_format(md_content)
 
     # ── v1.2.4-R3: 图表标题还原（cleaner 修了残缺 !(url) 但丢掉了原标题）────────
     md_content = _restore_chart_captions(md_content, charts)

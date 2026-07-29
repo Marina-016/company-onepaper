@@ -13,6 +13,7 @@ from pathlib import Path
 import ssl
 import sys
 import time
+import threading
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -72,6 +73,54 @@ def dates(days_back: int) -> tuple[str, str]:
     end = dt.date.today()
     start = end - dt.timedelta(days=days_back)
     return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+def _len_or_zero(value: Any) -> int:
+    return len(value) if isinstance(value, (list, dict, str)) else 0
+
+
+def _branch_summary(name: str, data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        return {"type": type(data).__name__}
+    if name == "materials_v2":
+        return {
+            "queries": _len_or_zero(data.get("queries")),
+            "unique_sources": _len_or_zero(data.get("unique_sources")),
+            "filtered_out": data.get("filtered_out", 0),
+        }
+    if name == "research":
+        return {
+            "list": _len_or_zero(data.get("list")),
+            "details": _len_or_zero(data.get("details")),
+            "contents": _len_or_zero(data.get("contents")),
+            "graphs": _len_or_zero(data.get("graphs")),
+            "viewpoints": _len_or_zero(data.get("viewpoints")),
+        }
+    if name in ("meetings", "announcements"):
+        return {
+            "list": _len_or_zero(data.get("list")),
+            "details": _len_or_zero(data.get("details")),
+        }
+    if name == "structured":
+        summary: dict[str, Any] = {"keys": sorted(data.keys())}
+        hk_financials = data.get("hk_financials")
+        if isinstance(hk_financials, dict):
+            summary["hk_financials"] = {k: _len_or_zero(v) for k, v in hk_financials.items()}
+        return summary
+    return {"keys": sorted(data.keys())}
+
+
+def _format_branch_summary(summary: dict[str, Any]) -> str:
+    parts = []
+    for key, value in summary.items():
+        if isinstance(value, dict):
+            inner = ",".join(f"{k}:{v}" for k, v in value.items())
+            parts.append(f"{key}={{{inner}}}")
+        elif isinstance(value, list):
+            parts.append(f"{key}={','.join(str(v) for v in value)}")
+        else:
+            parts.append(f"{key}={value}")
+    return " ".join(parts)
 
 
 class DatayesClient:
@@ -639,6 +688,7 @@ def collect_materials_v2(
 
 
 def main() -> int:
+    total_t0 = time.time()
     parser = argparse.ArgumentParser(description="Fetch HK/US company one-pager materials from Datayes.")
     parser.add_argument("--company", default="", help="Company name, e.g. 腾讯控股 or NVIDIA")
     parser.add_argument("--ticker", default="", help="Ticker, e.g. 00700.HK or NVDA")
@@ -654,7 +704,9 @@ def main() -> int:
     token = find_token()
     client = DatayesClient(token)
     errors: list[dict[str, str]] = []
+    target_t0 = time.time()
     target = choose_company(args, client, errors)
+    target_elapsed = time.time() - target_t0
     ticker = target["ticker"]
     market = target["market"]
     company = target["company"]
@@ -664,17 +716,54 @@ def main() -> int:
 
     exchange = target.get("exchange", "")
     full_ticker = target.get("full_ticker", ticker)
+    timings: dict[str, Any] = {
+        "target_resolution": {
+            "elapsed_seconds": round(target_elapsed, 3),
+            "status": "ok",
+        },
+        "branches": {},
+    }
+    timings_lock = threading.Lock()
+
+    def timed_branch(name: str, func: Any, *branch_args: Any) -> Any:
+        started_at = dt.datetime.now().isoformat(timespec="seconds")
+        t0 = time.time()
+        print(f"[fetch][start] {name}", flush=True)
+        try:
+            data = func(*branch_args)
+            elapsed = time.time() - t0
+            summary = _branch_summary(name, data)
+            with timings_lock:
+                timings["branches"][name] = {
+                    "status": "ok",
+                    "started_at": started_at,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "summary": summary,
+                }
+            print(f"[fetch][done] {name} {elapsed:.1f}s {_format_branch_summary(summary)}", flush=True)
+            return data
+        except Exception as exc:
+            elapsed = time.time() - t0
+            with timings_lock:
+                timings["branches"][name] = {
+                    "status": "failed",
+                    "started_at": started_at,
+                    "elapsed_seconds": round(elapsed, 3),
+                    "error": str(exc)[:300],
+                }
+            print(f"[fetch][fail] {name} {elapsed:.1f}s {str(exc)[:120]}", flush=True)
+            raise
 
     # ── 四大采集函数并发执行 ──
     print("[fetch] 并发采集：materials_v2 / structured / research / meetings", flush=True)
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
-        fut_mv2   = ex.submit(collect_materials_v2, client, company, ticker, market, errors,
-                              args.materials_days, args.materials_size)
-        fut_struct = ex.submit(collect_structured, client, ticker, market, errors)
-        fut_res   = ex.submit(collect_research, client, company, ticker, market, errors, args.max_reports)
-        fut_meet  = ex.submit(collect_meetings, client, company, ticker, market, errors, args.max_meetings)
+        fut_mv2   = ex.submit(timed_branch, "materials_v2", collect_materials_v2, client, company, ticker, market,
+                              errors, args.materials_days, args.materials_size)
+        fut_struct = ex.submit(timed_branch, "structured", collect_structured, client, ticker, market, errors)
+        fut_res   = ex.submit(timed_branch, "research", collect_research, client, company, ticker, market, errors, args.max_reports)
+        fut_meet  = ex.submit(timed_branch, "meetings", collect_meetings, client, company, ticker, market, errors, args.max_meetings)
         fut_ann   = ex.submit(
-            collect_announcements, client, company, ticker, errors, args.max_announcements
+            timed_branch, "announcements", collect_announcements, client, company, ticker, errors, args.max_announcements
         ) if market in ("HK", "A") else None
 
         materials_v2_data  = fut_mv2.result()
@@ -682,6 +771,7 @@ def main() -> int:
         research_data      = fut_res.result()
         meetings_data      = fut_meet.result()
         announcements_data = fut_ann.result() if fut_ann else {"list": [], "details": []}
+    timings["total_elapsed_seconds"] = round(time.time() - total_t0, 3)
 
     output = {
         "__meta__": {
@@ -692,6 +782,7 @@ def main() -> int:
             "full_ticker": full_ticker,
             "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         },
+        "__timings__": timings,
         "materials_v2":  materials_v2_data,
         "structured":    structured_data,
         "research":      research_data,

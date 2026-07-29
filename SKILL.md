@@ -95,6 +95,7 @@ python3 -X utf8 <skill_root>/scripts/a_share_fetch_data.py \
 - 不要自己 curl `stock_search` 后再手动解析嵌套 JSON。
 
 ### 3.3 Fetch and Write
+- 本节命令仅限 A 股；港股/美股不要套用这里的 `--data` / `--output` / `--docx` 参数。
 - 运行数据采集脚本时，`entity_id` 只允许使用 6 位纯数字，不加 `.SH` / `.SZ`，也不使用其他响应字段替代。
 
 ```bash
@@ -127,7 +128,18 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
 ## 4. HK/US Pipeline
 
 ### 4.1 Entry Rules
-- 港美股主路径是 `fetch_materials.py` → `hk_us_report_writer.py`。
+- 港美股主路径是直接运行 `hk_us_report_writer.py`；writer 内部会调用 `fetch_materials.py` 采集材料、构建溯源并导出报告。
+- 正常生成只能使用下面这一种命令形态，不要复制 A 股 writer 的 `--data` / `--output` / `--docx` 参数：
+
+```bash
+python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
+  --ticker "{ticker}" \
+  --market "{HK|US}" \
+  --company-name "{公司名}" \
+  --output-dir "{输出目录}"
+```
+
+- `fetch_materials.py` 只作为单独排查材料采集时使用；正常生成不要先手动采集后再把材料 JSON 传给 writer。
 - 入参至少包含：
   - `market=HK` 或 `market=US`
   - 公司名或 ticker
@@ -136,19 +148,10 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
 - 港美股结构化能力仍然以 `stock_search` 和解析后的 `entity_id` 为准。
 
 ### 4.2 Materials Collection
-- 港美股材料采集优先使用脚本自动获取 `DATAYES_TOKEN`，不要额外要求用户手动传 token 参数。
+- 港美股材料采集由 `hk_us_report_writer.py` 自动触发，优先使用脚本自动获取 `DATAYES_TOKEN`，不要额外要求用户手动传 token 参数。
 - 输出目录应为可写路径，避免写到容易被 sandbox 拦截的位置。
-
-```bash
-python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
-  --company "{公司名}" \
-  --ticker "{ticker}" \
-  --market "{HK|US}" \
-  --output "{输出目录}/{ticker}_materials.json"
-```
-
-- 若只有公司名没有 ticker，可省略 ticker；若只有 ticker，可省略 company。
-- 脚本内部会组合多次 query，覆盖催化、投资逻辑、业务财务、产销生态、估值分歧、市场关注等材料。
+- writer 会在输出目录写入 `{ticker}_materials.json`、`source_trace.json`、`id_audit.json`、`generation_status.json`、`report.md` 和最终 DOCX。
+- 若需要排查采集问题，才单独运行 `fetch_materials.py`；排查完成后仍回到 §4.1 的 writer 单入口命令重新生成。
 
 ### 4.3 Source Trace and Citation
 - 写报告前必须先从 materials JSON 建立 `source_id -> {title, organization, publishTime, type, url, text}` 的索引。
@@ -178,6 +181,7 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
   3. 生成章节正文，并对 JSON、引用、表格行数和章节完整性做内置校验
   4. 按最终有效章节连续重编号，写入 `section_number_mapping`
   5. 生成 MD 后直接转 DOCX（港美股已移除 post-repair 和 checker 阻断）
+- 不要使用旧式 `--data` / `--output` / `--docx` 参数；这些是 A 股 writer 或旧版本接口，当前港美股 writer 不接受。
 - 无 LLM API Key 时自动降级为材料直写模式，从采集材料手动拼装各章节并标注引用来源。
 - §3 投资逻辑：短期与长期并行生成；任一侧失败时使用一次合并短重试，仍不合格则整章 fail closed。
 - §4 催化事件：LLM 空响应、超时或 schema 失败时，允许从目标公司研报摘要确定性生成 4-7 行 source-backed 催化表；时间轴应同时覆盖近期已发生验证事件和未来可跟踪催化，不能把券商评级/目标价调整当催化。
@@ -313,7 +317,6 @@ python3 -X utf8 <skill_root>/scripts/fetch_materials.py \
 - `references/hk-us-api-playbook.md`：港美股 API 使用手册
 - `references/hk-us-report-structure.md`：港美股章节结构、写作规范、同业比较 schema
 - `references/hk-us-quality-checklist.md`：港美股质量清单与检查项
-- `references/report-verification-prompt.md`：报告验证提示词与 ID 审计规则
 
 ## Appendix A. Version History
 

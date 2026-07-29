@@ -72,7 +72,6 @@ Changed files:
 - `references/hk-us-report-structure.md`：新增章节编号、数据优先级、稀疏行列、统一参考资料格式、行业适配章节
 - `references/a-share-quality-checklist.md`：新增 v1.2.3 检查项（12 项）
 - `references/hk-us-quality-checklist.md`：新增 v1.2.3 检查项（13 项）
-- `references/report-verification-prompt.md`：新增第八章 v1.2.3 核验项（7 组）
 - `CHANGELOG.md`：本文
 
 No changes to: v1.2.0, v1.2.1, v1.2.2, pipeline scripts, evaluator, or root-level tools.
@@ -132,7 +131,6 @@ Changed files:
 - `SKILL.md`
 - `references/hk-us-report-structure.md`
 - `references/hk-us-quality-checklist.md`
-- `references/report-verification-prompt.md`
 - `scripts/fetch_data.py`
 - `scripts/fetch_materials.py`
 - `scripts/gen_charts.py`

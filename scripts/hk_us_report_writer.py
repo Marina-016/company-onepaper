@@ -5,7 +5,7 @@ Pipeline: collect -> source_trace -> id_audit -> section-wise LLM -> DOCX.
 """
 
 from __future__ import annotations
-import argparse, json, os, sys, subprocess, re, time, shutil, html
+import argparse, json, os, sys, subprocess, re, time, shutil, html, difflib
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass, field
@@ -283,6 +283,15 @@ def _clean_repeated_punctuation(text: str) -> str:
     text = text.replace("。。", "。")
     text = text.replace("；；", "；")
     text = re.sub(r'[。；]{2,}', lambda m: m.group(0)[0], text)
+    return text
+
+
+def _strip_bold_from_markdown_headings(text: str) -> str:
+    """Remove markdown bold markers from structural headings only."""
+    if not text:
+        return text
+    text = re.sub(r'(?m)^(#{2,6}\s*)\*\*([^*\n]+?)\*\*\s*$', r'\1\2', text)
+    text = re.sub(r'(?m)^(#{2,6}\s+\d[\d.]*\s+)\*\*([^*\n]+?)\*\*\s*$', r'\1\2', text)
     return text
 
 
@@ -973,6 +982,15 @@ def _parse_json_object(text: str) -> tuple[dict, str]:
         pass
     m = re.search(r'\{.*\}', raw, re.S)
     if not m:
+        _dump = raw[:2000]
+        _has_lbrace = '{' in raw
+        _has_rbrace = '}' in raw
+        _has_entity_lbrace = '&#123;' in raw or '&#x7b;' in raw
+        _has_entity_rbrace = '&#125;' in raw or '&#x7d;' in raw
+        _len = len(raw)
+        sys.stderr.write(f"[DEBUG _parse_json_object] json_object_not_found len={_len} has_{{={_has_lbrace} has_}}={_has_rbrace} has_entity_{{={_has_entity_lbrace} has_entity_}}={_has_entity_rbrace}\n")
+        sys.stderr.write(f"[DEBUG _parse_json_object] raw[:2000]={repr(_dump)}\n")
+        sys.stderr.flush()
         return {}, "json_object_not_found"
     try:
         obj = json.loads(m.group(0))
@@ -1015,22 +1033,28 @@ def _cite(refs: list[int]) -> str:
 def _clean_source_fragment(text: str, limit: int = 0) -> str:
     """Clean copied source snippets before putting them into report cells."""
     clean = _plain_text(text, limit)
+    clean = re.sub(r'\[\d+(?!\])', '', clean)
     clean = re.sub(r'^[\s\uf06e\uf06c•●○◆◇▪▫➢>》]+', '', clean)
     clean = re.sub(r'^[①②③④⑤⑥⑦⑧⑨⑩一二三四五六七八九十]+[、.)）]\s*', '', clean)
     prefix_re = re.compile(
-        r'^(核心观点|核心财务数据前瞻预期|主要观点|简评|摘要|要点|投资要点|正文|点评|事件)[:：.\s-]*'
+        r'^[【\[\(\（]?(核心观点|核心财务数据前瞻预期|主要观点|简评|摘要|要点|投资要点|投资论点|'
+        r'正文|点评|事件|业绩概要|报告导读|点评与建议|分红方案|估值详情|投资风险|催化剂)'
+        r'[】\]\)\）]?[:：.。\s-]*'
     )
     for _ in range(3):
         new_clean = prefix_re.sub('', clean).strip()
         if new_clean == clean:
             break
         clean = new_clean
+        clean = re.sub(r'^[\s\uf06e\uf06c•●○◆◇▪▫➢>》]+', '', clean)
+        clean = re.sub(r'^[①②③④⑤⑥⑦⑧⑨⑩一二三四五六七八九十\d]+[、.)）]\s*', '', clean)
     clean = re.sub(r'\s+', ' ', clean).strip()
     return clean
 
 def normalize_refs(text: str, refs: list[int]) -> str:
     """Put merged, de-duplicated refs at the end of a single cell."""
     base = _clean_source_fragment(re.sub(r'\[\d+\]', '', str(text or ""))).strip()
+    base = re.sub(r'[\s,，;；:：、]+$', '', base)
     merged: list[int] = []
     for n in re.findall(r'\[(\d+)\]', str(text or "")):
         v = int(n)
@@ -1050,7 +1074,7 @@ def _section_1_2_json_prompt(key_data: dict, schema_issues: list[str] | None = N
     return f"""Return ONLY JSON for HK/US company one-pager sections 1 and 2.
 Schema:
 {{"title_conclusion": "...", "section_1": {{"key_points": [{{"keyword": "...", "text": "...", "source_ids": [1]}}]}}, "section_2": {{"recent_updates": [{{"keyword": "...", "date": "YYYY-MM-DD or YYYY-Qx", "fact": "...", "implication": "...", "source_ids": [1]}}]}}}}
-Rules: section_1 has 4-6 investment conclusions; section_2 has 3-5 recent concrete updates and stays within 400 Chinese characters; every item cites valid source_ids; no Markdown.
+Rules: section_1 has exactly 4 investment conclusions; section_2 has exactly 4 recent concrete updates, each update's fact+implication combined must be 80-120 Chinese characters (total §2 within 600 characters); every item cites valid source_ids; no Markdown.
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
@@ -1064,11 +1088,11 @@ def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: st
     s1 = payload.get("section_1") if isinstance(payload.get("section_1"), dict) else {}
     points = s1.get("key_points") if isinstance(s1.get("key_points"), list) else []
     s1_issue_start = len(issues)
-    if not (4 <= len(points) <= 6):
+    if len(points) != 4:
         issues.append(f"section_1.key_points_count:{len(points)}")
     lines = ["## 1 关键要点", ""]
     valid_points = 0
-    for i, item in enumerate(points[:6]):
+    for i, item in enumerate(points[:4]):
         if not isinstance(item, dict):
             issues.append(f"section_1.key_points[{i}].not_object")
             continue
@@ -1076,17 +1100,17 @@ def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: st
         refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_1.key_points[{i}]")
         keyword = _plain_text(item.get("keyword") or re.split(r'[，；。:：]', text)[0], 18)
         if text and refs:
-            lines.append(f"- **{keyword or '投资判断'}**：{text}{_cite(refs)}")
+            lines.append(f"- **{keyword or '投资判断'}**：{normalize_refs(text, refs)}")
             valid_points += 1
-    section_1_valid = 4 <= valid_points <= 6 and len(issues) == s1_issue_start
+    section_1_valid = valid_points == 4 and len(issues) == s1_issue_start
     s2 = payload.get("section_2") if isinstance(payload.get("section_2"), dict) else {}
     updates = s2.get("recent_updates") if isinstance(s2.get("recent_updates"), list) else []
     s2_issue_start = len(issues)
-    if not (3 <= len(updates) <= 5):
+    if len(updates) != 4:
         issues.append(f"section_2.recent_updates_count:{len(updates)}")
     lines2 = ["## 2 近况跟踪", ""]
     valid_updates = 0
-    for i, item in enumerate(updates[:5]):
+    for i, item in enumerate(updates[:4]):
         if not isinstance(item, dict):
             issues.append(f"section_2.recent_updates[{i}].not_object")
             continue
@@ -1095,9 +1119,9 @@ def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: st
         implication = _text_ok(item.get("implication") or "", issues, f"section_2.recent_updates[{i}].implication", 6)
         refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_2.recent_updates[{i}]")
         if keyword and fact and implication and refs:
-            lines2.append(f"- **{keyword}**：{fact}；{implication}{_cite(refs)}")
+            lines2.append(f"- **{keyword}**：{normalize_refs(f'{fact}；{implication}', refs)}")
             valid_updates += 1
-    section_2_valid = 3 <= valid_updates <= 5 and len(issues) == s2_issue_start
+    section_2_valid = valid_updates == 4 and len(issues) == s2_issue_start
     rendered: dict[str, str] = {"_title_conclusion": title_conclusion}
     parts = []
     if section_1_valid:
@@ -1147,10 +1171,14 @@ def gen_hkus_sections_1_2(key_data: dict, ref_map: dict | None = None) -> tuple[
 
 def _section_3_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
     issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
-    return f"""Return ONLY JSON for HK/US company one-pager section 3.
+    return f"""Return ONLY compact JSON for HK/US company one-pager section 3.
 Schema:
 {{"short_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}], "long_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}]}}
-Rules: each list has 2-3 source-backed rows; do not output catalysts, tables, extra tracking fields, or a 3.3 subsection.
+Rules:
+- short_term_logic has exactly 3 rows for §3.1; long_term_logic has exactly 3 rows for §3.2.
+- title <= 14 Chinese chars; text 80-150 Chinese chars per row.
+- Each text explains one investment mechanism. Do not output a catalyst list, tables, extra tracking fields, or a 3.3 subsection.
+- Total section body should be concise; no Markdown in JSON values.
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
@@ -1198,7 +1226,7 @@ def _render_section_3_groups(short_rows: list[dict], long_rows: list[dict]) -> s
         lines.extend([heading, ""])
         for item in rows[:3]:
             prefix = f"**{item.get('title', '')}**：" if item.get("title") else ""
-            lines.append(f"- {prefix}{item['text']}{_cite(item['refs'])}")
+            lines.append(f"- {prefix}{normalize_refs(item['text'], item['refs'])}")
         lines.append("")
     return "\n".join(lines).strip()
 
@@ -1221,10 +1249,11 @@ def _validate_render_section_3(payload: dict, ref_map: dict) -> tuple[str, list[
                 continue
             title = _plain_text(item.get("title") or "", 24)
             text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{key}[{i}].text", 12)
+            text = _plain_text(text, 200)
             refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_3.{key}[{i}]")
             if text and refs:
                 prefix = f"**{title}**：" if title else ""
-                lines.append(f"- {prefix}{text}{_cite(refs)}")
+                lines.append(f"- {prefix}{normalize_refs(text, refs)}")
         lines.append("")
     return ("\n".join(lines).strip(), issues)
 
@@ -1236,7 +1265,7 @@ def gen_hkus_section_3(key_data: dict, ref_map: dict | None = None) -> tuple[str
     issues: list[str] = []
     for call_name in ("section_3", "section_3_json_repair"):
         text, ok = _call_llm(_section_3_json_prompt(key_data, issues if call_name.endswith("repair") else None),
-                             max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             max_tokens=2200, timeout=min(90, _hkus_llm_task_budget_seconds()),
                              system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
         if not ok:
             issues.append(f"{call_name}:llm_failed")
@@ -1302,6 +1331,75 @@ Context:
 {issue_text}"""
 
 
+def _catalyst_text_too_similar(event: str, impact: str) -> bool:
+    ev = re.sub(r'[\W_]+', '', re.sub(r'\[\d+\]', '', _clean_source_fragment(event, 0))).lower()
+    im = re.sub(r'[\W_]+', '', re.sub(r'\[\d+\]', '', _clean_source_fragment(impact, 0))).lower()
+    if not ev or not im:
+        return False
+    if ev == im:
+        return True
+    if min(len(ev), len(im)) >= 12 and (ev in im or im in ev) and min(len(ev), len(im)) / max(len(ev), len(im)) >= 0.55:
+        return True
+    return difflib.SequenceMatcher(None, ev, im).ratio() >= 0.78
+
+
+def _derive_section_4_impact(text: str) -> str:
+    raw = _clean_source_fragment(text, 180)
+    if re.search(r'汽车|电动|EV|SU7|YU7|SkyNomad|澎程|车型|交付|deliver', raw, re.I):
+        return "验证汽车订单、交付爬坡与毛利率改善节奏"
+    if re.search(r'手机|智能手机|ASP|出货|shipment|smartphone', raw, re.I):
+        return "验证手机出货、ASP与毛利率修复力度"
+    if re.search(r'家电|智能家居|IoT|机器人|robot|appliance', raw, re.I):
+        return "验证AIoT与智能家居长期收入空间的兑现速度"
+    if re.search(r'收入|营收|销售|增长|revenue|sales|growth', raw, re.I):
+        return "验证收入增长持续性，并影响市场对全年指引和经营杠杆的判断"
+    if re.search(r'利润|毛利|margin|盈利|EPS|profit', raw, re.I):
+        return "验证盈利质量改善幅度，并影响后续利润率和估值中枢"
+    if re.search(r'订单|客户|需求|出货|交付|产能|capex|order|shipment|customer', raw, re.I):
+        return "验证需求、客户导入和交付节奏，并影响后续收入兑现可见度"
+    if re.search(r'产品|发布|上线|游戏|广告|云|AI|Agent|launch|product', raw, re.I):
+        return "验证产品商业化和用户转化效果，并影响增量收入预期"
+    if re.search(r'回购|分红|股东回报|buyback|dividend', raw, re.I):
+        return "提升股东回报确定性，并影响每股收益和估值修复预期"
+    if re.search(r'监管|合规|政策|regulation|approval', raw, re.I):
+        return "降低监管不确定性，并影响业务推进节奏和风险溢价"
+    return "作为关键验证点，影响市场对增长持续性和业绩兑现节奏的判断"
+
+
+def _section_4_source_noise(text: str) -> bool:
+    raw = _clean_source_fragment(text, 220)
+    return bool(re.search(
+        r'之前的报告|本报告|研报|报告[（(]|\bP/?E\b|市盈率|市值意味着|目标价|评级|买入|维持|'
+        r'上调|下调|我们认为|我们在.*报告|估值|DCF|EV/EBITDA|尺寸方面|意味着什么|'
+        r'2035年|当前规模的\d+倍|长期收入|奠定基础|聚焦催化场景',
+        raw,
+        re.I,
+    ))
+
+
+def _derive_section_4_event(text: str) -> str:
+    raw = _clean_source_fragment(text, 220)
+    raw = re.sub(r'\[\d+\]', '', raw).strip()
+    patterns = [
+        r'[^。；;，,]*?(?:机器人|产线)[^。；;，,]*?(?:部署|进入|完成|公开)[^。；;，,]*',
+        r'[^。；;，,]*?(?:新品牌|产品系列|车型|SkyNomad|澎程)[^。；;，,]*?(?:公布|发布|亮相|上市|推出)[^。；;，,]*',
+        r'[^。；;，,]*?(?:交付量|出货量|销量)[^。；;，,]*?(?:万|辆|台|部|%)[^。；;，,]*',
+        r'[^。；;，,]*?(?:发布|推出|上市|亮相|上线)[^。；;，,]*(?:SU7|YU7|SkyNomad|澎程|车型|产品|机器人|AI|手机|家电)[^。；;，,]*',
+        r'[^。；;，,]*?(?:业绩|财报|收入|营收|利润|毛利率)[^。；;，,]*?(?:增长|下降|提升|改善|承压|同比|环比)[^。；;，,]*',
+        r'[^。；;，,]*?(?:指引|目标|guidance)[^。；;，,]*?(?:交付|收入|营收|利润|毛利率)[^。；;，,]*',
+        r'[^。；;，,]*?(?:股东大会|分红|回购|派息|除权)[^。；;，,]*',
+    ]
+    for pat in patterns:
+        m = re.search(pat, raw, re.I)
+        if m:
+            event = _clean_source_fragment(m.group(0), 78)
+            if len(event) >= 8 and not _section_4_source_noise(event):
+                return event
+    if _section_4_source_noise(raw):
+        return ""
+    return _clean_source_fragment(raw, 78)
+
+
 def _validate_render_section_4(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
     rows = payload.get("catalysts") if isinstance(payload.get("catalysts"), list) else []
@@ -1313,14 +1411,33 @@ def _validate_render_section_4(payload: dict, ref_map: dict) -> tuple[str, list[
             issues.append(f"section_4.catalysts[{i}].not_object")
             continue
         when = _text_ok(item.get("time") or item.get("date"), issues, f"section_4.catalysts[{i}].time", 4)
-        event = _text_ok(item.get("event"), issues, f"section_4.catalysts[{i}].event", 8)
-        impact = _text_ok(item.get("impact"), issues, f"section_4.catalysts[{i}].impact", 8)
+        event = _clean_source_fragment(item.get("event"), 260)
+        impact = _clean_source_fragment(item.get("impact"), 260)
+        if _section_4_source_noise(event) or len(event) > 110:
+            derived_event = _derive_section_4_event(event)
+            if derived_event:
+                event = derived_event
+            else:
+                issues.append(f"section_4.catalysts[{i}].event.source_noise")
+        if _catalyst_text_too_similar(event, impact):
+            derived_impact = _derive_section_4_impact(f"{event}。{impact}")
+            if not _catalyst_text_too_similar(event, derived_impact):
+                impact = derived_impact
+            else:
+                issues.append(f"section_4.catalysts[{i}].event_impact_duplicate")
+        if len(event) < 8:
+            issues.append(f"section_4.catalysts[{i}].event.empty")
+        if len(impact) < 8:
+            issues.append(f"section_4.catalysts[{i}].impact.empty")
+        if _PLACEHOLDER_RE.search(event):
+            issues.append(f"section_4.catalysts[{i}].event.placeholder")
+        if _PLACEHOLDER_RE.search(impact):
+            issues.append(f"section_4.catalysts[{i}].impact.placeholder")
         refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_4.catalysts[{i}]")
         if re.search(r'研报发布|评级|目标价更新|broker report|target price', event, re.I):
             issues.append(f"section_4.catalysts[{i}].broker_event")
         if when and event and impact and refs:
-            cite = _cite(refs)
-            lines.append(f"| {when} | {event}{cite} | {impact}{cite} |")
+            lines.append(f"| {when} | {normalize_refs(event, refs)} | {normalize_refs(impact, refs)} |")
     return ("\n".join(lines), issues) if len(lines) >= 8 and not issues else ("", issues)
 
 
@@ -1328,6 +1445,7 @@ def _build_section_4_deterministic(key_data: dict, ref_map: dict) -> tuple[str, 
     rows: list[tuple[str, str, str, int]] = []
     issues: list[str] = []
     seen_events: list[str] = []
+    seen_impacts: set[str] = set()
     event_signal = re.compile(
         r'发布|上线|接入|打通|推出|预计|实现|增长|提升|加大|投入|回升|商业化|业绩|收入|利润|游戏|广告|云|AI|Agent',
         re.I,
@@ -1347,18 +1465,26 @@ def _build_section_4_deterministic(key_data: dict, ref_map: dict) -> tuple[str, 
         for sent in sentences:
             if not event_signal.search(sent) or banned.search(sent):
                 continue
+            if _section_4_source_noise(sent):
+                continue
             if not _has_fact_signal(sent):
                 continue
-            event = _plain_text(sent, 62)
+            event = _derive_section_4_event(sent)
+            if not event:
+                continue
             if any(_topic_similar(event, prior) for prior in seen_events):
                 continue
-            impact = _plain_text(sent, 96)
+            impact = _derive_section_4_impact(sent)
+            impact_key = re.sub(r'\s+', '', impact)
+            if impact_key in seen_impacts:
+                continue
             row = (when or "近期", event, impact, rn)
             if future_signal.search(sent):
                 future_rows.append(row)
             else:
                 past_rows.append(row)
             seen_events.append(event)
+            seen_impacts.add(impact_key)
             break
         if len(past_rows) + len(future_rows) >= 8:
             break
@@ -1375,8 +1501,7 @@ def _build_section_4_deterministic(key_data: dict, ref_map: dict) -> tuple[str, 
         issues.append("section_4.deterministic_no_future_events")
     lines = ["## 4 催化事件时间表", "", "| 时间 | 事件 | 影响 |", "|:---|:---|:---|"]
     for when, event, impact, rn in rows[:6]:
-        cite = _cite([rn])
-        lines.append(f"| {when} | {event}{cite} | {impact}{cite} |")
+        lines.append(f"| {when} | {normalize_refs(event, [rn])} | {normalize_refs(impact, [rn])} |")
     return "\n".join(lines), issues
 
 
@@ -1410,11 +1535,11 @@ def gen_hkus_section_4(key_data: dict, ref_map: dict | None = None) -> tuple[str
 def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") -> tuple[str, list[str]]:
     issues: list[str] = []
     rows = payload.get("rows") if isinstance(payload, dict) else None
-    if not isinstance(rows, list) or not (3 <= len(rows) <= 5):
+    if not isinstance(rows, list) or not (3 <= len(rows) <= 4):
         return "", [f"section_8.rows_count:{0 if not isinstance(rows, list) else len(rows)}"]
     title = "## 8 市场关注/调研大纲" if mkt == "HK" else "## 8 市场关注"
     lines = [title, "", "| 关注点 | 市场在担心什么 | 需要验证的数据 |", "|:---|:---|:---|"]
-    for i, row in enumerate(rows[:5]):
+    for i, row in enumerate(rows[:4]):
         if not isinstance(row, dict):
             issues.append(f"section_8.rows[{i}].not_object")
             continue
@@ -1426,7 +1551,16 @@ def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") ->
             metrics = []
         refs = _refs_ok(row.get("source_refs"), ref_map, issues, f"section_8.rows[{i}]")
         if topic and concern and metrics and refs:
-            lines.append(f"| {topic}{_cite(refs)} | {concern}{_cite(refs)} | {'、'.join(_plain_text(x, 24) for x in metrics if _plain_text(x, 24))} |")
+            metric_parts = []
+            for x in metrics:
+                clean_metric = _clean_source_fragment(x, 0)
+                clean_metric = _plain_text(clean_metric, 24)
+                if clean_metric:
+                    metric_parts.append(clean_metric)
+            lines.append(
+                f"| {normalize_refs(topic, refs)} | {normalize_refs(concern, refs)} | "
+                f"{normalize_refs('、'.join(metric_parts), refs)} |"
+            )
     if mkt == "HK":
         agenda = payload.get("research_agenda") if isinstance(payload.get("research_agenda"), list) else []
         if len(agenda) < 3:
@@ -1437,12 +1571,13 @@ def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") ->
                 continue
             topic = _text_ok(item.get("topic"), issues, f"section_8.research_agenda[{i}].topic", 4)
             background = _text_ok(item.get("background"), issues, f"section_8.research_agenda[{i}].background", 12)
+            background = _plain_text(background, 90) if background else ""
             questions = item.get("questions") if isinstance(item.get("questions"), list) else []
             refs = _refs_ok(item.get("source_refs"), ref_map, issues, f"section_8.research_agenda[{i}]")
             if len(questions) < 2:
                 issues.append(f"section_8.research_agenda[{i}].questions_count:{len(questions)}")
             if topic and background and refs and len(questions) >= 2:
-                lines.extend(["", f"**议题{i}：{topic}**", f"背景：{background}{_cite(refs)}"])
+                lines.extend(["", f"**议题{i}：{topic}**", f"背景：{normalize_refs(background, refs)}"])
                 for qn, q in enumerate(questions[:3], 1):
                     qtext = _plain_text(q, 80)
                     if qtext:
@@ -1452,7 +1587,7 @@ def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") ->
 
 def gen_hkus_section_8(key_data: dict, ref_map: dict, mkt: str = "HK") -> tuple[str, bool, list[str]]:
     extra_schema = ', "research_agenda": [{"topic": "...", "background": "...", "questions": ["..."], "source_refs": [1]}]' if mkt == "HK" else ""
-    extra_rules = "For HK include 3-4 research_agenda items; for US do not output research_agenda."
+    extra_rules = "For HK include 3-4 research_agenda items and each background must be 60-90 Chinese characters; for US do not output research_agenda."
     issues: list[str] = []
     for call_name in ("section_8", "section_8_json_repair"):
         issue_text = ""
@@ -1460,7 +1595,7 @@ def gen_hkus_section_8(key_data: dict, ref_map: dict, mkt: str = "HK") -> tuple[
             issue_text = "\nSchema/parse issues to fix:\n" + "\n".join(_extract_json_parse_issue(x) for x in issues[-8:])
         prompt = f"""Return ONLY valid JSON for HK/US report section_8 market concerns.
 Schema: {{"rows": [{{"topic": "...", "market_concern": "...", "verification_metrics": ["..."], "source_refs": [1]}}]{extra_schema}}}
-Rules: 3-5 rows; use only target-company context refs; no Markdown; no code fence; double quotes only; no trailing commas. {extra_rules}
+Rules: 3-4 rows; use only target-company context refs; each concern is one concise sentence; each verification_metrics item is short; no Markdown; no code fence; double quotes only; no trailing commas. {extra_rules}
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}
@@ -1487,7 +1622,7 @@ def gen_hkus_section_12(key_data: dict, ref_map: dict) -> tuple[str, bool, list[
     for call_name in ("section_12", "section_12_json_repair"):
         prompt = f"""Return ONLY JSON for HK/US report section_12 risks.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "explanation": "一句话说明触发条件及对收入/利润/现金流/估值/执行节奏的影响，不加粗", "source_refs": [1]}}]}}
-Rules: 4-6 company-specific risks; title is short (≤20 Chinese chars); explanation is exactly one sentence; no generic macro/market-competition-only risk title; use only target-company context refs; no Markdown.
+Rules: exactly 5 company-specific risks; title is short (≤20 Chinese chars); explanation is exactly one sentence; no generic macro/market-competition-only risk title; use only target-company context refs; no Markdown.
 {("Schema issues to fix:\\n" + chr(10).join(issues)) if call_name.endswith("repair") and issues else ""}
 Context:
 {_format_hkus_key_context(key_data)}
@@ -1512,10 +1647,10 @@ Context:
 def _validate_render_section_12(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
     risks = payload.get("risks") if isinstance(payload, dict) else None
-    if not isinstance(risks, list) or not (4 <= len(risks) <= 6):
+    if not isinstance(risks, list) or len(risks) != 5:
         return "", [f"section_12.risks_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = ["## 12 风险提示", ""]
-    for i, risk in enumerate(risks[:6]):
+    for i, risk in enumerate(risks[:5]):
         if not isinstance(risk, dict):
             issues.append(f"section_12.risks[{i}].not_object")
             continue
@@ -2020,17 +2155,64 @@ def _section_specific_requirements(sec_key: str) -> list[str]:
             "§5 explains business composition using only cited source facts.",
             "§6 keeps upstream / middle platform / downstream ecology, with concrete business objects and verification variables.",
             "§7 financials may be generated only when the requested H2 list contains §7; HK PIT financials are handled deterministically outside the LLM.",
+            "For US §7, there is no three-statement interface: write text-only financial subsections from research-report evidence, no wide financial table, and keep each subsection within 250 Chinese characters. MANDATORY: output exactly 3 subsections, each led by a **bold title** on its own line (e.g. **盈利能力**), followed by the body paragraph. Title each subsection by the most salient financial dimension found in the research materials (e.g. margin structure, cash flow, capital allocation, segment profitability, ROE/ROIC drivers, leverage, or other evidence-supported topics — do NOT force a fixed template). Each subsection body must cite [N] and stay within 250 Chinese characters. Do NOT use ### Markdown headings for these sub-titles.",
         ],
         "s89": [
             "§8 summarizes source-backed market concerns.",
             "Do not output §9, peer rows, peer tables, or A/H mapping; §9 is built deterministically from peer evidence.",
         ],
         "s12r": [
-            "§12 must have 4-6 risk title bullets with **bold names** and [N] citations.",
+            "§12 must have exactly 5 risk title bullets with **bold names** and [N] citations.",
             "Do not write risk body, mechanism paragraphs, or tracking-signal prose.",
         ],
     }
     return by_section.get(sec_key, [])
+
+
+def _trim_markdown_block_to_chars(block: str, max_chars: int) -> str:
+    lines = block.splitlines()
+    kept: list[str] = []
+    count = 0
+    for line in lines:
+        if not line.strip():
+            if kept and kept[-1].strip():
+                kept.append(line)
+            continue
+        addition = len(re.sub(r'\s+', '', re.sub(r'\[\d+\]', '', line)))
+        if count + addition <= max_chars:
+            kept.append(line)
+            count += addition
+            continue
+        remaining = max_chars - count
+        if remaining > 20:
+            refs = re.findall(r'\[\d+\]', line)
+            plain = re.sub(r'\[\d+\]', '', line).strip()
+            cut = _plain_text(plain, remaining)
+            if refs and not re.search(r'\[\d+\]', cut):
+                cut = f"{cut}{''.join(dict.fromkeys(refs))}"
+            kept.append(cut)
+        break
+    return "\n".join(kept).strip()
+
+
+def _limit_us_financial_section_text(text: str, max_chars: int = 250) -> str:
+    """Limit each US §7 markdown subsection while preserving headings and refs."""
+    if not text or not re.search(r'^##\s*7\b', text, flags=re.M):
+        return text
+    parts = re.split(r'(?m)^(\*\*[^*\n]+\*\*)\n?', text)
+    if len(parts) < 3:
+        lines = text.splitlines()
+        head = "\n".join(lines[:2]).rstrip()
+        body = "\n".join(lines[2:]).strip()
+        trimmed = _trim_markdown_block_to_chars(body, max_chars)
+        return "\n\n".join(x for x in [head, trimmed] if x)
+    out = [parts[0].rstrip()]
+    for i in range(1, len(parts), 2):
+        heading = parts[i].rstrip()
+        body = parts[i + 1] if i + 1 < len(parts) else ""
+        out.append(heading)
+        out.append(_trim_markdown_block_to_chars(body, max_chars))
+    return "\n".join(part for part in out if part.strip())
 
 def _build_section_prompt(sec_key: str, mats_text: str, co: str, ticker: str, mkt: str,
                           h2_override: list[str] | None = None) -> str:
@@ -2612,6 +2794,8 @@ def _run_markdown_section_task(section_no: str, materials: dict, ref_map: dict, 
     text, ok = _call_llm(prompt, max_tokens=4500, timeout=min(120, _hkus_llm_task_budget_seconds()),
                          system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=f"section_{section_no}")
     body = _clean_fence(text) if ok and text else ""
+    if section_no == "7" and mkt == "US":
+        body = _limit_us_financial_section_text(body, 250)
     if ok and len(body.strip()) > 80 and f"## {section_no}" in body:
         return {"ok": True, "status": "ok", "text": body, "failed_sections": [], "section_status": {section_no: "ok"}, "chars": len(body)}
     return {"ok": False, "status": "failed", "text": "", "failed_sections": [section_no], "section_status": {section_no: "failed"}, "chars": 0}
@@ -2945,8 +3129,7 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     if key and target_materials_ok:
         task_specs.extend([
             LlmTaskSpec("sections_1_2", lambda: _run_sections_1_2_task(key_data, ref_map)),
-            LlmTaskSpec("section_3_short", lambda: _run_section_3_group_task(key_data, ref_map, "short_term_logic")),
-            LlmTaskSpec("section_3_long", lambda: _run_section_3_group_task(key_data, ref_map, "long_term_logic")),
+            LlmTaskSpec("section_3", lambda: _run_section_3_task(key_data, ref_map)),
             LlmTaskSpec("section_4", lambda: _run_section_4_task(key_data, ref_map)),
             LlmTaskSpec("section_5", lambda: _run_section_5_task(key_data, ref_map)),
             LlmTaskSpec("section_6", lambda: _run_section_6_task(key_data, ref_map)),
@@ -2994,32 +3177,19 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
         status["1"] = status["2"] = status["s12"] = mode
         failed.extend(["1", "2"])
 
-    r3_short = result_map.get("section_3_short")
-    r3_long = result_map.get("section_3_long")
+    r3 = result_map.get("section_3")
     r4 = result_map.get("section_4")
     s34_parts = []
-    short_rows = r3_short.content.get("rows", []) if r3_short and isinstance(r3_short.content, dict) else []
-    long_rows = r3_long.content.get("rows", []) if r3_long and isinstance(r3_long.content, dict) else []
-    sec3_text, sec3_ok, sec3_issues = merge_hkus_section_3_groups(short_rows, long_rows)
-    sec3_prior_issues = []
-    for result in (r3_short, r3_long):
-        if result and isinstance(result.content, dict):
-            sec3_prior_issues.extend(result.content.get("issues", []) or [])
-    if sec3_text and sec3_ok:
-        s34_parts.append(sec3_text)
-        status["3"] = "partial_json_split" if any("partial_groups" in x for x in sec3_issues) else "ok_json_split"
-        if sec3_prior_issues or sec3_issues:
-            status["3_schema_issues"] = (sec3_prior_issues + sec3_issues)[:30]
+    if r3 and r3.ok and isinstance(r3.content, dict) and r3.content.get("text"):
+        s34_parts.append(r3.content["text"])
+        status["3"] = "ok_json_compact"
+        if r3.content.get("issues"):
+            status["3_schema_issues"] = r3.content.get("issues", [])[:30]
     else:
-        combined_text, combined_ok, combined_issues = gen_hkus_section_3(key_data, ref_map) if key and target_materials_ok else ("", False, [])
-        if combined_text and combined_ok:
-            s34_parts.append(combined_text)
-            status["3"] = "ok_json_combined_retry"
-            status["3_schema_issues"] = (sec3_prior_issues + sec3_issues + combined_issues)[:30]
-        else:
-            status["3"] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
-            status["3_schema_issues"] = (sec3_prior_issues + sec3_issues + combined_issues)[:30]
-            failed.append("3")
+        status["3"] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
+        if r3 and isinstance(r3.content, dict):
+            status["3_schema_issues"] = r3.content.get("issues", [])[:30]
+        failed.append("3")
     if r4 and r4.ok and isinstance(r4.content, dict) and r4.content.get("text"):
         s34_parts.append(r4.content["text"])
         status["4"] = r4.content.get("status", r4.status)
@@ -3160,6 +3330,7 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     assembly_issues.extend(reference_issues)
     report = _normalize_table_separators(report)
     report = _clean_repeated_punctuation(report)
+    report = _strip_bold_from_markdown_headings(report)
 
     # 7. status
     h2_matches = list(re.finditer(r'^##\s*(\d{1,2})\s+[^\n]+$', report, re.M))
@@ -3293,6 +3464,77 @@ def _renumber_markdown_section(body: str, original_no: int, display_no: int) -> 
     return body
 
 
+def _clean_empty_h3_subsections(report: str) -> str:
+    """Remove empty H3 subsections and renumber remaining ones under each H2.
+
+    After §11.1 may be stripped by _drop_empty_forecast_columns_in_section_11,
+    the remaining subsections (e.g. §8.2, §8.3) need renumbering to §8.1, §8.2.
+    This function also handles any other H2 where H3 gaps exist due to removals.
+    """
+    lines = report.splitlines()
+    h2_positions = [(i, int(m.group(1)))
+                    for i, line in enumerate(lines)
+                    for m in [re.match(r'^##\s+(\d+)\s+', line)] if m]
+    if not h2_positions:
+        return report
+
+    # exclude reference section from H3 cleanup
+    h2_positions = [(i, n) for i, n in h2_positions
+                    if not re.search(r'参考资料|References', lines[i], re.I)]
+
+    result_lines = list(lines)
+    for idx, (h2_start, h2_num) in enumerate(h2_positions):
+        h2_end = h2_positions[idx + 1][0] if idx + 1 < len(h2_positions) else len(lines)
+
+        # find H3 subsections in [h2_start, h2_end)
+        h3_positions: list[tuple[int, int, int]] = []  # (line_idx, major, minor)
+        for i in range(h2_start + 1, h2_end):
+            m = re.match(r'^###\s+(\d+)\.(\d+)\s+', result_lines[i])
+            if m:
+                h3_positions.append((i, int(m.group(1)), int(m.group(2))))
+
+        if len(h3_positions) < 2:
+            continue  # no renumbering needed for 0-1 subsections
+
+        # determine which H3 blocks have content
+        kept_blocks: list[tuple[int, int, list[str]]] = []  # (start, end_exclusive, lines)
+        for j, (h3_start_idx, _, _) in enumerate(h3_positions):
+            h3_end_idx = h3_positions[j + 1][0] if j + 1 < len(h3_positions) else h2_end
+            body = "\n".join(result_lines[h3_start_idx + 1:h3_end_idx])
+            if _is_substantive_section(body):
+                kept_blocks.append((h3_start_idx, h3_end_idx, result_lines[h3_start_idx:h3_end_idx]))
+
+        if len(kept_blocks) == len(h3_positions):
+            continue  # no subsections removed, no renumbering needed
+
+        # rebuild the H2 region: keep non-H3 lines before first H3, then kept H3 blocks
+        prefix = result_lines[h2_start:h3_positions[0][0]]
+        rebuilt_region = list(prefix)
+
+        for new_idx, (_, _, block_lines) in enumerate(kept_blocks):
+            # renumber H3 heading: replace old num with h2_num.new_idx+1
+            block_lines[0] = re.sub(
+                r'^(###\s+)\d+\.\d+(\s+)',
+                rf'\g<1>{h2_num}.{new_idx + 1}\g<2>',
+                block_lines[0]
+            )
+            rebuilt_region.extend(block_lines)
+
+        # preserve trailing non-H3 lines after last H3 block
+        if kept_blocks:
+            last_h3_end = kept_blocks[-1][1]
+            trailing = result_lines[last_h3_end:h2_end]
+            rebuilt_region.extend(trailing)
+        else:
+            # all H3s removed, keep any content after last original H3
+            trailing = result_lines[h3_positions[-1][0] + 1:h2_end]
+            rebuilt_region.extend(trailing)
+
+        result_lines[h2_start:h2_end] = rebuilt_region
+
+    return "\n".join(result_lines)
+
+
 def _find_reference_heading_match(report: str):
     return re.search(r'^##\s*(\d{1,2})\s+(参考资料|References)\s*$', report, re.M | re.I)
 
@@ -3397,6 +3639,7 @@ def assemble_fixed_hk_us_sections(title: str, meta: str, section_bodies: dict,
     ref_text_out = re.sub(r'^##\s*\d+\s+', f"## {ref_disp_no} ", ref_text, count=1, flags=re.M)
     parts.append(ref_text_out)
     report = "\n".join(parts)
+    report = _clean_empty_h3_subsections(report)
     assembly_issues.extend(_validate_final_hk_us_sections(report))
     assembly_meta = {
         "section_number_mapping": section_number_mapping,
@@ -4298,6 +4541,30 @@ def _drop_empty_forecast_columns_in_section_11(text: str) -> str:
             rebuilt.append("|" + "|".join(":---" for _ in kept) + "|")
         else:
             rebuilt.append("| " + " | ".join(kept) + " |")
+
+    # v1.2.4-patch: after dropping empty forecast columns, check if ALL remaining data rows
+    # are also empty (all dashes). If so, strip the entire ### 11.1 subsection block
+    # (heading + table + following paragraph until next ### or ## heading).
+    rebuilt_parsed = [[cell.strip() for cell in row.strip().strip("|").split("|")]
+                      for row in rebuilt]
+    rebuilt_data_rows = rebuilt_parsed[2:] if len(rebuilt_parsed) >= 3 else []
+    all_data_empty = True
+    if rebuilt_data_rows:
+        for row in rebuilt_data_rows:
+            if any(has_forecast_value(cell) for cell in row):
+                all_data_empty = False
+                break
+    if all_data_empty:
+        # find the end of this §11.1 subsection: next ### or ## heading
+        subsec_end = table_end
+        for i in range(table_end, len(lines)):
+            if re.match(r'^\s*#{2,3}\s+', lines[i]):
+                subsec_end = i
+                break
+        else:
+            subsec_end = len(lines)
+        return "\n".join(lines[:h_idx] + lines[subsec_end:])
+
     return "\n".join(lines[:table_start] + rebuilt + lines[table_end:])
 
 
@@ -4970,6 +5237,7 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
     mdp = str(Path(output_dir) / "report.md")
     gs = None
     stage_t0 = time.time()
+    _update_run_manifest(output_dir, stage="write_report", status="running")
     try:
         report, gs = write_report(materials, trace, ticker, mkt, company, output_dir, peer_bundle={})
     except Exception as e:

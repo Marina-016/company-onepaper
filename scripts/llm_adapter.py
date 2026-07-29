@@ -536,6 +536,13 @@ def call_llm(
             text = _parse_anthropic_response(payload) if config.api_format == "anthropic" else _parse_openai_response(payload)
             if text.strip():
                 return LLMResult(True, text, "", "", None, round(time.time() - started, 3), idx, config.model, config.api_format, config.endpoint)
+            import sys as _sys
+            _content = payload.get("content")
+            _ct = type(_content).__name__
+            _dump = str(payload)[:800]
+            _sys.stderr.write(f"[DEBUG adapter EMPTY_TEXT_RESPONSE] content_type={_ct} content_repr={repr(_content)[:400]} payload_keys={list(payload.keys())[:20]}\n")
+            _sys.stderr.write(f"[DEBUG adapter EMPTY_TEXT_RESPONSE] payload[:800]={_dump}\n")
+            _sys.stderr.flush()
             last_type, last_error, last_status = "EMPTY_TEXT_RESPONSE", "response has no text blocks", None
         except urllib.error.HTTPError as exc:
             last_status = exc.code
