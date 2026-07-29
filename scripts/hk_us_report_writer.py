@@ -1071,12 +1071,25 @@ def normalize_refs(text: str, refs: list[int]) -> str:
 
 def _section_1_2_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
     issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    # §1+§2 is the most synthesis-heavy task: cap total context so deepseek-v4-pro
+    # thinking time stays under the 120s proxy timeout (was 20s @ 6484 chars, 127s @ 8507).
+    # Allocate: recent_reports_text ≤3500, annual_segment_text ≤600, total ≤5000.
+    bounded_data = dict(key_data)
+    raw = bounded_data.get("recent_reports_text")
+    if isinstance(raw, str) and len(raw) > 3500:
+        bounded_data["recent_reports_text"] = raw[:3500]
+    seg = bounded_data.get("annual_segment_text")
+    if isinstance(seg, str) and len(seg) > 600:
+        bounded_data["annual_segment_text"] = seg[:600]
+    ctx = _format_hkus_key_context(bounded_data)
+    if len(ctx) > 5000:
+        ctx = ctx[:5000]
     return f"""Return ONLY JSON for HK/US company one-pager sections 1 and 2.
 Schema:
 {{"title_conclusion": "...", "section_1": {{"key_points": [{{"keyword": "...", "text": "...", "source_ids": [1]}}]}}, "section_2": {{"recent_updates": [{{"keyword": "...", "date": "YYYY-MM-DD or YYYY-Qx", "fact": "...", "implication": "...", "source_ids": [1]}}]}}}}
 Rules: section_1 has exactly 4 investment conclusions; section_2 has exactly 4 recent concrete updates, each update's fact+implication combined must be 80-120 Chinese characters (total §2 within 600 characters); every item cites valid source_ids; no Markdown.
 Context:
-{_format_hkus_key_context(key_data)}
+{ctx}
 {issue_text}"""
 
 
@@ -1139,6 +1152,8 @@ def gen_hkus_sections_1_2(key_data: dict, ref_map: dict | None = None) -> tuple[
     if not _has_target_materials(key_data):
         return {}, False, {"call_mode": "skipped_no_target_materials", "schema_issues": ["no_target_materials"]}
     ref_map = ref_map or {}
+    co_name = str(key_data.get("company_name") or "")
+    co_ticker = str(key_data.get("ticker") or "")
     issues: list[str] = []
     parse_attempts = 0
     for call_name in ("sections_1_2", "sections_1_2_json_repair"):
@@ -1152,7 +1167,7 @@ def gen_hkus_sections_1_2(key_data: dict, ref_map: dict | None = None) -> tuple[
         if parse_error:
             issues.append(f"{call_name}:{parse_error}")
             continue
-        rendered, render_issues = _validate_render_sections_1_2(payload, ref_map)
+        rendered, render_issues = _validate_render_sections_1_2(payload, ref_map, company_name=co_name, ticker=co_ticker)
         section_1_valid = bool(rendered.get("_section_1_valid"))
         section_2_valid = bool(rendered.get("_section_2_valid"))
         if rendered.get("s12") and (section_1_valid or section_2_valid):

@@ -177,6 +177,7 @@ def call_claude(_client, prompt: str, max_tokens: int = 2000) -> str:
                         "max_tokens": _max,
                         "system": SYSTEM_PROMPT,
                         "messages": [{"role": "user", "content": prompt}],
+                        "thinking": {"type": "disabled"},
                     }
                     resp = _post_json(url, headers, payload, timeout=120)
                     if resp.status_code == 429:
@@ -2936,7 +2937,8 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     # ── 8.2 同业比较：v1.2.4 始终确定性输出（LLM表仅作§8.1参考，不插入§8.2）──
     name = meta.get("name", "")
     ticker = meta.get("ticker", "")
-    peer_table = _build_a_share_peer_table(name, ticker, "", sections.get("peer_table", ""))
+    _existing_peer = sections.get("peer_table", "")
+    peer_table = _build_a_share_peer_table(name, ticker, "", _existing_peer)
     peer_section_block = f"""
 ### 8.2 同业比较
 
@@ -3281,17 +3283,17 @@ def _postprocess_v123(md_content: str, ref_map: dict) -> str:
     # ── 阶段 5: 清理重复的 H2/H3 标题 ──
     result = _dedup_section_titles(result)
 
-    # ── 阶段 5.5: 清理模板装饰符（⭐ 等权重标记，只能作为内部权重提示，不能进入最终输出） ──
+    # ── 阶段 5.5: 清理模板装饰符 ──
     result = re.sub(r'[⭐🌟🔥⚠️✅❌]+', '', result)
 
-    # ── 阶段 5.6: 清理 HTML 标签；保留 <br> 供情景推演表单元格内换行 ──
+    # ── 阶段 5.6: 清理 HTML 标签 ──
     result = re.sub(r'<br\s*/?>', '<br>', result)
-    result = re.sub(r'<(?!br>)[^>]+>', '', result)  # 清理除 <br> 之外的残留 HTML 标签
+    result = re.sub(r'<(?!br>)[^>]+>', '', result)
 
-    # ── 阶段 5.7: 删除所有 > 注：… 行（不对读者展示内部注记）──
+    # ── 阶段 5.7: 删除所有 > 注：… 行 ──
     result = re.sub(r'^>[ \t]*注：[^\n]*\n?', '', result, flags=re.MULTILINE)
 
-    # ── 阶段 5.8: 删除正文中所有 --- 分隔线（章节间不用分隔符）──
+    # ── 阶段 5.8: 删除正文中所有 --- 分隔线 ──
     result = re.sub(r'(?m)^---+\s*$\n?', '', result)
 
     # ── 阶段 6: 清理孤立的空小节标题 ──
@@ -3906,11 +3908,16 @@ def _is_numeric_cell(v: str) -> bool:
     import re
     if not v or v in ('—', '-', 'N/A', 'n/a', 'NA', '…', '待补充', '不适用', ''):
         return False
+    # 排除含中文/日文等非数值文本的单元格（如"2026年第一季度..."）
+    if re.search(r'[一-鿿぀-ゟ゠-ヿ]', v):
+        return False
+    # 带引用标记的数值（如 "42.6%[1]"）→ 去掉引用后再判断
+    v_clean = re.sub(r'\[\d+\]', '', v).strip()
     # 纯数字（含负号、小数点、百分号）
-    if re.match(r'^-?[\d,]+\.?\d*%?$', v):
+    if re.match(r'^-?[\d,]+\.?\d*%?$', v_clean):
         return True
     # 带单位的数值（如 "42.6%"）
-    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v))
+    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v_clean))
 
 
 def _sparse_cleanup(md_content: str) -> str:

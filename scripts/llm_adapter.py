@@ -520,7 +520,7 @@ def call_llm(
 
     for idx, (mt, to) in enumerate(attempts, start=1):
         if config.api_format == "anthropic":
-            body: dict[str, Any] = {"model": config.model, "max_tokens": mt, "messages": [{"role": "user", "content": prompt}]}
+            body: dict[str, Any] = {"model": config.model, "max_tokens": mt, "thinking": {"type": "disabled"}, "messages": [{"role": "user", "content": prompt}]}
             if system:
                 body["system"] = system
         else:
