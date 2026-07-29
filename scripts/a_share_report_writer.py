@@ -177,7 +177,6 @@ def call_claude(_client, prompt: str, max_tokens: int = 2000) -> str:
                         "max_tokens": _max,
                         "system": SYSTEM_PROMPT,
                         "messages": [{"role": "user", "content": prompt}],
-                        "thinking": {"type": "disabled"},
                     }
                     resp = _post_json(url, headers, payload, timeout=120)
                     if resp.status_code == 429:
@@ -3908,16 +3907,11 @@ def _is_numeric_cell(v: str) -> bool:
     import re
     if not v or v in ('—', '-', 'N/A', 'n/a', 'NA', '…', '待补充', '不适用', ''):
         return False
-    # 排除含中文/日文等非数值文本的单元格（如"2026年第一季度..."）
-    if re.search(r'[一-鿿぀-ゟ゠-ヿ]', v):
-        return False
-    # 带引用标记的数值（如 "42.6%[1]"）→ 去掉引用后再判断
-    v_clean = re.sub(r'\[\d+\]', '', v).strip()
     # 纯数字（含负号、小数点、百分号）
-    if re.match(r'^-?[\d,]+\.?\d*%?$', v_clean):
+    if re.match(r'^-?[\d,]+\.?\d*%?$', v):
         return True
     # 带单位的数值（如 "42.6%"）
-    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v_clean))
+    return bool(re.match(r'^[-+]?[\d,]+\.?\d*', v))
 
 
 def _sparse_cleanup(md_content: str) -> str:
