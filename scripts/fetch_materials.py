@@ -16,8 +16,8 @@ import urllib.request
 from typing import Any
 
 
-API_INFO_URL = "https://gw.datayes.com/aladdin_llm_mgmt/web/whitelist/api"
-ALLOWED_HOSTS = {"gw.datayes.com", "api.datayes.com", "api.wmcloud.com", "ai.datayes.com"}
+API_INFO_URL = "https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api"
+ALLOWED_HOSTS = {"gw.datayes.com", "api.datayes.com", "api.wmcloud.com", "r.datayes.com"}
 
 
 def find_token() -> str:

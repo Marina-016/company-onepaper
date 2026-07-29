@@ -46,7 +46,7 @@ except ImportError:
 # ─────────────────────────────────────────────
 # 常量
 # ─────────────────────────────────────────────
-META_BASE = "https://gw.datayes.com/aladdin_llm_mgmt/web/whitelist/api"
+META_BASE = "https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api"
 
 ALLOWED_HOSTS = {"gw.datayes.com", "api.datayes.com", "api.wmcloud.com", "r.datayes.com"}
 

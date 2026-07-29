@@ -4,7 +4,7 @@
 
 **重要**：调用任何接口前，必须先通过元信息接口获取其实际URL、HTTP方法和参数：
 ```
-GET https://gw.datayes.com/aladdin_llm_mgmt/web/whitelist/api?nameEn={nameEn}
+GET https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api?nameEn={nameEn}
 Authorization: Bearer {DATAYES_TOKEN}
 ```
 
@@ -264,7 +264,7 @@ Authorization: Bearer {DATAYES_TOKEN}
 - **nameEn**: `getMaterialsV2`
 - **用途**: 输入自然语言问题，召回相关的研报/会议纪要/研报图表素材。**专用于同业对比表格**：用目标公司与可比同业的财务指标对比问题召回有效素材，解决同业数据靠模型估算的问题。
 - **HTTP方法**: POST
-- **URL**: `https://gw.datayes.com/aladdin_info/web/gptMaterials/v2`
+- **URL**: 通过元信息接口 `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api?nameEn=gptMaterials` 获取，禁止硬编码业务 URL。
 - **请求体参数**:
   - `question` (String): 自然语言问题，**直接传入，不改写**。示例："对比{company_name}与主要可比同业公司在营收、净利润、PE、PB、ROE等核心财务指标的最新数据"
   - `queryScope` (String, 可选): 素材范围，**仅用** `"research,researchTable,meetingSummary"`（研报、研报图表、会议纪要）；默认值相同，可省略
