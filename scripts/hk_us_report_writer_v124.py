@@ -1228,7 +1228,7 @@ def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") ->
             if len(questions) < 2:
                 issues.append(f"section_8.research_agenda[{i}].questions_count:{len(questions)}")
             if topic and background and refs and len(questions) >= 2:
-                lines.extend(["", f"议题{i}：{topic}", f"背景：{background}{_cite(refs)}"])
+                lines.extend(["", f"**议题{i}：{topic}**", f"背景：{background}{_cite(refs)}"])
                 for qn, q in enumerate(questions[:3], 1):
                     qtext = _plain_text(q, 80)
                     if qtext:
@@ -1273,20 +1273,32 @@ def _legacy_validate_render_section_12_unused(payload: dict, ref_map: dict) -> t
     return ("\n".join(lines), issues) if len(lines) >= 6 and not issues else ("", issues)
 
 def gen_hkus_section_12(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
-    prompt = f"""Return ONLY JSON for HK/US report risk titles.
-Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "source_refs": [1]}}]}}
-Rules: 4-6 risks; title only, no mechanism/body; use only target-company context refs; no Markdown.
+    """生成 §12 风险提示（active path）。
+    合同：prompt / schema / validator / renderer 均要求 title + explanation + source_refs。
+    """
+    issues: list[str] = []
+    for call_name in ("section_12", "section_12_json_repair"):
+        prompt = f"""Return ONLY JSON for HK/US report section_12 risks.
+Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "explanation": "一句话说明触发条件及对收入/利润/现金流/估值/执行节奏的影响，不加粗", "source_refs": [1]}}]}}
+Rules: 4-6 company-specific risks; title is short (≤20 Chinese chars); explanation is exactly one sentence; no generic macro/market-competition-only risk title; use only target-company context refs; no Markdown.
+{("Schema issues to fix:\\n" + chr(10).join(issues)) if call_name.endswith("repair") and issues else ""}
 Context:
 {_format_hkus_key_context(key_data)}
 """
-    text, ok = _call_llm(prompt, max_tokens=2500, timeout=120, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="legacy_ch12_json_unused")
-    if not ok:
-        return "", False, ["section_12:llm_failed"]
-    payload, parse_error = _parse_json_object(text)
-    if parse_error:
-        return "", False, [parse_error]
-    rendered, issues = _validate_render_section_12(payload, ref_map)
-    return rendered, bool(rendered and not issues), issues
+        text, ok = _call_llm(prompt, max_tokens=2800, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_section_12(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered, True, []
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return "", False, issues[:40]
 
 # ── §10 market debate (JSON-based LLM) ──
 
@@ -1547,9 +1559,11 @@ def _render_section_10_rows(rows: list[dict]) -> str:
         "|:---|:---|:---|:---|:---|",
     ]
     for row in rows:
-        bull_evidence = _compress_evidence_sentences(row['bull_evidence'], max_sentences=3, max_chars=140)
-        bear_evidence = _compress_evidence_sentences(row['bear_evidence'], max_sentences=3, max_chars=140)
-        validation = _compress_evidence_sentences(row['validation'], max_sentences=1, max_chars=80)
+        # 证据收紧到 2句/100字（v1.2.4）
+        bull_evidence = _compress_evidence_sentences(row['bull_evidence'], max_sentences=2, max_chars=100)
+        bear_evidence = _compress_evidence_sentences(row['bear_evidence'], max_sentences=2, max_chars=100)
+        # validation_metric + validation_window 不走 compress，直接保留原始组合字符串
+        validation = str(row.get('validation') or '').strip()
         lines.append(
             f"| {normalize_refs(row['bull_view'], [])} | {normalize_refs(bull_evidence, row['bull_refs'])} | "
             f"{normalize_refs(row['bear_view'], [])} | {normalize_refs(bear_evidence, row['bear_refs'])} | "
@@ -1632,7 +1646,7 @@ def merge_hkus_section_10_parts(parts: list[list[dict]]) -> tuple[str, bool, lis
             merged.append(row)
     if len(merged) < 3:
         return "", False, issues + [f"section_10.merged_rows:{len(merged)}<3"]
-    return _render_section_10_rows(merged[:5]), True, issues
+    return _render_section_10_rows(merged[:3]), True, issues
 
 
 def _legacy_gen_hkus_section_10_unused(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
@@ -2072,19 +2086,33 @@ def _section_5_json_prompt(key_data: dict, schema_issues: list[str] | None = Non
     return f"""Return ONLY JSON for HK/US one-pager section 5 business breakdown.
 Schema:
 {{"business_model": {{"text": "...", "source_ids": [1]}}, "performance_mode": "segment_table|product_matrix|kpi_table", "periods": [{{"label": "FY2025", "period_type": "annual_actual", "currency": "RMB", "unit": "亿元"}}], "segment_rows": [{{"business": "...", "values": [{{"period": "FY2025", "revenue": "100", "share": "30%", "gross_margin": "20%", "data_basis": "actual", "source_ids": [1]}}]}}], "kpi_rows": [{{"business": "...", "metric": "...", "period": "...", "value": "...", "source_ids": [1]}}], "deep_dives": [{{"business": "...", "conclusion": "...", "text": "...", "source_ids": [1]}}]}}
-Rules: no Markdown; never invent segment revenue or gross margin; use kpi_table when segment data is unavailable; do not output N/A or validation-variable fields.
+Rules:
+- no Markdown; never invent segment revenue or gross margin; use kpi_table when segment data is unavailable; do not output N/A or validation-variable fields.
+- FORBIDDEN in business/metric/deep_dive: 融资金额, 投后估值, 减持, 回购, 股东, 评级, 目标价, 投资者数量, 可灵估值. These are capital events, not operating business segments.
+- deep_dives: only real operating business units; text must be 2-3 sentences, ≤160 Chinese characters per business.
+- data_basis must be one of: annual_actual, quarterly_actual, forecast, estimate.
+- PERIOD PRIORITY: always prefer annual_actual FY periods (e.g. FY2023/FY2024/FY2025) over quarterly estimates. Only use quarterly periods if no annual data is available at all. Aim for 3 consecutive FY annual periods.
+- TABLE HEADER RULE: periods array must reflect what the table actually covers. For annual data use labels like "FY2023", "FY2024", "FY2025". Do NOT label annual data as "2026Q2E".
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
 
 
 def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
-    issues: list[str] = []
+    """验证并渲染 §5。
+    hard_issues：真正导致章节无法输出的错误（performance_missing / deep_dives_missing 等）。
+    soft_issues：过滤日志（capital_event_skipped 等），只记录不阻断输出。
+    只有 hard_issues 非空时才返回空字符串。
+    """
+    hard_issues: list[str] = []
+    soft_issues: list[str] = []
+
     if not isinstance(payload, dict):
         return "", ["section_5.payload_not_object"]
+
     bm = payload.get("business_model") if isinstance(payload.get("business_model"), dict) else {}
-    bm_text = _text_ok(bm.get("text"), issues, "section_5.business_model.text", 40)
-    bm_refs = _refs_ok(bm.get("source_ids") or bm.get("source_refs"), ref_map, issues, "section_5.business_model")
+    bm_text = _text_ok(bm.get("text"), soft_issues, "section_5.business_model.text", 40)
+    bm_refs = _refs_ok(bm.get("source_ids") or bm.get("source_refs"), ref_map, soft_issues, "section_5.business_model")
     periods = payload.get("periods") if isinstance(payload.get("periods"), list) else []
     period_labels = [_plain_text(p.get("label"), 20) for p in periods if isinstance(p, dict) and _plain_text(p.get("label"), 20)]
     period_labels = period_labels[:4]
@@ -2095,6 +2123,12 @@ def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[
     mode = _plain_text(payload.get("performance_mode") or "segment_table", 24)
     segment_rows = payload.get("segment_rows") if isinstance(payload.get("segment_rows"), list) else []
     kpi_rows = payload.get("kpi_rows") if isinstance(payload.get("kpi_rows"), list) else []
+
+    # 资本事件关键词（函数级常量）
+    _CAPITAL_EVENT_RE = re.compile(
+        r'融资|投后估值|减持|回购|增持|股东|评级|目标价|投资者|可灵.*估值|轮融资|持股|股份|分红', re.I
+    )
+
     rendered_perf = False
     if mode == "segment_table" and period_labels and segment_rows:
         rows = []
@@ -2102,6 +2136,9 @@ def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[
             if not isinstance(row, dict):
                 continue
             business = _plain_text(row.get("business"), 30)
+            if not business or _CAPITAL_EVENT_RE.search(business):
+                soft_issues.append(f"section_5.segment.{business}.capital_event_skipped")
+                continue
             values = row.get("values") if isinstance(row.get("values"), list) else []
             by_period = {}
             refs = []
@@ -2118,7 +2155,8 @@ def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[
                         parts.append(f"{label}{val}")
                 if parts:
                     by_period[period] = "；".join(parts)
-                    refs.extend(_refs_ok(value.get("source_ids") or value.get("source_refs"), ref_map, issues, f"section_5.segment.{business}.{period}"))
+                    # ref 问题记到 soft，不阻断
+                    refs.extend(_refs_ok(value.get("source_ids") or value.get("source_refs"), ref_map, soft_issues, f"section_5.segment.{business}.{period}"))
             if business and by_period:
                 rows.append((business, by_period, list(dict.fromkeys(refs))))
         nonempty_periods = [p for p in period_labels if any(p in row[1] for row in rows)]
@@ -2135,34 +2173,61 @@ def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[
         for i, row in enumerate(kpi_rows[:8]):
             if not isinstance(row, dict):
                 continue
-            refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, issues, f"section_5.kpi_rows[{i}]")
+            refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, soft_issues, f"section_5.kpi_rows[{i}]")
             business = _plain_text(row.get("business"), 30)
             metric = _plain_text(row.get("metric"), 30)
             period = _plain_text(row.get("period"), 20)
             value = _plain_text(row.get("value"), 40)
+            # 过滤资本事件 KPI → soft
+            if _CAPITAL_EVENT_RE.search(business + metric):
+                soft_issues.append(f"section_5.kpi_rows[{i}].capital_event_skipped:{metric}")
+                continue
             if business and metric and period and value and refs:
                 lines.append(f"| {business} | {metric} | {period} | {normalize_refs(value, refs)} |")
                 count += 1
         rendered_perf = count >= 2
     if not rendered_perf:
-        issues.append("section_5.performance_missing")
+        # 5.2 无任何有效数据：这是 hard issue
+        hard_issues.append("section_5.performance_missing")
+
     lines.extend(["", "### 5.3 业务深度", ""])
     dives = payload.get("deep_dives") if isinstance(payload.get("deep_dives"), list) else []
     dive_count = 0
     for i, item in enumerate(dives[:2]):
         if not isinstance(item, dict):
-            issues.append(f"section_5.deep_dives[{i}].not_object")
+            soft_issues.append(f"section_5.deep_dives[{i}].not_object")
             continue
-        business = _text_ok(item.get("business"), issues, f"section_5.deep_dives[{i}].business", 2)
-        conclusion = _text_ok(item.get("conclusion"), issues, f"section_5.deep_dives[{i}].conclusion", 6)
-        text = _text_ok(item.get("text"), issues, f"section_5.deep_dives[{i}].text", 30)
-        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_5.deep_dives[{i}]")
+        business = _text_ok(item.get("business"), soft_issues, f"section_5.deep_dives[{i}].business", 2)
+        conclusion = _text_ok(item.get("conclusion"), soft_issues, f"section_5.deep_dives[{i}].conclusion", 6)
+        text = _text_ok(item.get("text"), soft_issues, f"section_5.deep_dives[{i}].text", 30)
+        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, soft_issues, f"section_5.deep_dives[{i}]")
+        # 资本事件业务名 → soft
+        if business and _CAPITAL_EVENT_RE.search(business):
+            soft_issues.append(f"section_5.deep_dives[{i}].capital_event_business:{business}")
+            continue
         if business and conclusion and text and refs:
+            # §5.3 字数上限：160字，按完整句子截断
+            zh_count = len(re.findall(r'[一-鿿]', text))
+            if zh_count > 160:
+                sentences = re.split(r'(?<=[。；;])', text)
+                truncated, total = [], 0
+                for sent in sentences:
+                    sc = len(re.findall(r'[一-鿿]', sent))
+                    if total + sc > 160:
+                        break
+                    truncated.append(sent)
+                    total += sc
+                text = "".join(truncated).strip() or text[:160]
             lines.append(f"**{business}——{conclusion}：** {normalize_refs(text, refs)}")
             dive_count += 1
     if dive_count < 1:
-        issues.append("section_5.deep_dives_missing")
-    return ("\n".join(lines), issues) if not issues else ("", issues)
+        # 5.3 完全没有业务深度：hard issue
+        hard_issues.append("section_5.deep_dives_missing")
+
+    # 只有 hard_issues 非空才阻断输出
+    if hard_issues:
+        return "", hard_issues + soft_issues
+    return "\n".join(lines), soft_issues
 
 
 def gen_hkus_section_5(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
@@ -2179,58 +2244,112 @@ def gen_hkus_section_5(key_data: dict, ref_map: dict) -> tuple[str, bool, list[s
             issues.append(f"{call_name}:{parse_error}")
             continue
         rendered, render_issues = _validate_render_section_5(payload, ref_map)
-        if rendered and not render_issues:
-            return rendered, True, []
+        # 只要 rendered 非空就算成功（render_issues 可能含 soft_issues，不阻断）
+        if rendered:
+            return rendered, True, render_issues
         issues.extend(f"{call_name}:{x}" for x in render_issues)
     return "", False, issues[:40]
 
 
 def _section_6_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
     issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
-    return f"""Return ONLY JSON for HK/US one-pager section 6 supply/customer chain.
+    return f"""Return ONLY JSON for HK/US one-pager section 6 supply/customer chain and ecosystem.
 Schema:
 {{"rows": [{{"type": "主要客户|主要供应商|核心资源|渠道|生态伙伴", "name": "...", "relationship": "...", "source_ids": [1]}}], "fallback_description": {{"text": "...", "source_ids": [1]}}}}
-Rules: use a table only when at least two concrete entity/resource rows exist; otherwise provide one concise source-backed fallback paragraph; do not output upstream/middle/downstream prose or validation-variable fields.
+Rules:
+- Always prefer outputting rows over fallback_description; fallback_description is only used when truly no concrete entity/resource can be found.
+- do not output upstream/middle/downstream prose or validation-variable fields.
+- EXCLUDE entities that appear only as shareholders, one-time investors, or capital-market participants with no ongoing operating relationship with the company.
+- relationship field MUST describe specific business relationship, scale, proportion, or cooperation mode. Generic phrases like "战略合作", "长期支持", "重要合作伙伴" are NOT acceptable — must include concrete detail (e.g. 占采购额约30%, 月活用户超1亿, 独家内容供应商).
 Context:
 {_format_hkus_key_context(key_data)}
 {issue_text}"""
 
 
-def _validate_render_section_6(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
-    issues: list[str] = []
+# 空泛关系描述正则：这些词组单独出现时视为无实质内容
+_VAGUE_RELATIONSHIP_RE = re.compile(
+    r'^(战略合作|长期支持|重要合作伙伴|深度合作|持续合作|合作关系|生态合作|友好合作|密切合作|相互合作)$'
+)
+# 纯资本方关键词：type 或 name 含这些词且 relationship 无实质内容时跳过
+_CAPITAL_PARTY_RE = re.compile(r'股东|投资方|投资人|基金|持股|融资方|一次性.*投资|LP|GP')
+
+
+def _extract_section_6_rows(payload: dict, ref_map: dict) -> tuple[list[tuple], list[str]]:
+    """从 payload 中提取有效行，返回 (rendered_rows, soft_issues)。
+    soft_issues 只记录过滤日志，不影响章节是否输出。
+    """
+    soft: list[str] = []
     rows = payload.get("rows") if isinstance(payload, dict) and isinstance(payload.get("rows"), list) else []
-    rendered_rows = []
+    rendered: list[tuple] = []
+    hard_issues: list[str] = []
     for i, row in enumerate(rows[:10]):
         if not isinstance(row, dict):
-            issues.append(f"section_6.rows[{i}].not_object")
+            soft.append(f"section_6.rows[{i}].not_object")
             continue
         typ = _plain_text(row.get("type"), 24)
         name = _plain_text(row.get("name"), 40)
-        rel = _plain_text(row.get("relationship"), 90)
-        refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, issues, f"section_6.rows[{i}]")
+        rel = _plain_text(row.get("relationship"), 120)
+        refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, hard_issues, f"section_6.rows[{i}]")
+        # 过滤：纯资本方
+        if _CAPITAL_PARTY_RE.search(typ + name) and _VAGUE_RELATIONSHIP_RE.match(rel.strip()):
+            soft.append(f"section_6.rows[{i}].capital_party_skipped:{name}")
+            continue
+        # 过滤：relationship 完全空泛
+        if _VAGUE_RELATIONSHIP_RE.match(rel.strip()):
+            soft.append(f"section_6.rows[{i}].vague_relationship_skipped:{name}")
+            continue
         if typ and name and rel and refs:
-            rendered_rows.append((typ, name, normalize_refs(rel, refs)))
+            rendered.append((typ, name, normalize_refs(rel, refs)))
+    return rendered, soft
+
+
+def _validate_render_section_6(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    """验证并渲染 §6。>=1 行有效数据即可出表；0行走 fallback_description。"""
+    issues: list[str] = []
+    rendered_rows, soft = _extract_section_6_rows(payload, ref_map)
     lines = ["## 6 产销链与生态", ""]
-    if len(rendered_rows) >= 2:
+    if rendered_rows:
         lines.extend(["| 类型（主要客户/主要供应商/核心资源） | 名称 | 合作情况/规模/占比 |", "|:--|:--|:--|"])
         for row in rendered_rows:
             lines.append("| " + " | ".join(row) + " |")
-        return "\n".join(lines), []
+        return "\n".join(lines), []   # 有行就成功，soft issues 不阻断
+    # 无行：尝试 fallback_description
     fallback = payload.get("fallback_description") if isinstance(payload, dict) and isinstance(payload.get("fallback_description"), dict) else {}
     text = _text_ok(fallback.get("text"), issues, "section_6.fallback_description.text", 40)
     refs = _refs_ok(fallback.get("source_ids") or fallback.get("source_refs"), ref_map, issues, "section_6.fallback_description")
     if text and refs:
         lines.append(normalize_refs(text, refs))
         return "\n".join(lines), []
-    return "", issues + [f"section_6.valid_entity_rows:{len(rendered_rows)}<2"]
+    return "", soft + issues + ["section_6.no_valid_rows_and_no_fallback"]
+
+
+def _section_6_supplement_prompt(key_data: dict, existing_rows: list[tuple], ref_map: dict) -> str:
+    """已有 existing_rows 行但不足3行时，让 LLM 从研报里补充其余行。"""
+    existing_text = "\n".join(f"- {r[0]} | {r[1]} | {r[2]}" for r in existing_rows)
+    return f"""Already generated §6 rows:
+{existing_text}
+
+Return ONLY JSON with additional rows to supplement the table above.
+Schema: {{"rows": [{{"type": "主要客户|主要供应商|核心资源|渠道|生态伙伴", "name": "...", "relationship": "...", "source_ids": [1]}}]}}
+Rules:
+- Output 1-3 NEW rows not already covered above; use only types: 主要客户, 主要供应商, 核心资源, 渠道, 生态伙伴.
+- For internet/platform companies cover: 广告主（品牌商家）, 小程序开发者/商家, 支付商户, 内容创作者, 云服务客户 — use 类型 as "主要客户" or "生态伙伴".
+- relationship MUST be specific (scale, proportion, cooperation detail); no "战略合作" or generic phrases.
+- EXCLUDE shareholders, one-time investors, capital-market participants.
+- If no new source-backed rows can be found, return {{"rows": []}}.
+Context:
+{_format_hkus_key_context(key_data)}"""
 
 
 def gen_hkus_section_6(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
     issues: list[str] = []
+    best_rows: list[tuple] = []
+
     for call_name in ("section_6", "section_6_json_repair"):
-        text, ok = _call_llm(_section_6_json_prompt(key_data, issues if call_name.endswith("repair") else None),
-                             max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
-                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        text, ok = _call_llm(
+            _section_6_json_prompt(key_data, issues if call_name.endswith("repair") else None),
+            max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+            system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
         if not ok:
             issues.append(f"{call_name}:llm_failed")
             continue
@@ -2240,8 +2359,38 @@ def gen_hkus_section_6(key_data: dict, ref_map: dict) -> tuple[str, bool, list[s
             continue
         rendered, render_issues = _validate_render_section_6(payload, ref_map)
         if rendered and not render_issues:
+            # 有输出了——但如果行数 < 3，尝试补写
+            rows, _ = _extract_section_6_rows(payload, ref_map)
+            if len(rows) < 3:
+                best_rows = rows  # 先存下来，下面补写
+                break
             return rendered, True, []
+        # 完全没输出，记录 issues 继续 retry
         issues.extend(f"{call_name}:{x}" for x in render_issues)
+
+    # 如果有 >=1 行但 <3 行，追加一次补写
+    if best_rows:
+        supp_text, supp_ok = _call_llm(
+            _section_6_supplement_prompt(key_data, best_rows, ref_map),
+            max_tokens=2000, timeout=min(90, _hkus_llm_task_budget_seconds()),
+            system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="section_6_supplement")
+        if supp_ok:
+            supp_payload, supp_err = _parse_json_object(supp_text)
+            if not supp_err:
+                supp_rows, _ = _extract_section_6_rows(supp_payload, ref_map)
+                # 合并：去重（按 name 去重）
+                seen_names = {r[1] for r in best_rows}
+                for r in supp_rows:
+                    if r[1] not in seen_names:
+                        best_rows.append(r)
+                        seen_names.add(r[1])
+        # 用合并后的行组装最终输出
+        lines = ["## 6 产销链与生态", "",
+                 "| 类型（主要客户/主要供应商/核心资源） | 名称 | 合作情况/规模/占比 |", "|:--|:--|:--|"]
+        for row in best_rows:
+            lines.append("| " + " | ".join(row) + " |")
+        return "\n".join(lines), True, issues
+
     return "", False, issues[:40]
 
 
@@ -2334,6 +2483,52 @@ def _run_markdown_section_task(section_no: str, materials: dict, ref_map: dict, 
 # ---------------------------------------------------------------------------
 # section-wise report generation
 # ---------------------------------------------------------------------------
+# §9 peer LLM fallback
+# ---------------------------------------------------------------------------
+
+_PEER_TABLE_COLS_CN = "竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品"
+
+
+def _build_peer_llm_fallback(key_data: dict, ref_map: dict,
+                              company_name: str, ticker: str, mkt: str) -> str:
+    """peer 确定性路径失败时，用研报材料让 LLM 直接生成 §9 Markdown 表格。
+    只写有研报依据的 peer 行，不编造。市值列无数据则省略。
+    """
+    guide = "\n".join(f"  [{rn}] {v.get('title','')[:80]}" for rn, v in sorted(ref_map.items())[:12])
+    prompt = f"""You are a senior equity analyst. Generate §9 peer comparison table for {company_name} ({ticker}, {mkt} market).
+
+Use ONLY the research materials below. Do not invent peer financials, market cap, or progress that are not in the materials.
+
+Required output: one Markdown section starting with "## 9 行业对比与 A/H 映射", then a table with these columns:
+{_PEER_TABLE_COLS_CN}
+
+Rules:
+- First row = target company (竞争关系="基准公司"), ticker format: 5-digit.HK or TICKER.US
+- Include 2-4 peers that are explicitly mentioned as competitors or comparables in the research materials
+- 市值 column: only include if actual market cap data is available; otherwise omit the column entirely
+- 相关业务进展: cite [N] from the reference guide; describe concrete progress, not generic phrases
+- If fewer than 2 source-backed peers exist, output the table with only target row and 1 peer, clearly noting limited data
+- Do NOT output "未生成" or "本轮未取得" — always output the best available table
+- Output ONLY the Markdown section, no explanation
+
+Reference guide (use [N] for citations):
+{guide}
+
+Target company research excerpts:
+{key_data.get('recent_reports_text', '')[:3000]}
+"""
+    text, ok = _call_llm(prompt, max_tokens=2000,
+                         timeout=min(120, _hkus_llm_task_budget_seconds()),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
+                         call_name="section_9_peer_fallback")
+    if not ok or not text:
+        return ""
+    body = _clean_fence(text)
+    # 必须含表格
+    if "|" not in body or "## 9" not in body:
+        return ""
+    return body
+
 
 def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
                  company_name: str, output_dir: str, peer_bundle: dict | None = None) -> tuple:
@@ -2459,13 +2654,22 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
         failed.append("8")
     peer_section = build_peer_comparison_section(peer_bundle or {}, ref_map) if build_peer_comparison_section else ""
     valid_peer_rows = int((peer_bundle or {}).get("valid_peer_rows") or 0)
-    if peer_section:
-        status["9"] = "ok_peer_deterministic" if valid_peer_rows >= 2 else "failed_peer_count"
-        if valid_peer_rows < 2:
-            failed.append("9")
+    peer_is_fallback = False
+    if peer_section and valid_peer_rows >= 2:
+        status["9"] = "ok_peer_deterministic"
     else:
-        status["9"] = "failed_no_peer_evidence"
-        failed.append("9")
+        # peer 确定性路径失败 → 用研报材料让 LLM 补写
+        if key and target_materials_ok:
+            peer_section = _build_peer_llm_fallback(key_data, ref_map, company_name, ticker, mkt)
+            if peer_section:
+                status["9"] = "ok_peer_llm_fallback"
+                peer_is_fallback = True
+            else:
+                status["9"] = "failed_peer_llm_fallback"
+                failed.append("9")
+        else:
+            status["9"] = "failed_no_peer_evidence"
+            failed.append("9")
     texts["s89"] = "\n\n".join(x for x in [sec8_text, peer_section] if x)
     status["s89"] = "ok" if sec8_text and peer_section and valid_peer_rows >= 2 else "degraded_partial"
 
@@ -2530,12 +2734,16 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
         conclusion = _repair_title_from_verified_sections(texts, company_name, ticker, mkt_cn)
     if not conclusion:
         conclusion = _build_deterministic_fallback_title(texts, company_name, ticker)
-    title_status = "ok" if conclusion else "failed_no_investment_conclusion"
-    title_issues = [] if conclusion else ["title_status=failed_no_investment_conclusion"]
     title = _build_report_title(company_name, ticker, mkt_cn, conclusion)
     meta = _build_hkus_meta_line(mkt_cn)
-    report, assembly_issues = assemble_fixed_hk_us_sections(title, meta, texts, ref_text)
-    assembly_issues.extend(title_issues)
+    report, assembly_issues = assemble_fixed_hk_us_sections(title, meta, texts, ref_text, mkt=mkt)
+
+    # title_status 以最终写入 report.md 的标题为准（_build_report_title 内部的
+    # _sanitize_title_conclusion 可能二次清空 conclusion，需在 assemble 后重新判断）
+    _title_in_report = re.match(r'^#\s+.+：(.+)$', title)
+    title_status = "ok" if _title_in_report else "failed_no_investment_conclusion"
+    if not _title_in_report:
+        assembly_issues.append("title_status=failed_no_investment_conclusion")
 
     # 6. normalize references (keep only body-used refs, renumber 1..N)
     report, ref_map, reference_issues = normalize_used_references(report, source_trace)
@@ -2610,6 +2818,17 @@ FIXED_H2_TITLES = [
     "10 市场分歧", "11 估值与预测", "12 风险提示", "13 参考资料",
 ]
 
+# 必填章节（失败时在 generation_status 中记录，不写空 H2）
+_REQUIRED_SECTIONS = {1, 2, 5, 7, 12}
+
+
+def _fixed_h2_titles_for_market(mkt: str) -> list[str]:
+    """返回按市场调整后的 H2 标题列表（HK §8 含调研大纲）。"""
+    titles = list(FIXED_H2_TITLES)
+    if (mkt or "").upper() == "HK":
+        titles[7] = "8 市场关注/调研大纲"
+    return titles
+
 def _strip_section_headers(text: str) -> str:
     """Remove H2/H3 headers from LLM output (writer injects fixed headers)."""
     lines = []
@@ -2681,8 +2900,17 @@ def _validate_final_hk_us_sections(report: str) -> list[str]:
     return issues
 
 def assemble_fixed_hk_us_sections(title: str, meta: str, section_bodies: dict,
-                                  ref_text: str) -> tuple[str, list[str]]:
-    """Assemble report in fixed order without overwriting renderer-provided H2/H3."""
+                                  ref_text: str, mkt: str = "US") -> tuple[str, list[str]]:
+    """Assemble report in fixed order.
+
+    规则：
+    - 有实质 body 的章节：保留 body 中已有的 ## H2（renderer 已生成正确标题则直接用），
+      否则插入 fixed H2 标题。
+    - 无 body 的章节：不写空 H2；必填章节（_REQUIRED_SECTIONS）将在 assembly_issues 中记录。
+    - §8 标题按 mkt 参数选择正确版本（HK="市场关注/调研大纲"，US="市场关注"）。
+    """
+    h2_titles = _fixed_h2_titles_for_market(mkt)
+
     routed: dict[int, str] = {}
     for sk in SECTION_ORDER:
         if sk not in section_bodies:
@@ -2695,21 +2923,28 @@ def assemble_fixed_hk_us_sections(title: str, meta: str, section_bodies: dict,
             if num in expected and body.strip():
                 routed[num] = body.strip()
 
+    assembly_issues: list[str] = []
     parts = [title, meta]
-    for h in FIXED_H2_TITLES[:-1]:
+    for h in h2_titles[:-1]:
         sec_no = int(h.split()[0])
         body = routed.get(sec_no, "").strip()
         if body:
+            # renderer 已在 body 中写了正确 H2（含正确标题）则直接使用，否则插入 fixed H2
             if re.match(r'^##\s*%d\s+' % sec_no, body):
                 parts.append("\n" + body + "\n")
             else:
                 parts.append(f"\n## {h}\n")
                 parts.append(body)
         else:
-            parts.append(f"\n## {h}\n")
+            # 无实质内容：不写空 H2
+            if sec_no in _REQUIRED_SECTIONS:
+                assembly_issues.append(f"required_section_missing:§{sec_no}")
+            else:
+                assembly_issues.append(f"optional_section_missing:§{sec_no}")
     parts.append(ref_text)
     report = "\n".join(parts)
-    return report, _validate_final_hk_us_sections(report)
+    assembly_issues.extend(_validate_final_hk_us_sections(report))
+    return report, assembly_issues
 
 
 # ── Deterministic section builders (§10-11) ──
@@ -3696,74 +3931,96 @@ def _build_consensus_forecast_section(materials: dict, targets: list[dict] | Non
 
 def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str,
                              basis_map: dict[str, dict] | None = None) -> str:
-    """Build r11g §11 with fixed 11.1 earnings forecast, 11.2 valuation and 11.3 scenarios."""
+    """Build §11 via LLM from research materials.
+
+    Structure (per reference v1.2.4):
+    11.1 盈利预测分析 — per-institution forecast table + 1-para analysis
+    11.2 估值分析     — 2-3 sentence overview + valuation dimensions table
+    11.3 情景推演     — core variables + 3 differentiated scenario rows
+    """
     targets = _collect_target_price_records(materials, ref_map, co, ticker, mkt)
-    basis_records = _select_target_price_basis_records(targets)
-    basis_map = basis_map if basis_map is not None else (_extract_target_price_basis(basis_records) if basis_records else {})
     values = [rec["target"] for rec in targets]
     stats = calculate_target_price_stats(values)
     unit = targets[0].get("unit", "") if targets else ""
-    consensus_text, consensus_meta = _build_consensus_forecast_section(materials)
-    materials["_consensus_forecast_output"] = consensus_meta
-    if consensus_meta.get("sample_count"):
-        _append_llm_issue("consensus_forecast", json.dumps(consensus_meta, ensure_ascii=False))
+    materials["_consensus_forecast_output"] = {}
 
-    valuation_rows = []
-    refs = []
-    for rec in targets:
-        rn = int(rec.get("rn") or 0)
-        if rn > 0 and rn not in refs:
-            refs.append(rn)
-    cites = _cite(refs[:6])
-    if stats.get("count", 0) >= 1:
-        valuation_rows.append(["机构目标价区间", f"{stats['low']:g}-{stats['high']:g}{unit}，样本{stats['count']}家", f"反映机构对未来盈利、估值口径和执行节奏的分歧{cites}"])
-    if stats.get("count", 0) >= 3:
-        valuation_rows.append(["机构目标价中位数", f"{stats['median']:g}{unit}，内部按样本排序计算", f"中位数用于观察主流预期位置，避免单一高低目标价主导判断{cites}"])
-    if consensus_meta.get("rows"):
-        valuation_rows.append(["盈利预测锚", f"样本{consensus_meta.get('sample_count', 0)}个，按机构预测中位数聚合", "作为 Forward PE 等估值维度的盈利端输入；缺少股价、EPS 或币种闭环时不强行计算倍数"])
-    if not valuation_rows and not consensus_text:
+    # collect all research excerpts for the prompt
+    target_research = "\n".join(
+        line for line in (
+            _research_line(rd, ref_map, max_text=600)
+            for rd in materials.get("research", {}).get("details", [])[:12]
+            if _source_matches_target(rd, co, ticker)
+        ) if line
+    )
+    if not target_research:
         return ""
-    lines = ["## 11 估值与预测", ""]
-    if consensus_text:
-        lines.append(consensus_text)
-        lines.append("")
-    if not valuation_rows:
-        return "\n".join(lines).strip()
-    lines.extend(["### 11.2 估值分析", "", "估值分析仅保留有来源或可确定性计算的维度；目标价统计可展示分歧位置，但不会反推出无来源估值参数。", "", "| 估值维度 | 当前水平 | 解读 |", "|:--|:--|:--|"])
-    for row in valuation_rows[:4]:
-        lines.append("| " + " | ".join(row) + " |")
-    if not targets:
-        lines.extend(["", "当前估值分析仅保留盈利预测锚，因缺少可回溯目标价、股价或倍数输入，未生成无来源估值倍数和情景推演。"])
-        return "\n".join(lines)
-    low_rec, high_rec = targets[0], targets[-1]
-    lines.extend(["", f"估值位置的核心含义在于分歧不是来自本文自行反推倍数，而是来自可回溯机构目标价样本。低位目标价对应{_basis_core_text(basis_map, low_rec)}，高位目标价对应{_basis_core_text(basis_map, high_rec)}，后续上修或下修主要取决于这些经营变量能否兑现{cites}。", ""])
 
-    variables = []
-    for rec in targets:
-        text = _basis_core_text(basis_map, rec)
-        if text and not re.search(r'目标价中位数|目标价区间|评级分布|正文未披露关键假设|估值方法未披露', text) and text not in variables:
-            variables.append(text)
-    for row in consensus_meta.get("rows", [])[:3]:
-        metric = row.get("metric")
-        year = row.get("forecast_year")
-        value = row.get("consensus_value")
-        row_unit = row.get("unit", "")
-        if metric and year and value is not None:
-            variables.append(f"{year}{metric}{value:g}{row_unit}")
-    variables = [v for v in dict.fromkeys(variables) if v][:4]
-    if len(variables) >= 3:
-        lines.extend(["### 11.3 情景推演", "", "核心变量"])
-        for i, var in enumerate(variables[:4], 1):
-            lines.append(f"- **核心变量{i}**：{var}，若兑现节奏偏离机构假设，将影响盈利预期、现金流或估值位置{cites}。")
-        mid = _nearest_median_record(targets, stats["median"]) if stats.get("median") else targets[len(targets)//2]
-        lines.extend(["", "| 情景 | 核心假设 | 经营含义 | 估值含义 |", "|:--|:--|:--|:--|"])
-        base_vars = "；".join(variables[:3])
-        lines.append(f"| 乐观 | {base_vars}均好于基准 | 收入、利润率或现金流改善快于主流预期 | 估值倍数或目标价方向上修 |")
-        lines.append(f"| 中性 | {base_vars}大体符合基准 | 经营变量大体符合当前机构中枢 | 估值围绕现有样本中枢波动 |")
-        lines.append(f"| 悲观 | {base_vars}低于基准 | 关键业务变量低于预期或成本压力扩大 | 估值倍数或目标价方向下修 |")
-        lines.append("")
-        lines.append(f"情景推演以可回溯业务变量、盈利预测和机构假设为锚，不新增无来源倍数。若后续核心变量连续两个报告期偏离中性假设，估值位置可能重新定价{cites}。")
-    return "\n".join(lines)
+    refs_guide = "\n".join(
+        f"  [{rn}] {v.get('title','')[:80]}"
+        for rn, v in sorted(ref_map.items())[:16]
+    )
+
+    # target price summary for 11.2
+    tp_summary = ""
+    if stats.get("count", 0) >= 1:
+        cites = _cite([int(r.get("rn") or 0) for r in targets[:6] if r.get("rn")])
+        tp_summary = (
+            f"机构目标价区间 {stats['low']:g}-{stats['high']:g}{unit}，样本{stats['count']}家"
+            f"{'，中位数' + str(stats['median']) + unit if stats.get('count', 0) >= 3 else ''}{cites}"
+        )
+
+    prompt = f"""You are a senior equity analyst. Generate §11 for {co} ({ticker}, {mkt}) using ONLY the research excerpts below.
+
+Output EXACTLY this structure in Chinese Markdown (no extra text):
+
+## 11 估值与预测
+
+### 11.1 盈利预测分析
+Table with columns: 指标 | 来源 | [Year1]E | [Year2]E | [Year3]E
+- Use 2-3 forecast years from the materials (e.g. 2026E 2027E 2028E)
+- One row per institution per metric (归母净利润/Non-IFRS归母净利润/营业收入/EPS — only if data found)
+- Cite [N] next to each number; leave cell blank if no data
+- After the table: 1 paragraph (50-120 Chinese chars) summarizing the forecast range, growth rate implied, and key divergence driver
+
+### 11.2 估值分析
+2-3 sentence overview (mention current PE/PB level and what it implies vs history/peers), then:
+| 估值维度 | 当前水平 | 解读 |
+|:--|:--|:--|
+- 3-5 rows: PE(TTM), PE(forward), PB, EV/EBITDA, SOTP — only rows with source-backed numbers; cite [N] next to numbers
+- After table: 1 sentence on key valuation conclusion
+
+### 11.3 情景推演
+核心变量 (3-5 bullet points with specific base values from materials):
+• **[variable name]**: [specific number/rate][N], sensitivity: [quantified impact if available]
+
+Then:
+| 情景 | 核心假设 | 经营含义 | 估值含义 |
+|:--|:--|:--|:--|
+| 乐观（概率约X%） | [different/higher assumptions with specific numbers][N] | [better revenue/profit outcome] | [higher PE/target price range][N] |
+| 中性（概率约X%） | [base-case assumptions with specific numbers][N] | [baseline outcome] | [base PE/target price][N] |
+| 悲观（概率约X%） | [different/lower assumptions with specific numbers][N] | [worse outcome] | [lower PE/target price range][N] |
+
+CRITICAL: The three scenario rows MUST have DIFFERENT assumptions and DIFFERENT target price ranges. Do NOT copy the same text into all three rows.
+Probabilities must sum to 100%.
+
+Target price context: {tp_summary or "（无可回溯目标价数据）"}
+
+Reference guide:
+{refs_guide}
+
+Research excerpts (cite [N] from above):
+{target_research[:4000]}
+"""
+    text, ok = _call_llm(prompt, max_tokens=3000,
+                         timeout=min(180, _hkus_llm_task_budget_seconds()),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
+                         call_name="section_11_llm")
+    if not ok or not text:
+        return ""
+    body = _clean_fence(text)
+    if "## 11" not in body and "### 11" not in body:
+        return ""
+    return body
 
 
 def _find_ref_no(ref_map: dict, target_id: str) -> int:
@@ -3849,6 +4106,9 @@ def _post_repair_static_validation(report: str, source_trace: dict) -> list[str]
 _TITLE_FORBIDDEN_TERMS = (
     "近期研报", "持续关注", "主业韧性：", "深度分析", "投资价值分析",
     "核心业务增长", "股份有限公司",
+    # 交接文档 v1.2.4 新增：禁止通用模板结论
+    "核心主业稳健", "基本面稳健", "估值有望修复", "新业务打开成长空间",
+    "深度分析", "基本面", "估值修复",
 )
 _TITLE_BAD_ENDINGS = tuple("、：:的利业，,；;")
 
@@ -3891,7 +4151,17 @@ def _valid_title_conclusion(text: str, company_name: str = "") -> bool:
     zh_len = _title_zh_len(text)
     if zh_len < 10 or zh_len > 30:
         return False
-    judgment_terms = ("驱动", "受益", "稳健", "韧性", "延续", "打开", "修复", "改善", "支撑", "增量", "需求", "利润率")
+    # 扩充判断词表：覆盖互联网/消费/科技/周期等行业常见表述
+    judgment_terms = (
+        "驱动", "受益", "稳健", "韧性", "延续", "打开", "修复", "改善", "支撑", "增量", "需求", "利润率",
+        # 互联网/平台常见
+        "商业化", "变现", "渗透", "用户", "增速", "加速", "提升", "放量", "超预期",
+        "广告", "收入", "利润", "现金流", "回购", "分红", "扩张", "拓展",
+        # 空头/分歧视角也算有效结论
+        "承压", "压力", "风险", "不确定", "下行", "收缩",
+        # 增长/回报类
+        "增长", "成长", "领先", "优势", "布局", "落地", "兑现", "验证",
+    )
     return any(term in text for term in judgment_terms)
 
 
