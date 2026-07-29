@@ -29,7 +29,7 @@ fetch_data.py — 公司一页纸数据采集脚本
       "announcements":   [ { ...ann_meta, "detail": getAnnouncementDetail 返回 }, ... ],
       "ann_types":       announcement_type 返回,
       "mgmt_discussion": management_discussion 返回,
-      "research_reports": [ { ...report_meta, "detail": None, "content": batchGetReportContent, "graph": report_graph }, ... ],
+      "research_reports": [ { ...report_meta, "detail": None, "content": batchGetReportContentDomestic/Foreign（按orgType分流）, "graph": report_graph }, ... ],
       "meetings":        [ { ...meeting_meta, "detail": getMeetingSummaryDetail 返回 }, ... ],
       "consensus":       research_sec_coredata 返回,
       "profit_forecast": research_sec_foredata 返回,
@@ -109,7 +109,7 @@ ALL_API_NAMES = [
     "stock_financial_indicator_revenue", "stock_financial_indicator_net_profit",
     "stock_financial_indicator_gross_margin", "stock_financial_indicator_earning_structure",
     "data_to_image",
-    "research_search", "batchGetReportContent",
+    "research_search",
     "batchGetReportContentDomestic", "batchGetReportContentForeign", "report_graph",
     "meeting_search", "getMeetingSummaryDetail",
     "research_sec_coredata", "research_sec_foredata",
@@ -139,54 +139,6 @@ def safe_get_data(resp_json):
     if code not in (1, "1", 200, "200", "success", "Success"):
         return None
     return resp_json.get("data")
-
-
-# ── Token 健康监测 ──────────────────────────────
-# 元信息接口(aladdin_llm_mgmt/web/whitelist)校验宽松，业务接口(aladdin_proxy/...)严格；
-# 当 token 被【截断】或失效时，业务接口返回 {code:-403, message:"Need login"}（HTTP 常仍是 200），
-# 数据被 safe_get_data 静默吞成 None，最终产出空报告。此计数器用于在采集阶段就把问题抛出来。
-_auth_fail_lock = threading.Lock()
-_auth_fail_count = 0
-
-
-def is_auth_failure(resp_json):
-    """判断响应体是否为鉴权失败（token 无效/截断/过期）。"""
-    if not isinstance(resp_json, dict):
-        return False
-    code = resp_json.get("code", resp_json.get("retCode"))
-    try:
-        if code is not None and int(code) in (-403, 403, 401, -401):
-            return True
-    except (TypeError, ValueError):
-        pass
-    msg = str(resp_json.get("message") or resp_json.get("msg")
-              or resp_json.get("retMsg") or "").lower()
-    return any(k in msg for k in ("need login", "not login", "please login",
-                                  "请登录", "未登录", "登录已过期"))
-
-
-def _note_auth_failure():
-    global _auth_fail_count
-    with _auth_fail_lock:
-        _auth_fail_count += 1
-
-
-def _print_token_diagnostic(token):
-    """token 截断/失效的醒目诊断（元信息通过但业务全 403 这一特殊态）。"""
-    tlen = len(token or "")
-    prefix = (token[:6] + "…") if tlen >= 6 else (token or "(空)")
-    line = "=" * 64
-    print("\n" + line)
-    print("❌❌ Token 校验失败：元信息接口通过，但业务接口返回 403 / Need login")
-    print(line)
-    print(f"  ► 当前 token：长度 {tlen} 位，前缀 {prefix}")
-    print("  ► 最可能原因：token 被【截断】或不完整")
-    print("     （真实 Datayes token 为 ≥32 位十六进制串；20 位多为 `head -c 20` 的截断值）")
-    print("  ► 正确做法：")
-    print("     1) 切勿用 head -c / cut / echo 截断或回显 token")
-    print("     2) export DATAYES_TOKEN=<完整token>")
-    print("     3) 运行命令时【去掉】--token 参数，脚本会自动读取完整 token")
-    print(line + "\n")
 
 
 def build_curl(method, url, params=None, body=None, token=""):
@@ -226,12 +178,9 @@ def call(method, url, token, params=None, body=None, timeout=25):
                     _t.sleep(wait)
                     continue
                 try:
-                    rj = r.json()
+                    return r.json(), r.status_code, None
                 except Exception:
                     return None, r.status_code, f"JSON解析失败: {r.text[:200]}"
-                if is_auth_failure(rj):
-                    _note_auth_failure()
-                return rj, r.status_code, None
             except requests.exceptions.Timeout:
                 return None, None, f"超时(>{timeout}s)"
             except Exception as e:
@@ -940,16 +889,15 @@ def fetch_announcements(meta, ticker, token, max_detail=3):
 
 
 # ─────────────────────────────────────────────
-# 研报链: research_search -> getReportDetail -> batchGetReportContent + report_graph
+# 研报链: research_search -> getReportDetail -> batchGetReportContentDomestic/Foreign + report_graph
 # ─────────────────────────────────────────────
 
 def fetch_research_reports(meta, ticker, company_name, token,
                            search_pages=2, max_detail=10):
-    """研报链路：research_search → batchGetReportContent + report_graph（并行）
+    """研报链路：research_search → batchGetReportContentDomestic/Foreign（按orgType分流）+ report_graph（并行）
     不再调用 getReportDetail，一次批量拉取所有研报全文。
     """
     search_url = meta.get("research_search", {}).get("url", "")
-    content_url = meta.get("batchGetReportContent", {}).get("url", "")
     graph_url = meta.get("report_graph", {}).get("url", "")
 
     if not search_url:
@@ -1348,21 +1296,6 @@ def generate_charts(meta, financial_data, main_comp_data, token,
 # 主流程
 # ─────────────────────────────────────────────
 
-def preflight_token(meta, ticker_input, token):
-    """业务接口鉴权预检：用 stock_search（业务接口）探一次。
-    元信息接口通过但此处返回 Need login → token 极可能被截断/失效。
-    返回 True 表示鉴权失败、应中止；网络/超时不算失败（避免误伤）。"""
-    url = meta.get("stock_search", {}).get("url", "")
-    if not url:
-        return False  # 无法探测，交给聚合兜底
-    q = (ticker_input or "600519").strip() or "600519"
-    rj, _status, err = call("GET", url, token,
-                            params={"query": q, "dataType": "1", "topK": "1"}, timeout=15)
-    if err or rj is None:
-        return False  # 网络/超时不判定为鉴权失败
-    return is_auth_failure(rj)
-
-
 def run(ticker_input, token, output_path):
     log = []
     errors = []
@@ -1383,15 +1316,6 @@ def run(ticker_input, token, output_path):
     meta = fetch_all_meta(token)
     ok_count = sum(1 for m in meta.values() if m.get("url"))
     print(f"  元信息获取完成: {ok_count}/{len(ALL_API_NAMES)} 个接口有URL")
-
-    # ── Token 健康预检：元信息宽松、业务严格；截断/失效 token 在此暴露，而非最后产出空报告
-    if ok_count == 0:
-        print("  ❌ 所有元信息接口均无 URL：token 无效或网络不可达，已中止。")
-        _print_token_diagnostic(token)
-        sys.exit(2)
-    if preflight_token(meta, ticker_input, token):
-        _print_token_diagnostic(token)
-        sys.exit(2)
 
     # ── Phase 2: 基础ID
     print("\n[2/5] 确认股票代码...")
@@ -1526,12 +1450,6 @@ def run(ticker_input, token, output_path):
     chart_ok = sum(1 for v in charts.values() if v)
     print(f"  图表生成: {chart_ok}/4 成功")
 
-    # ── 聚合兜底：若大量业务接口返回鉴权失败（预检漏网时），此处仍把问题抛出而非写空报告
-    if _auth_fail_count >= 5:
-        _print_token_diagnostic(token)
-        print(f"  （本次运行共 {_auth_fail_count} 个接口返回鉴权失败）")
-        sys.exit(2)
-
     # ── Phase 5: 汇总错误、保存
     print("\n[5/5] 保存结果...")
     result["__errors__"] = errors
@@ -1566,16 +1484,6 @@ def resolve_token(cli_token: str) -> str:
     4. 以上均无则打印申请地址并退出
     """
     if cli_token:
-        env_token = os.environ.get("DATAYES_TOKEN", "").strip()
-        # 截断前缀防护：--token 是完整 env token 的前缀且更短 → 极可能被 head -c 截断，改用完整环境变量
-        if (env_token and cli_token != env_token
-                and env_token.startswith(cli_token) and len(cli_token) < len(env_token)):
-            print(f"  ⚠️ --token（{len(cli_token)}位）疑似被截断（为 DATAYES_TOKEN 的前缀），"
-                  f"改用完整环境变量 token")
-            return env_token
-        if len(cli_token) < 32:
-            print(f"  ⚠️ --token 仅 {len(cli_token)} 位，Datayes token 通常 ≥32 位十六进制；"
-                  f"若业务接口报 403 请确认未被截断（建议改用 DATAYES_TOKEN 环境变量、去掉 --token）")
         return cli_token
 
     # 2. 环境变量

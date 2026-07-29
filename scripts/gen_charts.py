@@ -55,12 +55,15 @@ ALLOWED_HOSTS = {"gw.datayes.com", "api.datayes.com", "api.wmcloud.com", "r.data
 # 工具
 # ─────────────────────────────────────────────
 def load_token(token_arg):
-    """优先使用命令行参数，否则读取 ~/token.txt"""
+    """优先：环境变量 DATAYES_TOKEN → 命令行参数 → ~/token.txt → .datayes_token"""
+    if os.environ.get("DATAYES_TOKEN"):
+        return os.environ["DATAYES_TOKEN"].strip()
     if token_arg:
         return token_arg.strip()
     candidates = [
         os.path.expanduser("~/token.txt"),
         os.path.join(os.environ.get("USERPROFILE", ""), "token.txt"),
+        os.path.expanduser("~/.datayes_token"),
     ]
     for path in candidates:
         if path and os.path.isfile(path):

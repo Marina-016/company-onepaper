@@ -133,6 +133,17 @@ def set_table_borders(table, color: str = COLOR_TBL_BORDER, sz: str = "4"):
     tblPr.append(tblBorders)
 
 
+def set_cell_width(cell, width_dxa: int):
+    """设置单元格列宽（dxa单位，1 inch = 1440 dxa）"""
+    tc_pr = cell._tc.get_or_add_tcPr()
+    tc_w = tc_pr.find(qn("w:tcW"))
+    if tc_w is None:
+        tc_w = OxmlElement("w:tcW")
+        tc_pr.append(tc_w)
+    tc_w.set(qn("w:w"), str(width_dxa))
+    tc_w.set(qn("w:type"), "dxa")
+
+
 def add_superscript_run(para, text: str, size_pt: float = 7.0, color: RGBColor = COLOR_H3):
     """在段落中添加上标文字（用于角标引用）"""
     run = para.add_run(text)
@@ -353,20 +364,37 @@ def add_table_to_doc(doc: Document, headers: list, rows: list):
     table = doc.add_table(rows=1 + len(rows), cols=col_count)
     table.style = "Table Grid"
     table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.autofit = True
 
     # 设置边框
     set_table_borders(table, "2C587C", "4")
+
+    # ── 列宽分配（避免 Word 自动挤压窄列）──────────────────────────────
+    # 实际可用宽度：8.5 - 0.83*2 = 6.84 英寸 ≈ 9850 dxa，留 50 dxa
+    usable_w = 9800
+    if col_count <= 3:
+        col_widths = [usable_w // col_count] * col_count
+    elif col_count <= 6:
+        col_widths = [int(usable_w * 0.18)]  # 首列 18%
+        mid = (usable_w - col_widths[0]) // (col_count - 1)
+        col_widths += [mid] * (col_count - 1)
+    else:
+        first_w = int(usable_w * 0.15)
+        last_w  = int(usable_w * 0.18)
+        mid_w   = (usable_w - first_w - last_w) // (col_count - 2)
+        col_widths = [first_w] + [mid_w] * (col_count - 2) + [last_w]
 
     # 表头行
     header_row = table.rows[0]
     for j, hdr in enumerate(headers):
         cell = header_row.cells[j]
+        set_cell_width(cell, col_widths[j])
         set_cell_background(cell, COLOR_TBL_HEADER)
         para = cell.paragraphs[0]
         para.alignment = WD_ALIGN_PARAGRAPH.CENTER
         set_para_spacing(para, 2, 2, 1.2)
         run = para.add_run(hdr.strip())
-        set_run_font(run, 9.5, bold=True, color=COLOR_BODY)
+        set_run_font(run, 10, bold=True, color=COLOR_BODY)
 
     # 数据行（奇偶行交替背景）
     for ri, row in enumerate(rows):
@@ -374,6 +402,7 @@ def add_table_to_doc(doc: Document, headers: list, rows: list):
         fill = "FFFFFF" if ri % 2 == 0 else COLOR_TBL_ALT
         for j, cell_text in enumerate(row):
             cell = tr.cells[j]
+            set_cell_width(cell, col_widths[j])
             if fill != "FFFFFF":
                 set_cell_background(cell, fill)
             para = cell.paragraphs[0]
@@ -382,7 +411,7 @@ def add_table_to_doc(doc: Document, headers: list, rows: list):
             def run_adder(t, b, i):
                 r = para.add_run(t)
                 return r
-            add_inline_text(run_adder, cell_text.strip(), 9.5, COLOR_BODY, False, para=para)
+            add_inline_text(run_adder, cell_text.strip(), 10, COLOR_BODY, False, para=para)
 
     # 在表格后添加空行
     doc.add_paragraph().paragraph_format.space_after = Pt(6)
