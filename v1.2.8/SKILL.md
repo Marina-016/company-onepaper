@@ -1,13 +1,13 @@
 ﻿---
 name: datayes-company-onepaper
-version: v1.2.9
+version: v1.2.8
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径通过 Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
   当前版本强调真实数据、引用闭环、目标公司一致性、结构化质量门禁和自动修复。
-  当用户要求生成”一页纸””公司一页纸””股票研究报告””公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
+  当用户要求生成“一页纸”“公司一页纸”“股票研究报告”“公司研究报告”或输入股票名称/代码/公司名称要求分析时触发。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.9）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.8）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
@@ -16,7 +16,7 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.9 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
+当前文档只描述 **v1.2.8 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
 
 ## 执行要求
 运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
@@ -224,20 +224,7 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 ### 5.6 Tables, Sparse Data and Peer Comparison
 - 同业比较表必须是正式 Markdown 表格，不能只用纯文字描述行业格局。
 - 表头必须中文。
-
-**A 股同业比较表 schema（10 列，含"市值"，缺数据可删）**，权威定义见 `references/a-share-report-structure.md` §8.2：
-  - 竞争关系
-  - 公司（代码）
-  - 市场
-  - 可比业务
-  - 行业地位
-  - 相关业务进展
-  - 市值（缺数据可删列）
-  - 商业模式
-  - 目标客户群体
-  - 核心产品
-
-**港美股同业比较表 schema（9 列，不含"市值"）**：
+- 港美股统一同业比较表 schema 为 9 列：
   - 竞争关系
   - 公司（代码）
   - 市场
@@ -247,15 +234,7 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
   - 商业模式
   - 目标客户群体
   - 核心产品
-
-- Markdown 表头必须保持可正常渲染，A 股示例：
-
-```markdown
-| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |
-|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
-```
-
-港美股示例：
+- Markdown 表头必须保持可正常渲染，示例：
 
 ```markdown
 | 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
@@ -340,19 +319,6 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - `references/hk-us-quality-checklist.md`：港美股质量清单与检查项
 
 ## Appendix A. Version History
-
-### v1.2.9
-- **列表标记统一**：所有 LLM prompt 统一使用 `•`；新增 `_normalize_bullet_markers` 后处理，将 `-`/`*`/`1)`/`2)`/`3)`/`1）`/`2）`/`3）` 归一化为无缩进 `•`；`markdown_to_docx.py` 同步适配 `•` 行零缩进渲染。
-- **§2.1 标题强制检测**：`_enforce_v124_a_share_blocks` 增加 LLM 格式漂移兜底——若 `## 2` 后无 `### 2.1` 子标题，自动插入。
-- **调研问答格式精简**：LLM prompt 显式要求 Q/A 分两行；`_normalize_survey_qa_markdown` 从 17 行堆砌 regex 精简为 7 行核心模式，覆盖 `question:`/`answer:` → `**Q：**`/`**A：**`，末尾截断标注 `…[内容截断]`。
-- **§4.4 prompt 修复**：上一次 bullet 统一遗漏了 `gen_section4_deep` 的 §4.4 prompt，导致 LLM 仍输出 `1）2）3）`。现已改为 `•`；同时 `_normalize_bullet_markers` 正则扩展兼容 ASCII `)` 和全角 `）` 两种括号。
-- **profile long_term 模板**：`_a_share_profile` 中 §2.2 兜底模板的 `1）2）3）` → `•`。
-- **同业比较表 schema 分市场**：§5.6 拆分为 A 股 10 列（含市值，缺数据可删，见 `references/a-share-report-structure.md`）和港美股 9 列（不含市值），各附示例 Markdown 表头。
-- **风险提示去模板化**：`gen_section10` prompt 注入公司近况摘要、催化事件与禁止模板列表；profile 兜底风险替换为非通用表述；后处理关键词检测命中模板自动替换。
-- **§9.4 核心变量加冒号**：prompt `• **[变量]**：[数值]`（变量名与数值间补冒号）。
-- **§10 风险标题去双写**：enforcer 格式化修复 `split('风险')[0]` → `split('：')[0]`，消除"风险**：风险：**"双写。
-- **占位文本清洗**：`_normalize_final_markdown_format` 增加 `第X节：…` 正则移除 LLM 泄漏的章节标注。
-- **图表策略回退**：v1.2.9 初期尝试的图表本地化（`_download_chart_images`）已移除；图表保留远程 URL，由 `markdown_to_docx.py` 的 `try_insert_image` 负责 DOCX 嵌入，MD 预览与 DOCX 双通路均正常。
 
 ### v1.2.8
 - 标题生成重构：A 股和港美股统一为全文生成后读全文产出标题，移除 §§1&2 内嵌 title_conclusion。

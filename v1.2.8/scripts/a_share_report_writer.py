@@ -1471,13 +1471,13 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 ⚠️ 你刚刚写完第1节，其中已提及的具体事件名称和数字——第2节**不重复陈述这些事件**，直接分析其背后的驱动机制和投资空间。
 
 ### 2.1 短期逻辑（3-12个月催化剂）
-• **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
-• **[催化剂2标题]**：...（共3个要点）
+- **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
+- **[催化剂2标题]**：...（共3个要点）
 
 ### 2.2 长期逻辑（核心竞争力）
-• **[核心壁垒]**：[含市占率/规模量化数据，标注引用]
-• **[成长驱动力]**：[标注引用]
-• **[商业模式优势]**：[ROE/可持续性，标注引用]
+1） **[核心壁垒]**：[含市占率/规模量化数据，标注引用]
+2） **[成长驱动力]**：[标注引用]
+3） **[商业模式优势]**：[ROE/可持续性，标注引用]
 
 {_S123_SEP}
 
@@ -1543,9 +1543,9 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
         f"- **产品结构升级**：核心产品结构改善有望提升收入质量，主营构成数据提供业务拆分锚点{mcref}。\n"
         f"- **盈利兑现跟踪**：{latest_year}年收入约{latest_rev}、归母净利润约{latest_np}，后续重点看利润率和现金流同步性{fdref}。\n\n"
         "### 2.2 长期逻辑（核心竞争力）\n\n"
-        f"• **客户与交付壁垒**：{profile['business']}需要长期产品验证、规模交付和质量控制，头部客户导入形成竞争门槛{ref1}。\n"
-        f"• **技术与产品驱动**：核心技术迭代推动产品升级，公司核心产品线受益于行业升级{ref1}。\n"
-        f"• **规模与财务弹性**：收入体量、利润释放和费用摊薄共同决定中长期ROE修复空间，财务数据需持续跟踪{fdref}。"
+        f"1） **客户与交付壁垒**：{profile['business']}需要长期产品验证、规模交付和质量控制，头部客户导入形成竞争门槛{ref1}。\n"
+        f"2） **技术与产品驱动**：核心技术迭代推动产品升级，公司核心产品线受益于行业升级{ref1}。\n"
+        f"3） **规模与财务弹性**：收入体量、利润释放和费用摊薄共同决定中长期ROE修复空间，财务数据需持续跟踪{fdref}。"
     )
     rows = []
     for r in reports[:3]:
@@ -1686,13 +1686,13 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('mainc
 
 【格式要求】**总字数700字以内**（2.1+2.2合计）。
 ### 2.1 短期逻辑（3-12个月催化剂）
-• **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
-• **[催化剂2标题]**：...（共3个要点）
+- **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
+- **[催化剂2标题]**：...（共3个要点）
 
 ### 2.2 长期逻辑（核心竞争力）
-• **[核心壁垒]**：[含市占率/规模量化数据，标注引用，聚焦核心]
-• **[成长驱动力]**：[标注引用]
-• **[商业模式优势]**：[ROE/可持续性，标注引用]
+1） **[核心壁垒]**：[含市占率/规模量化数据，标注引用，聚焦核心]
+2） **[成长驱动力]**：[标注引用]
+3） **[商业模式优势]**：[ROE/可持续性，标注引用]
 
 > 注：短期逻辑侧重可验证的近期催化剂，长期逻辑侧重可持续竞争优势。本节所有数据须标注引用。*
 """
@@ -1828,9 +1828,9 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('mainc
 
 ### 4.4 核心竞争力与竞争优势
 
-• **[优势1标题]**：[2句量化支撑，标注引用]
-• **[优势2标题]**：[2句量化支撑，标注引用]
-• **[优势3标题]**：[2句量化支撑，标注引用]
+1） **[优势1标题]**：[2句量化支撑，标注引用]
+2） **[优势2标题]**：[2句量化支撑，标注引用]
+3） **[优势3标题]**：[2句量化支撑，标注引用]
 """
     return call_claude(client, prompt, max_tokens=1000)
 
@@ -1944,7 +1944,6 @@ def gen_section4_survey_qa(client, key_data: dict) -> str:
 
 输出格式要求：
 - ⚠️ **只能使用真实管理层原话，使用 **Q：** / **A：** 格式输出**
-- ⚠️ **Q 与 A 必须分两行——Q 一行、A 下一行，A 回答前必须换行**
 - ⚠️ **严禁编造 Q/A，严禁输出"建议调研："等任何建议性问题**
 - 每条末尾标注引用 [N]（若有对应引用编号）
 - 不引入原文中没有的信息
@@ -1962,59 +1961,13 @@ def _fallback_qa_from_raw(qa_blocks: list) -> str:
     输入 qa_blocks 格式：每条为 【日期 类型（机构调研）】\\n原始内容 或
     【日期 类型 标题】\\n原始内容。
     输出：**Q：** / **A：** 格式的 Markdown 文本，最多 5 组问答。
-
-    v1.2.9: 增加中文 N、...答:... 格式支持（海光信息等会议纪要格式）。
     """
     import re as _re
 
     qa_pairs = []
     for blk in qa_blocks[:4]:
-        # 提取引用标记（如 [{N}]）再剥离表头
-        ref_tag = ""
-        ref_m = _re.search(r'】\s*(\[\d+\])', blk)
-        if ref_m:
-            ref_tag = " " + ref_m.group(1)
         text = _re.sub(r'^【.*?】\n?', '', blk, flags=_re.MULTILINE)
-        # 也去掉残留的独立 [{N}] 行
-        text = _re.sub(r'^\s*\[\d+\]\s*$', '', text, flags=_re.MULTILINE)
-        text = text.strip()
-        if not text:
-            continue
-
-        # ── 路径1: 中文 N、...答:... 格式（如 "1、问题？答：回答"）──
-        chinese_qa = _re.split(r'(?:(?:^|\s)\d+[、.]\s*)', text)
-        # 去掉第一条（可能是"投资者关系活动主要内容介绍"等导语）
-        meaningful = []
-        for item in chinese_qa:
-            item = item.strip()
-            if not item:
-                continue
-            # 跳过纯导语（无答字且短）
-            if '答' not in item[:20] and len(item) < 50:
-                continue
-            meaningful.append(item)
-        if len(meaningful) >= 2:
-            # 尝试按 答[:：] 拆分每段
-            for item in meaningful:
-                parts = _re.split(r'(?:答)\s*[:：]\s*', item, maxsplit=1)
-                if len(parts) >= 2:
-                    q_text = parts[0].strip().rstrip('？?')
-                    a_text = parts[1].strip()
-                    # 从 Q 中去掉残留的编号
-                    q_text = _re.sub(r'^.*?[,，]?\s*', '', q_text, count=1) if len(q_text) > 40 else q_text
-                    # 截断过长 Q/A
-                    if len(q_text) > 200:
-                        q_text = q_text[:200] + '…'
-                    if len(a_text) > 400:
-                        cut = a_text[:400].rfind('。')
-                        a_text = a_text[:cut + 1] if cut > 200 else a_text[:400] + '…'
-                    qa_pairs.append(f"**Q：** {q_text}\n**A：** {a_text}{ref_tag}")
-                    if len(qa_pairs) >= 5:
-                        break
-            if qa_pairs:
-                break  # 路径1成功，跳过路径2
-
-        # ── 路径2: 标准 Q:/A: 格式 ──
+        # 按 QA: / Q1: / question: 等模式拆出问答对
         segments = _re.split(
             r'(?:(?:^|\n)\s*(?:QA\s*[环节]?\s*[:：]|Q\d*\s*[:：]\s*|question\s*\d*\s*[:：]\s*))',
             text, flags=_re.IGNORECASE
@@ -2023,18 +1976,20 @@ def _fallback_qa_from_raw(qa_blocks: list) -> str:
             seg = seg.strip()
             if not seg or len(seg) < 20:
                 continue
-            # 拆分 Q 和 A（支持 答: 和 A: 两种答案标记）
+            # 拆分 Q 和 A
             a_match = _re.split(
-                r'(?:(?:^|\n)\s*(?:A\d*\s*|答)\s*[:：]\s*)',
+                r'(?:(?:^|\n)\s*A\d*\s*[:：]\s*)',
                 seg, maxsplit=1, flags=_re.IGNORECASE
             )
             if len(a_match) >= 2 and a_match[0].strip() and a_match[1].strip():
                 q_text = a_match[0].strip()
                 a_text = a_match[1].strip()
+                # 截断过长的回答
                 if len(a_text) > 400:
+                    # 在句号处截断
                     cut = a_text[:400].rfind('。')
                     a_text = a_text[:cut + 1] if cut > 200 else a_text[:400] + '…'
-                qa_pairs.append(f"**Q：** {q_text}\n**A：** {a_text}{ref_tag}")
+                qa_pairs.append(f"**Q：** {q_text}\n**A：** {a_text}")
                 if len(qa_pairs) >= 5:
                     break
         if len(qa_pairs) >= 5:
@@ -2050,37 +2005,26 @@ def _fallback_qa_from_raw(qa_blocks: list) -> str:
 
 
 def _normalize_survey_qa_markdown(text: str) -> str:
-    """v1.2.9: 精简版——格式化 4.5 调研问答。
-    prompt 已要求 Q/A 分两行 + **Q：**/**A：** 格式，此处只做兜底清理：统一加粗标记、清理残余格式。
-    """
+    """Normalize 4.5 survey Q/A so Q and A render on separate lines.
+    v1.2.8-R1: 强化 A：前强制换行，确保每个回答独立成行。"""
     if not text:
         return ""
     t = str(text).strip()
     t = re.sub(r'\r\n?', '\n', t)
-    # 统一 Q：/A：加粗格式（前后 ** 均可选，覆盖全部变体）
-    t = re.sub(r'(?m)^(\s*)(?:\*\*)?Q[:：](?:\*\*)?\s*', r'\1**Q：** ', t)
-    t = re.sub(r'(?m)^(\s*)(?:\*\*)?A[:：](?:\*\*)?\s*', r'\1**A：** ', t)
-    # 清理残留空加粗 **A：**** 等
-    t = re.sub(r'(\*\*[AQ][:：]\*\*)\s*\*{1,2}\s*', r'\1 ', t)
-    # 兜底：同行内 A：前补换行（prompt 要求分两行，此处处理 LLM 不遵循的情况）
-    t = re.sub(r'(?<!\n)\*\*A[:：]\*\*', r'\n**A：** ', t)
-    t = re.sub(r'(?<=\S)\*\*A[:：]', r'\n**A：**', t)
-    # v1.2.9: 同行内 Q/A 标记拆分（粗体在冒号后且前无*）→ 换行 + 归一化
-    t = re.sub(r'(?<!\n)(?<!\*)(Q[:：]\*{1,2})', r'\n**\1', t)
-    t = re.sub(r'(?<!\n)(?<!\*)(A[:：]\*{1,2})', r'\n**\1', t)
-    # 英文小写 question:/answer: 兜底
-    t = re.sub(r'(?m)^\s*question\s*:\s*', '**Q：** ', t)
-    t = re.sub(r'(?m)^\s*answer\s*:\s*', '**A：** ', t)
-    # 合并多余空行
+    t = re.sub(r'\*\*Q[:：](.*?)A[:：]\*\*\s*', r'**Q：**\1\n**A：** ', t)  # 拆分同行 Q/A，无 re.S 避免跨行
+    t = re.sub(r'\*\*Q[:：]\*\*\s*', '**Q：** ', t)
+    t = re.sub(r'\*\*A[:：]\*\*\s*', '**A：** ', t)
+    t = re.sub(r'(\*\*A[:：]\*\*)\s*\*{1,2}\s*', r'\1 ', t)  # 清理 **A：** ** / **A：**** 等误加粗
+    t = re.sub(r'(?<!\n)\*\*A[:：]\*\*', r'\n**A：**', t)
+    t = re.sub(r'([？?])\s*A[:：]\s*', r'\1\n**A：** ', t)
+    t = re.sub(r'(?<!\n)(\*\*Q[:：]\*\*)', r'\n\1', t)
+    t = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', t)
+    t = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', t)
+    # v1.2.8-R1: 正文中松散 "A：" 前补换行（如 "A：xxx" 不在行首时）
+    t = re.sub(r'(?<=[。；])\s*A[:：](?=\s*\S)', r'\n**A：** ', t)
+    # v1.2.8-R1: 行内 "A：xxx" 且前面有中文标点 → 换行
+    t = re.sub(r'([。；？?！!\n])\s*\bA[:：](?=\s*\S)', r'\1\n**A：** ', t)
     t = re.sub(r'\n{3,}', '\n\n', t)
-    # 截断检测
-    lines = t.split('\n')
-    if lines:
-        last_line = lines[-1].strip()
-        if last_line and not re.search(r'[。！？；）」】…]$', last_line):
-            if any('一' <= c <= '鿿' for c in last_line[-1:]):
-                lines[-1] = lines[-1].rstrip() + '…[内容截断]'
-                t = '\n'.join(lines)
     return t.strip()
 
 
@@ -2131,11 +2075,10 @@ def gen_section4(client, key_data: dict) -> dict:
     )
     qa_instruction = (
         "### 4.5 机构调研核心问答\n"
-        "⚠️ **只输出真实管理层原话的 Q&A**；判断标准如下：\n"
-        "- 若原始内容中明确有管理层回答（管理层原话、公司回应），则输出\n"
+        "⚠️ **只输出真实管理层原话的 Q：/A： 格式**；判断标准如下：\n"
+        "- 若原始内容中明确有管理层回答（管理层原话、公司回应），则使用 **Q：** / **A：** 格式标注引用\n"
         "- **严禁编造Q/A，严禁输出'建议调研：'等任何建议性问题**\n"
         "- 若原始内容中完全没有可确认的管理层原话，则跳过本节（不输出任何内容）\n"
-        "- ⚠️ **格式铁则：每对QA的Q与A必须分两行输出**——**Q：**xxx 一行，**A：**xxx 下一行，A 回答前必须换行\n"
         "精选3-5组最有基本面价值的真实问答；不引入原文没有的信息；不含机构具体名称；总字数400字以内；\n"
         "**与4.1已描述的商业模式不重复**。"
         if has_qa else
@@ -2182,9 +2125,7 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
         s45_raw = parts_45[1].strip()
         # 跳过无数据提示
         if not re.search(r'无.*数据|留空|跳过', s45_raw) and len(s45_raw) > 30:
-            # v1.2.9: 格式合法性校验——必须包含 Q/A 标记，否则触发 fallback
-            if re.search(r'[QA][：:]|question\s*:|answer\s*:', s45_raw, re.IGNORECASE):
-                s45 = s45_raw
+            s45 = s45_raw
     # ── fallback：正则切分失败时尝试更宽松的匹配 ──
     if not s45 and has_qa:
         # 宽松切分：容忍 deepseek 等模型用 ## / ** / 无标题等变体
@@ -2202,17 +2143,6 @@ maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmt
     if not has_qa:
         s45 = ""  # 无调研/会议QA数据时强制清空，防止LLM从管理层讨论中编造无引用Q/A
     s45 = _normalize_survey_qa_markdown(s45)
-    # v1.2.9: Q&A 缺引用时，从 meetings+ref_map 提取 ref 补齐到每条 Answer 末尾
-    if s45 and has_qa and not re.search(r'\[\d+\]', s45):
-        ref_nums = []
-        for m in meetings[:5]:
-            key = "meeting_" + m["date"] + "_" + m["title"][:20]
-            n_val = str(ref_map.get(key, {}).get("n", ""))
-            if n_val and f"[{n_val}]" not in ref_nums:
-                ref_nums.append(f"[{n_val}]")
-        if ref_nums:
-            ref_str = "".join(ref_nums[:3])  # 最多3个引用，避免过长
-            s45 = re.sub(r'(\*\*A：\*\*[^\n]+)', r'\1' + ref_str, s45)
 
     return {"s4_profit_model": s41, "s4_survey_qa": s45}
 
@@ -2360,8 +2290,8 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
 **议题N：[议题名称]**
 背景：[1句话，不超过30字，含1个关键数字，标注引用]
-• 问题1）：[≤60字，具体可量化]
-• 问题2）：[≤60字，执行层面追问]
+- 问题1）：[≤60字，具体可量化]
+- 问题2）：[≤60字，执行层面追问]
 
 严格执行：背景≤30字，每个问题≤60字，不要超长叙述。
 """
@@ -2556,8 +2486,8 @@ valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
 ⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
 ⚠️ **每个核心变量只写当前数值和选择该变量作为核心驱动因素的理由，不要写敏感性区间**。
 ⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
-• **[业务驱动变量1]**：[数值][N]；[一句话说明为何是核心变量]
-• **[业务驱动变量2]**：[数值] [N]；[一句话说明，不同于变量1的来源]
+• **[业务驱动变量1]** [数值][N]；[一句话说明为何是核心变量]
+• **[业务驱动变量2]** [数值] [N]；[一句话说明，不同于变量1的来源]
 • ...（3-5个，每个变量有自己的独立引用）
 
 **情景推演表**：
@@ -2587,75 +2517,30 @@ X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多�
 
 
 def gen_section10(client, key_data: dict) -> str:
-    """10 风险提示（v1.2.9: 注入公司特有上下文，杜绝通用模板）"""
+    """10 风险提示"""
     reports = key_data["reports"]
     fin = key_data["fin"]
     name = key_data["name"]
     ref_map = key_data["ref_map"]
 
-    # v1.2.9: 提取公司特有的催化剂/事件/业务变化作为风险生成上下文
-    surveys = key_data.get("surveys", [])
-    meetings = key_data.get("meetings", [])
-    mc = key_data.get("mc", {})
-    catalysts_ctx = key_data.get("catalyst_table_ctx", "")
-
-    # 近况摘要：研报中最新的公司特有事件
-    recent_lines = []
-    for r in reports[:6]:
-        text = (r.get("content") or r.get("summary") or "")[:600]
-        # 提取含公司名的句子作为近况
-        for sent in re.split(r'[。\n]', text):
-            if name[:4] in sent and len(sent) > 15:
-                recent_lines.append(sent.strip())
-                if len(recent_lines) >= 3:
-                    break
-        if len(recent_lines) >= 3:
-            break
-    recent_context = "；".join(recent_lines[:3]) if recent_lines else ""
-
-    # 财务核心指标摘要
-    fin_snapshot = ""
-    if fin.get("latest"):
-        fl = fin["latest"]
-        fin_items = []
-        for k in ["total_revenue", "net_profit", "roe", "gross_margin", "net_margin",
-                   "debt_to_asset", "ocf_to_np"]:
-            v = fl.get(k)
-            if v is not None:
-                fin_items.append(f"{k}={v}")
-        fin_snapshot = " | ".join(fin_items[:6])
-
     prompt = f"""为 {name} 撰写"风险提示"章节（第10节）。
 
-⚠️ 铁则：必须针对 {name} 当前真实面临的、可验证的具体风险，禁止输出以下通用模板句式：
-  - "核心业务需求若放缓，收入增长可能低于预期"
-  - "行业竞争加剧可能压缩价格和利润率"
-  - "原材料、渠道或费用投入变化可能影响现金流"
-  - "宏观环境和政策变化可能影响估值与业绩兑现"
-  以上四条已被标记为无效模板，任何变体重述都视为失败。
-
-【公司近况摘要（必须从中提炼至少2条具体风险）】
-{recent_context}
-
-【催化事件】
-{catalysts_ctx[:600]}
-
-【财务数据核心指标】
-{fin_snapshot}
-
-【研报风险提示原文（提取具体风险点）】
+【研报风险提示内容】
 {_compact_reports(reports[:4])}
+
+【财务数据（识别财务风险指标）】
+{_compact_fin(fin)}
 
 【引用映射】
 {_refs_str(reports, ref_map, 4)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
 【格式要求】**全节严格控制在250字以内**，输出3-4条风险（不要5条），每条1-2句话，每条格式：
-• **风险标题**：用 {name} 当前真实面临的具名风险（如"XX政策落地不及预期""XX产品批价承压"），禁止泛称"行业竞争""宏观政策" + 量化影响（标注引用或注明"基于[N]推算"）
+• **风险标题**：一句话描述核心风险 + 量化影响（如"若X发生，预计净利润下滑XX%"），标注引用（量化影响的估算数字也须标注来源，若为模型推断注明"基于[N]推算"）
 
-**重要**：每条风险合计不超过60字，宁可少写一条也不要超字数。风险标题中必须出现 {name} 当下的具体业务/产品/渠道/政策名称，不能笼统。
+**重要**：每条风险合计不超过60字，宁可少写一条，也不要超字数。风险须针对本公司特有风险，不泛泛而谈。
 """
-    return call_claude(client, prompt, max_tokens=600)
+    return call_claude(client, prompt, max_tokens=500)
 
 
 def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
@@ -2969,10 +2854,10 @@ def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) ->
             ("2026-Q4（预期）", "年度经营指引更新", "影响估值倍数"),
         ],
         "risks": [
-            "关键假设不及预期的风险：盈利预测依赖核心产品量价、费用率等假设，若实际值与假设偏差较大可能影响估值判断。",
-            "数据缺失风险：部分结构化接口未能返回完整财务或业务数据，结论基于已获取数据，需持续跟踪后续披露。",
-            "模型不确定性风险：基于当前可得信息的分析存在固有局限，市场环境或公司战略的重大变化可能导致结论失效。",
-            "本报告不构成投资建议：所有分析基于公开数据和合理推演，投资者应独立判断并承担投资风险。",
+            "核心业务需求若放缓，收入增长可能低于预期。",
+            "行业竞争加剧可能压缩价格和利润率。",
+            "原材料、渠道或费用投入变化可能影响现金流。",
+            "宏观环境和政策变化可能影响估值与业绩兑现。",
         ],
         "chain": "- **上游**：关注关键原材料、技术和服务供给。\n- **中游**：关注公司制造、服务和运营效率。\n- **下游**：关注客户需求、渠道库存和价格变化。",
         "questions": "- 核心业务收入和订单趋势如何？\n- 毛利率和费用率变化是否可持续？\n- 行业竞争格局是否影响价格？\n- 现金流和资本开支是否匹配增长节奏？",
@@ -3953,35 +3838,12 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
             # 8.2 整节不存在时，在 ## 9 前插入
             md_content = re.sub(r'(?=\n## 9 )', f"\n{peer_table_str}\n", md_content, count=1)
 
-    # v1.2.9: §2.1 短期逻辑标题强制检测（LLM 格式漂移时可能丢失）
-    _s2_match = re.search(r'(## 2 核心投资逻辑\n\n)(.*?)(?=\n### 2\.2|\n## 3 )', md_content, re.DOTALL)
-    if _s2_match:
-        _s2_body = _s2_match.group(2)
-        if '### 2.1' not in _s2_body and '2.1' not in _s2_body:
-            # 在 ## 2 后的第一个内容行前插入 ### 2.1
-            md_content = md_content.replace(
-                _s2_match.group(0),
-                _s2_match.group(1) + "### 2.1 短期逻辑\n\n" + _s2_body,
-                1
-            )
-
     # Ensure risk section contains publishable bullets if LLM returned a short error.
     risk_pat = r'(## 10 风险提示\n\n)(.*?)(?=\n## 参考资料|\n---\n\n## 参考资料)'
     risk = re.search(risk_pat, md_content, re.DOTALL)
-    # v1.2.9: 通用模板关键词，命中任一即判定为无效风险
-    _generic_risk_patterns = [
-        r'核心业务需求若放缓', r'行业竞争加剧可能压缩', r'原材料.*渠道.*费用投入',
-        r'宏观环境和政策变化可能影响', r'收入增长可能低于预期',
-    ]
-    if risk:
-        risk_body_text = risk.group(2)
-        bullet_count = len(re.findall(r'^\s*[-*]\s+', risk_body_text, re.M))
-        has_generic = any(re.search(p, risk_body_text) for p in _generic_risk_patterns)
-        if bullet_count < 3 or has_generic:
-            if has_generic:
-                print(f"  ⚠ v1.2.9: §10 风险提示含通用模板，替换为摘要")
-            risk_body = "\n".join(f"• **{r.split('：')[0]}**：{r.split('：', 1)[1] if '：' in r else r}" for r in profile["risks"][:4])
-            md_content = re.sub(risk_pat, rf'\1{risk_body}', md_content, count=1, flags=re.DOTALL)
+    if risk and len(re.findall(r'^\s*[-*]\s+', risk.group(2), re.M)) < 4:
+        risk_body = "\n".join(f"- **{r.split('可能')[0].rstrip('，。')}风险**：{r}" for r in profile["risks"][:4])
+        md_content = re.sub(risk_pat, rf'\1{risk_body}', md_content, count=1, flags=re.DOTALL)
 
     def _fill_empty(pattern: str, replacement: str) -> None:
         nonlocal md_content
@@ -4495,107 +4357,17 @@ def _dedent_body_paragraphs(md_text: str) -> str:
     return '\n'.join(result)
 
 
-def _fix_truncated_chinese(md_text: str) -> str:
-    """v1.2.9: 检测并修复中文截断——加粗文本末尾断字、段落末尾缺标点。
-
-    两种常见截断模式：
-    1. **加粗文本** 末尾是残缺中文（如 "**板块估值修复契**" 缺 "机"字）
-    2. 正文段落末尾无中文标点（。！？；）」】…）结尾
-    修复策略：移除残缺加粗片段、在截断处标注。
-    """
-    if not md_text:
-        return md_text
-
-    def _chinese_end_ok(end_char: str) -> bool:
-        """中文正常结尾：标点、英文、数字、右括号、空白"""
-        if not end_char:
-            return True
-        if end_char in '。！？；）」】…\'"”':
-            return True
-        if 'a' <= end_char.lower() <= 'z' or '0' <= end_char <= '9':
-            return True
-        if end_char in '>%‰‱':
-            return True
-        return False
-
-    # 模式1: 已移除——加粗纯中文无法区分完整词与截断词（如"契机"vs"契"），
-    # 导致大量误报（"出海规模化放量构筑利润引擎"被误标为截断）。
-    # 中文截断检测仅保留模式2（短段落末尾）。
-
-    # 模式2: 短段落末尾截断检测——仅检查短行（≤50字）末尾为汉字无标点的情况
-    lines = md_text.split('\n')
-    result = []
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if not stripped:
-            result.append(line)
-            continue
-        # 跳过非正文行
-        if (re.match(r'^#{1,6}\s', stripped)
-                or stripped.startswith('|')
-                or re.match(r'^[-*•·●►]\s', stripped)
-                or stripped.startswith('```')
-                or stripped.startswith('![')
-                or re.match(r'^\[v?\d', stripped)):
-            result.append(line)
-            continue
-        # 仅短行（≤50字）末为纯汉字才检查：如长段末位是正常正文结束，不处理
-        last_char = stripped[-1] if stripped else ''
-        if len(stripped) <= 50 and '一' <= last_char <= '鿿':
-            result.append(line.rstrip() + '…')
-        else:
-            result.append(line)
-    return '\n'.join(result)
-
-
-def _normalize_bullet_markers(md_text: str) -> str:
-    """v1.2.9: 统一列表标记为无缩进 •，消除 -/*/1）2）3）混用。
-
-    只处理行首（允许前导空白）的列表标记，不处理表格/代码/图片/标题。
-    """
-    if not md_text:
-        return md_text
-    lines = md_text.split('\n')
-    result = []
-    for line in lines:
-        s = line.strip()
-        if not s:
-            result.append(line)
-            continue
-        # 跳过非正文行
-        if s.startswith('#') or s.startswith('|') or s.startswith('![') or s.startswith('```'):
-            result.append(line)
-            continue
-        # 转换: "- text" / "* text" → "• text"
-        m = re.match(r'^(\s*)(-|\*)\s+(.+)$', line)
-        if m:
-            result.append(f'{m.group(1)}• {m.group(3)}')
-            continue
-        # 转换: "1）text" / "1) text" / "2）text" / "3）text" → "• text"
-        m = re.match(r'^(\s*)[123][\)）]\s*(.+)$', line)
-        if m:
-            result.append(f'{m.group(1)}• {m.group(2)}')
-            continue
-        result.append(line)
-    return '\n'.join(result)
-
-
 def _normalize_final_markdown_format(md_text: str) -> str:
     """Final format guardrails for LLM markdown drift.
-    v1.2.8-R1: 正则正文段落去除前导缩进空格，Q/A 换行强化。
-    v1.2.9: 增加中文截断检测。"""
+    v1.2.8-R1: 正则正文段落去除前导缩进空格，Q/A 换行强化。"""
     if not md_text:
         return md_text
     md_text = _strip_bold_from_markdown_headings(md_text)
     md_text = _normalize_section1_recent_format(md_text)
-    # v1.2.9: 清理 LLM 输出的 "第X节：..." 占位文本（prompt 要求不输出但 LLM 仍可能泄漏）
-    md_text = re.sub(r'(?m)^第\d节：[一-龥A-Za-z]+…?\s*$', '', md_text)
-    # v1.2.9: 列表标记归一化（-/*/1）2）3）→ • 无缩进）——必须在 dedent 之前，保证 • 行被后续去缩进处理
-    md_text = _normalize_bullet_markers(md_text)
+    md_text = re.sub(r'(?m)^(\s*)Q[:：]\s*(.+)$', r'\1**Q：** \2', md_text)
+    md_text = re.sub(r'(?m)^(\s*)A[:：]\s*(.+)$', r'\1**A：** \2', md_text)
     # v1.2.8-R1: 去除正文段落前导缩进（非标题/非表格/非列表/非代码/非图片行）
     md_text = _dedent_body_paragraphs(md_text)
-    # v1.2.9: 中文截断检测与修复
-    md_text = _fix_truncated_chinese(md_text)
     return md_text
 
 
