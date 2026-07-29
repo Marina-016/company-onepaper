@@ -718,8 +718,10 @@ def check_data_integrity(content: str, market: str) -> GateResult:
     body, ref_part, ref_start = _extract_body_and_refs(content, market)
 
     # D1: 核心章节无引用 (check8)
+    valuation_section_no = 9 if str(market).upper() == "A" else 11
+    next_no = 10 if valuation_section_no == 9 else 12
     core_patterns = {
-        "估值与预测": r'## (?:9|11) .*?(?=## (?:10|12)|\Z)',
+        "估值与预测": rf'## {valuation_section_no} .*?(?=## {next_no} |\Z)',
     }
     for sec_name, pattern in core_patterns.items():
         m = re.search(pattern, content, re.DOTALL)
@@ -1485,7 +1487,7 @@ def check_section_quality(content: str, market: str) -> GateResult:
                 gate.issues.append(Issue("Section", "E11f", P2,
                     "§10市场分歧为3个主题，可生成但建议补足至4个以上", "AUDIT-P2"))
             if len(rows) >= 3:
-                for col_idx, label in [(2, "\u7a7a\u5934\u89c2\u70b9"), (3, "\u9a8c\u8bc1\u70b9")]:
+                for col_idx, label in [(2, "\u7a7a\u5934\u89c2\u70b9"), (4, "\u9a8c\u8bc1\u70b9")]:
                     values = [r[col_idx] for r in rows if len(r) > col_idx and r[col_idx]]
                     repeated = [v for v, cnt in Counter(values).items() if cnt >= 3]
                     if repeated:
@@ -1577,6 +1579,7 @@ def check_section_quality(content: str, market: str) -> GateResult:
 
     # ── r11b: §9 §10 §11 enhanced checks ──
     _r11b_section_quality_checks(gate, content)
+    _r11f_section_contract_checks(gate, content, market)
     _update_gate(gate)
     return gate
 
@@ -1607,6 +1610,82 @@ def _topic_jaccard(a: str, b: str) -> float:
     return len(sa & sb) / max(1, len(sa | sb)) if sa and sb else 0.0
 
 
+def _r11f_section_contract_checks(gate, content, market):
+    """r11f active HK/US section contract checks."""
+    if str(market).upper() not in {"HK", "US"}:
+        return
+    sec5 = _find_section(content, [r'## 5 .*?(?=## 6 |\Z)'])
+    for sub in ("5.1", "5.2", "5.3"):
+        if sec5 and f"### {sub}" not in sec5:
+            gate.issues.append(Issue("Section", f"R11F_S5_{sub.replace('.', '_')}", P1,
+                f"§5缺少{sub}固定小节", "r11f-P1"))
+
+    sec6 = _find_section(content, [r'## 6 .*?(?=## 7 |\Z)'])
+    if sec6:
+        tables = _extract_tables(sec6)
+        if tables:
+            header = [c.strip() for c in tables[0].splitlines()[0].split("|")[1:-1]]
+            if len(header) != 3:
+                gate.issues.append(Issue("Section", "R11F_S6_SCHEMA", P1,
+                    "§6产销链表格应为三列", "r11f-P1"))
+
+    sec8 = _find_section(content, [r'## 8 .*?(?=## 9 |\Z)'])
+    if str(market).upper() == "HK":
+        if sec8 and "市场关注 / 调研大纲" not in sec8.splitlines()[0]:
+            gate.issues.append(Issue("Section", "R11F_S8_HK_TITLE", P1,
+                "港股§8标题必须为市场关注 / 调研大纲", "r11f-P1"))
+        if sec8 and not re.search(r'议题\d+：|问题1', sec8):
+            gate.issues.append(Issue("Section", "R11F_S8_HK_AGENDA", P1,
+                "港股§8必须包含调研议题", "r11f-P1"))
+    else:
+        if sec8 and re.search(r'调研大纲|议题\d+：|问题1', sec8):
+            gate.issues.append(Issue("Section", "R11F_S8_US_AGENDA", P1,
+                "美股§8不得输出调研大纲", "r11f-P1"))
+
+    sec10 = _find_section(content, [r'## 10 .*?(?=## 11 |\Z)'])
+    for tbl in _extract_tables(sec10) if sec10 else []:
+        header = [c.strip() for c in tbl.splitlines()[0].split("|")[1:-1]]
+        if any("多头" in h for h in header) and len(header) != 5:
+            gate.issues.append(Issue("Section", "R11F_S10_SCHEMA", P1,
+                "§10市场分歧必须为五列表：多头观点|多头证据|空头观点|空头证据|需要观察的验证点", "r11f-P1"))
+
+    sec11 = _find_section(content, [r'## 11 .*?(?=## 12 |\Z)'])
+    if sec11:
+        if re.search(r'11\.4|机构目标价汇总|目标价区间与市场隐含预期', sec11):
+            gate.issues.append(Issue("Section", "R11F_S11_OLD_SCHEMA", P1,
+                "§11不得再输出旧11.1机构目标价汇总、旧11.2目标价区间或11.4", "r11f-P1"))
+        allowed = re.findall(r'### 11\.(\d)', sec11)
+        bad = [x for x in allowed if x not in {"1", "2", "3"}]
+        if bad:
+            gate.issues.append(Issue("Section", "R11F_S11_SUBSECTIONS", P1,
+                f"§11只允许11.1/11.2/11.3，发现{bad}", "r11f-P1"))
+        if "### 11.2" in sec11:
+            sec112 = _find_section(sec11, [r'### 11\.2 .*?(?=### 11\.3|\Z)'])
+            tables = _extract_tables(sec112)
+            if tables:
+                header = [c.strip() for c in tables[0].splitlines()[0].split("|")[1:-1]]
+                if header != ["估值维度", "当前水平", "解读"]:
+                    gate.issues.append(Issue("Section", "R11F_S112_SCHEMA", P1,
+                        "§11.2表头必须为估值维度|当前水平|解读", "r11f-P1"))
+
+    sec12 = _find_section(content, [r'## 12 .*?(?=## 13 |## 参考资料|\Z)'])
+    if sec12:
+        bullets = re.findall(r'^[\*\-]\s+(.+)$', sec12, re.M)
+        if not (4 <= len(bullets) <= 6):
+            gate.issues.append(Issue("Section", "R11F_S12_COUNT", P1,
+                f"§12风险提示应为4-6条，当前{len(bullets)}条", "r11f-P1"))
+        for bullet in bullets:
+            if not re.search(r'^\*\*[^*]{2,30}\*\*：[^*]+?\[\d+\]', bullet):
+                gate.issues.append(Issue("Section", "R11F_S12_FORMAT", P1,
+                    "§12风险必须为加粗标题 + 一句解释 + 引用", "r11f-P1"))
+                break
+            after = re.sub(r'^\*\*[^*]+\*\*：', '', bullet)
+            if re.match(r'^\*\*.*\*\*$', after.strip()):
+                gate.issues.append(Issue("Section", "R11F_S12_BODY_BOLD", P1,
+                    "§12风险解释部分不得整体加粗", "r11f-P1"))
+                break
+
+
 def _r11b_section_quality_checks(gate, content):
     """r11b: enhanced §9 §10 §11 quality checks."""
     sec9_body = _find_section(content, [r'## 9 ' + '行业对比.*?(?=## 10 |\\Z)'])
@@ -1628,14 +1707,14 @@ def _r11b_section_quality_checks(gate, content):
                         and "多头观点" not in r]
     if not sec10_table_rows:
         gate.issues.append(Issue("Section", "E10a", P1,
-            "§10市场分歧为空——必须输出4-6行多空对照四列表", "r11b-P1"))
+            "§10市场分歧为空——必须输出3-5行多空对照五列表", "r11f-P1"))
     valid_db = [r for r in sec10_table_rows]
-    if len(valid_db) < 4:
+    if len(valid_db) < 3:
         gate.issues.append(Issue("Section", "E10b", P1,
-            f"§10仅{len(valid_db)}行有效分歧(期望4-6行)", "r11b-P1"))
-    elif len(valid_db) > 6:
+            f"§10仅{len(valid_db)}行有效分歧(期望3-5行)", "r11f-P1"))
+    elif len(valid_db) > 5:
         gate.issues.append(Issue("Section", "E10d", P1,
-            f"§10有效分歧超过6行(当前{len(valid_db)}行)", "r11d-P1"))
+            f"§10有效分歧超过5行(当前{len(valid_db)}行)", "r11f-P1"))
     if sec10_body:
         for tbl in _extract_tables(sec10_body):
             lines = [l for l in tbl.splitlines() if l.strip().startswith("|")]
@@ -1644,7 +1723,7 @@ def _r11b_section_quality_checks(gate, content):
             header = [c.strip() for c in lines[0].split("|")[1:-1]]
             if not any("多头" in h for h in header):
                 continue
-            if len(header) != 4:
+            if len(header) != 5:
                 gate.issues.append(Issue("Section", "E10_SCHEMA", P1,
                     "§10市场分歧必须是4列表格: 多头观点|证据|空头观点|验证点", "r11d-P1"))
             data = []
@@ -1652,16 +1731,22 @@ def _r11b_section_quality_checks(gate, content):
                 if re.match(r'^\|\s*:?-+', line):
                     continue
                 cells = [c.strip() for c in line.split("|")[1:-1]]
-                if len(cells) < 4:
+                for cell in cells:
+                    refs = _cell_refs(cell)
+                    if len(refs) != len(set(refs)):
+                        gate.issues.append(Issue("Section", "E10_REF_DUP", P1,
+                            "§10单元格存在重复引用", "r11d-P1"))
+                        break
+                if len(cells) < 5:
                     continue
                 data.append(cells)
-                if any(not re.sub(r'\[\d+\]', '', c).strip() for c in cells[:4]):
+                if any(not re.sub(r'\[\d+\]', '', c).strip() for c in cells[:5]):
                     gate.issues.append(Issue("Section", "E10_EMPTY_CELL", P1,
                         "§10市场分歧存在空单元格", "r11d-P1"))
                 if not _cell_refs(cells[1]):
                     gate.issues.append(Issue("Section", "E10_EVIDENCE_REF", P1,
                         "§10证据列缺少引用", "r11d-P1"))
-                if not _cell_refs(cells[3]):
+                if not _cell_refs(cells[4]):
                     gate.issues.append(Issue("Section", "E10_VALIDATION_REF", P1,
                         "§10验证点缺少引用", "r11d-P1"))
                 for cell in cells:
@@ -1755,6 +1840,8 @@ def _r11b_section_quality_checks(gate, content):
                         f"§11.2中位数错误: 报告写{float(rep.group(1)):g}，应为{correct:g}", "r11b-P1"))
     sec11_3 = _find_section(content, [r'### 11\.3 ' + '.*?(?=### 11\\.[4]|## 12|\\Z)'])
     if sec11_3:
+        if "核心变量" in sec11_3 and "情景" in sec11_3:
+            return
         required_terms = ["目标价分布", "估值分歧来源", "验证框架"]
         missing_terms = [t for t in required_terms if t not in sec11_3]
         if missing_terms:
@@ -2130,6 +2217,10 @@ def check_target_price_binding(content: str, market: str, md_dir: str = ".") -> 
     """Verify §11.1 org-target-ref rows bind to the same source record."""
     gate = GateResult(name="Target Binding")
     if market not in ("HK", "US"):
+        _update_gate(gate)
+        return gate
+
+    if re.search(r'### 11\.1\s+一致预期', content):
         _update_gate(gate)
         return gate
 

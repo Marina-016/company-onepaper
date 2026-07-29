@@ -272,7 +272,7 @@ class TestArticleIdBinding(unittest.TestCase):
             self.assertIn("1", result)
             self.assertNotIn("9", result)
             self.assertEqual(result["1"]["target_price_basis"], "研报披露目标价,正文未披露估值方法")
-            self.assertEqual(result["1"]["key_assumptions"], "正文未披露可验证的关键假设")
+            self.assertEqual(result["1"]["key_assumptions"], "估值方法未披露")
         finally:
             mod._call_llm = orig
 
@@ -333,7 +333,7 @@ class TestArticleIdBinding(unittest.TestCase):
             self.assertIn("1", result)
             self.assertIn("2", result)
             self.assertEqual(result["2"]["target_price_basis"], "研报披露目标价,正文未披露估值方法")
-            self.assertEqual(result["2"]["key_assumptions"], "正文未披露可验证的关键假设")
+            self.assertEqual(result["2"]["key_assumptions"], "估值方法未披露")
         finally:
             mod._call_llm = orig
 

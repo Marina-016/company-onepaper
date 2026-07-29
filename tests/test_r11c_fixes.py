@@ -149,8 +149,9 @@ class TestValuationAndStatus(unittest.TestCase):
             sec = writer._build_valuation_section(materials, ref_map, "舜宇光学科技", "02382.HK", "HK")
         finally:
             writer._call_llm = old
-        self.assertIn("### 11.3", sec)
-        self.assertRegex(sec, r"11\.1.*\[1\]\[2\]\[3\]")
+        self.assertNotIn("### 11.3", sec)
+        for ref in ("[1]", "[2]", "[3]"):
+            self.assertIn(ref, sec)
 
     def test_generation_status_ok_has_no_g0(self):
         with tempfile.TemporaryDirectory() as d:

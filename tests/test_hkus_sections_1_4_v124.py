@@ -84,7 +84,7 @@ class SectionsJsonTests(unittest.TestCase):
 
     def test_complete_json_renders_sections_1_4(self):
         self._mock_llm([(json.dumps(_payload(), ensure_ascii=False), True)])
-        sections, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        sections, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertTrue(ok, meta)
         self.assertIn("## 1 关键要点", sections["s12"])
         self.assertIn("## 4 催化事件时间表", sections["s34"])
@@ -94,14 +94,14 @@ class SectionsJsonTests(unittest.TestCase):
 
     def test_fenced_json_cleanup(self):
         self._mock_llm([("```json\n" + json.dumps(_payload(), ensure_ascii=False) + "\n```", True)])
-        _, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        _, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertTrue(ok, meta)
 
     def test_missing_section_fails(self):
         bad = _payload()
         bad.pop("section_4")
         self._mock_llm([(json.dumps(bad, ensure_ascii=False), True), (json.dumps(bad, ensure_ascii=False), True), (json.dumps(bad, ensure_ascii=False), True)])
-        _, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        _, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertFalse(ok)
         self.assertIn("failed", meta["call_mode"])
 
@@ -109,7 +109,7 @@ class SectionsJsonTests(unittest.TestCase):
         bad = _payload()
         bad["section_4"]["catalysts"] = bad["section_4"]["catalysts"][:3]
         self._mock_llm([(json.dumps(bad, ensure_ascii=False), True)] * 4)
-        _, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        _, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertFalse(ok)
         self.assertTrue(any("section_4.catalysts_count" in x for x in meta["schema_issues"]))
 
@@ -118,7 +118,7 @@ class SectionsJsonTests(unittest.TestCase):
             bad = _payload()
             bad["section_1"]["key_points"][0]["source_refs"] = refs
             self._mock_llm([(json.dumps(bad, ensure_ascii=False), True)] * 4)
-            _, ok, _ = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+            _, ok, _ = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
             self.assertFalse(ok)
 
     def test_section1_over_four_fails(self):
@@ -126,7 +126,7 @@ class SectionsJsonTests(unittest.TestCase):
         bad["section_1"]["key_points"].append({"keyword": "估值", "statement": "估值修复依赖收入和利润持续改善", "source_refs": [5]})
         bad["section_1"]["key_points"].append({"keyword": "需求", "statement": "需求恢复继续支撑增长和现金流改善", "source_refs": [6]})
         self._mock_llm([(json.dumps(bad, ensure_ascii=False), True)] * 4)
-        _, ok, _ = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        _, ok, _ = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertFalse(ok)
 
     def test_combined_fail_then_split_succeeds(self):
@@ -139,14 +139,14 @@ class SectionsJsonTests(unittest.TestCase):
             (json.dumps(part12, ensure_ascii=False), True),
             (json.dumps(part34, ensure_ascii=False), True),
         ])
-        _, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        _, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertTrue(ok, meta)
         self.assertEqual(meta["call_mode"], "ok_json_split")
         self.assertEqual(calls["n"], 4)
 
     def test_both_combined_and_split_fail_no_semantic_fallback(self):
         self._mock_llm([("not json", True)] * 4)
-        sections, ok, meta = writer.gen_hkus_sections_1_2_4(_key_data(), _ref_map())
+        sections, ok, meta = writer._legacy_gen_hkus_ch1_to_4_unused(_key_data(), _ref_map())
         self.assertFalse(ok)
         self.assertEqual(sections, {})
         self.assertEqual(meta["call_mode"], "failed_schema")
@@ -169,15 +169,16 @@ class SectionsJsonTests(unittest.TestCase):
         self.assertIn("| 关注点 | 市场在担心什么 | 需要验证的数据 |", sec8)
         sec12, issues12 = writer._validate_render_section_12(
             {"risks": [
-                {"title": "收入修复不及预期", "source_refs": [1]},
-                {"title": "费用投入高于预期", "source_refs": [2]},
-                {"title": "现金流承压风险", "source_refs": [3]},
-                {"title": "监管政策变化风险", "source_refs": [4]},
+                {"title": "收入修复不及预期", "explanation": "若订单交付低于预期，将影响收入和利润率", "source_refs": [1]},
+                {"title": "费用投入高于预期", "explanation": "若研发投入持续高于预期，将压制利润释放", "source_refs": [2]},
+                {"title": "现金流承压风险", "explanation": "若资本开支高于预期，将影响自由现金流", "source_refs": [3]},
+                {"title": "监管政策变化风险", "explanation": "若监管要求收紧，将影响产品上线和商业化节奏", "source_refs": [4]},
             ]},
             _ref_map(),
         )
         self.assertFalse(issues12)
-        self.assertIn("- **收入修复不及预期**[1]", sec12)
+        self.assertIn("**收入修复不及预期**", sec12)
+        self.assertIn("[1]", sec12)
 
     def test_c9_allows_event_text_citation_but_flags_pure_label(self):
         ok_doc = """# T

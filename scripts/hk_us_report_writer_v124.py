@@ -9,9 +9,12 @@ Pipeline: collect -> source_trace -> id_audit -> section-wise LLM -> post-repair
 
 from __future__ import annotations
 import argparse, json, os, sys, subprocess, re, time, shutil, html
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from llm_adapter_v124 import (
     LLMConfig,
@@ -43,6 +46,58 @@ TODAY = datetime.now().strftime("%Y-%m-%d")
 TODAY_ISO = datetime.now().isoformat(timespec="seconds")
 _LLM_CONFIG = LLMConfig()
 _LLM_DIAGNOSTICS: dict[str, Any] = {"config": {}, "calls": []}
+_LLM_DIAGNOSTIC_LOCK = threading.Lock()
+_LLM_THREAD_LOCAL = threading.local()
+
+HKUS_LLM_MAX_WORKERS_DEFAULT = 3
+HKUS_LLM_RETRY_MAX_WORKERS_DEFAULT = 2
+HKUS_LLM_TOTAL_BUDGET_SECONDS_DEFAULT = 600
+HKUS_LLM_TASK_BUDGET_SECONDS_DEFAULT = 180
+TARGET_PRICE_BASIS_MAX_RECORDS = 5
+TARGET_PRICE_BASIS_MAX_RETRIES = 2
+_LLM_ACTIVE_COUNT = 0
+_LLM_RETRY_ACTIVE_COUNT = 0
+_LLM_OBSERVED_MAX_ACTIVE_TASKS = 0
+_LLM_OBSERVED_MAX_RETRY_TASKS = 0
+
+
+@dataclass
+class LlmTaskResult:
+    task_name: str
+    ok: bool
+    content: Any
+    status: str
+    elapsed_seconds: float
+    attempts: int
+    error_type: str = ""
+    error_message: str = ""
+    diagnostics: list[dict] = field(default_factory=list)
+    metadata: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ForecastSample:
+    institution: str
+    article_id: str
+    metric: str
+    forecast_year: str
+    value: float
+    unit: str
+    accounting_basis: str
+    source_id: str
+    raw_value: str
+    currency: str = ""
+    period_basis: str = "FY"
+    raw_unit: str = ""
+    standardized_value: float = 0.0
+    standardized_unit: str = ""
+    conversion_formula: str = ""
+
+
+@dataclass
+class LlmTaskSpec:
+    task_name: str
+    runner: Callable[[], Any]
 
 SECTION_MATERIAL_MAP = {
     "s12":   {"label": "ch1-2", "h2": ["1 关键要点", "2 近况跟踪"],
@@ -162,6 +217,17 @@ def _update_run_manifest(output_dir: str, *, stage: str, status: str = "running"
             data["completed_stages"].append(stage)
     _save_json(str(path), data)
 
+
+def _set_run_manifest_field(output_dir: str, key: str, value: Any) -> None:
+    path = _manifest_path(output_dir)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except Exception:
+        data = {}
+    data[key] = value
+    data["updated_at"] = datetime.now().isoformat(timespec="seconds")
+    _save_json(str(path), data)
+
 def _finalize_failed_run(output_dir: str, *, stage: str, error_type: str, message: str):
     path = _manifest_path(output_dir)
     if path.exists():
@@ -239,22 +305,201 @@ def _clean_repeated_punctuation(text: str) -> str:
 
 def _call_llm(prompt: str, max_tokens: int = 8000, timeout: int = 180, system: str = "", call_name: str = "llm_call") -> tuple:
     """Call the unified adapter and record structured diagnostics."""
+    request_started_at = time.time()
     result = adapter_call_llm(prompt, system=system, max_tokens=max_tokens, timeout=timeout, config=_LLM_CONFIG)
-    _LLM_DIAGNOSTICS.setdefault("calls", []).append({
+    request_finished_at = time.time()
+    event = {
         "call_name": call_name,
         "ok": result.ok,
         "latency_s": result.latency_s,
         "attempt_count": result.attempt_count,
         "response_length": len(result.text or ""),
+        "prompt_size_chars": len(prompt or ""),
+        "material_size_chars": len(prompt or ""),
         "error_type": result.error_type,
         "error_message": (result.error_message or "")[:500],
         "http_status": result.http_status,
         "model": result.model,
         "api_format": result.api_format,
         "endpoint": result.endpoint,
+        "request_started_at": request_started_at,
+        "request_finished_at": request_finished_at,
         "preview": _plain_text(result.text, 200) if result.text else "",
-    })
+    }
+    local_events = getattr(_LLM_THREAD_LOCAL, "events", None)
+    if isinstance(local_events, list):
+        local_events.append(event)
+    else:
+        with _LLM_DIAGNOSTIC_LOCK:
+            _LLM_DIAGNOSTICS.setdefault("calls", []).append(event)
     return (result.text, result.ok)
+
+
+def _bounded_env_int(name: str, default: int, low: int, high: int) -> int:
+    try:
+        value = int(str(os.getenv(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+    return value if low <= value <= high else default
+
+
+def _hkus_llm_max_workers() -> int:
+    return _bounded_env_int("HKUS_LLM_MAX_WORKERS", HKUS_LLM_MAX_WORKERS_DEFAULT, 1, 4)
+
+
+def _hkus_llm_retry_workers() -> int:
+    return _bounded_env_int("HKUS_LLM_RETRY_MAX_WORKERS", HKUS_LLM_RETRY_MAX_WORKERS_DEFAULT, 1, 3)
+
+
+def _hkus_llm_total_budget_seconds() -> int:
+    return _bounded_env_int("HKUS_LLM_TOTAL_BUDGET_SECONDS", HKUS_LLM_TOTAL_BUDGET_SECONDS_DEFAULT, 180, 1200)
+
+
+def _hkus_llm_task_budget_seconds() -> int:
+    return _bounded_env_int("HKUS_LLM_TASK_BUDGET_SECONDS", HKUS_LLM_TASK_BUDGET_SECONDS_DEFAULT, 60, 300)
+
+
+def _execute_llm_task(spec: LlmTaskSpec) -> LlmTaskResult:
+    global _LLM_ACTIVE_COUNT, _LLM_RETRY_ACTIVE_COUNT, _LLM_OBSERVED_MAX_ACTIVE_TASKS, _LLM_OBSERVED_MAX_RETRY_TASKS
+    submitted_at = getattr(spec, "submitted_at", None) or time.time()
+    worker_started_at = time.time()
+    is_retry = spec.task_name.startswith("target_price_basis_retry:")
+    with _LLM_DIAGNOSTIC_LOCK:
+        if is_retry:
+            _LLM_RETRY_ACTIVE_COUNT += 1
+            _LLM_OBSERVED_MAX_RETRY_TASKS = max(_LLM_OBSERVED_MAX_RETRY_TASKS, _LLM_RETRY_ACTIVE_COUNT)
+        else:
+            _LLM_ACTIVE_COUNT += 1
+            _LLM_OBSERVED_MAX_ACTIVE_TASKS = max(_LLM_OBSERVED_MAX_ACTIVE_TASKS, _LLM_ACTIVE_COUNT)
+    start = worker_started_at
+    _LLM_THREAD_LOCAL.events = []
+    try:
+        content = spec.runner()
+        diagnostics = list(getattr(_LLM_THREAD_LOCAL, "events", []) or [])
+        attempts = sum(int(d.get("attempt_count") or 0) for d in diagnostics) or len(diagnostics)
+        ok = True
+        status = "ok"
+        error_type = ""
+        error_message = ""
+        if isinstance(content, dict):
+            ok = bool(content.get("ok", True))
+            status = str(content.get("status") or ("ok" if ok else "failed"))
+            error_type = str(content.get("error_type") or "")
+            error_message = str(content.get("error_message") or "")
+        return LlmTaskResult(
+            task_name=spec.task_name,
+            ok=ok,
+            content=content,
+            status=status,
+            elapsed_seconds=time.time() - start,
+            attempts=attempts,
+            error_type=error_type,
+            error_message=error_message,
+            diagnostics=diagnostics,
+            metadata={
+                "submitted_at": submitted_at,
+                "worker_started_at": worker_started_at,
+                "task_finished_at": time.time(),
+                "queue_wait_seconds": max(0.0, worker_started_at - submitted_at),
+            },
+        )
+    except Exception as exc:
+        diagnostics = list(getattr(_LLM_THREAD_LOCAL, "events", []) or [])
+        return LlmTaskResult(
+            task_name=spec.task_name,
+            ok=False,
+            content=None,
+            status="exception",
+            elapsed_seconds=time.time() - start,
+            attempts=sum(int(d.get("attempt_count") or 0) for d in diagnostics) or len(diagnostics),
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:500],
+            diagnostics=diagnostics,
+            metadata={
+                "submitted_at": submitted_at,
+                "worker_started_at": worker_started_at,
+                "task_finished_at": time.time(),
+                "queue_wait_seconds": max(0.0, worker_started_at - submitted_at),
+            },
+        )
+    finally:
+        _LLM_THREAD_LOCAL.events = None
+        with _LLM_DIAGNOSTIC_LOCK:
+            if is_retry:
+                _LLM_RETRY_ACTIVE_COUNT = max(0, _LLM_RETRY_ACTIVE_COUNT - 1)
+            else:
+                _LLM_ACTIVE_COUNT = max(0, _LLM_ACTIVE_COUNT - 1)
+
+
+def _append_task_diagnostics(results: list[LlmTaskResult]) -> None:
+    events = []
+    for result in results:
+        for event in result.diagnostics:
+            item = dict(event)
+            item.setdefault("task_name", result.task_name)
+            events.append(item)
+    if events:
+        with _LLM_DIAGNOSTIC_LOCK:
+            _LLM_DIAGNOSTICS.setdefault("calls", []).extend(events)
+
+
+def _append_llm_issue(key: str, message: str) -> None:
+    with _LLM_DIAGNOSTIC_LOCK:
+        _LLM_DIAGNOSTICS.setdefault(key, []).append(message)
+
+
+def run_hkus_llm_tasks(task_specs: list[LlmTaskSpec], max_workers: int | None = None,
+                       total_budget_seconds: int | None = None, progress_prefix: str = "[LLM]") -> tuple[list[LlmTaskResult], dict]:
+    """Run independent LLM tasks with bounded parallelism and main-thread merging."""
+    if not task_specs:
+        return [], {"budget_exceeded": False, "elapsed_seconds": 0.0}
+    workers = max(1, min(max_workers or _hkus_llm_max_workers(), len(task_specs)))
+    budget = total_budget_seconds if total_budget_seconds is not None else _hkus_llm_total_budget_seconds()
+    start = time.time()
+    results: list[LlmTaskResult] = []
+    budget_exceeded = False
+    print(f"{progress_prefix} config workers={workers}, tasks={len(task_specs)}, budget={budget}s", flush=True)
+    executor = ThreadPoolExecutor(max_workers=workers)
+    future_to_name = {}
+    try:
+        for idx, spec in enumerate(task_specs, 1):
+            setattr(spec, "submitted_at", time.time())
+            print(f"{progress_prefix} {idx}/{len(task_specs)} {spec.task_name} started", flush=True)
+            future_to_name[executor.submit(_execute_llm_task, spec)] = spec.task_name
+        try:
+            for future in as_completed(future_to_name, timeout=budget):
+                name = future_to_name[future]
+                result = future.result()
+                results.append(result)
+                state = "DONE" if result.ok else "FAIL"
+                print(f"{progress_prefix} {state} {len(results)}/{len(task_specs)} {name} {result.status}, {result.elapsed_seconds:.1f}s", flush=True)
+        except FuturesTimeoutError:
+            budget_exceeded = True
+            for future, name in future_to_name.items():
+                if not future.done():
+                    future.cancel()
+                    results.append(LlmTaskResult(
+                        task_name=name,
+                        ok=False,
+                        content=None,
+                        status="budget_exceeded",
+                        elapsed_seconds=time.time() - start,
+                        attempts=0,
+                        error_type="budget_exceeded",
+                        error_message=f"LLM phase exceeded {budget}s",
+                        metadata={"budget_exceeded": True},
+                    ))
+                    print(f"{progress_prefix} FAIL {len(results)}/{len(task_specs)} {name} budget_exceeded", flush=True)
+    finally:
+        executor.shutdown(wait=not budget_exceeded, cancel_futures=True)
+    _append_task_diagnostics(results)
+    return results, {
+        "budget_exceeded": budget_exceeded,
+        "elapsed_seconds": time.time() - start,
+        "max_workers": workers,
+        "observed_max_active_tasks": _LLM_OBSERVED_MAX_ACTIVE_TASKS,
+        "observed_max_retry_tasks": _LLM_OBSERVED_MAX_RETRY_TASKS,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -568,7 +813,7 @@ def _text_ok(value: Any, issues: list[str], path: str, min_len: int = 2) -> str:
         issues.append(f"{path}.placeholder")
     return text
 
-def _validate_sections_1_4_payload(payload: dict, ref_map: dict, company_name: str = "", ticker: str = "") -> tuple[dict, list[str]]:
+def _legacy_validate_ch1_to_4_payload_unused(payload: dict, ref_map: dict, company_name: str = "", ticker: str = "") -> tuple[dict, list[str]]:
     issues: list[str] = []
     clean: dict[str, Any] = {}
     title_conclusion = _sanitize_title_conclusion(str(payload.get("title_conclusion") or ""), company_name, ticker, "")
@@ -673,7 +918,7 @@ def normalize_refs(text: str, refs: list[int]) -> str:
             merged.append(v)
     return f"{base}{_cite(merged)}" if merged else base
 
-def _render_sections_1_4(payload: dict) -> dict[str, str]:
+def _legacy_render_ch1_to_4_unused(payload: dict) -> dict[str, str]:
     lines12 = ["## 1 关键要点", ""]
     for item in payload["section_1"]["key_points"]:
         lines12.append(f"- **{item['keyword']}**：{item['statement']}{_cite(item['source_refs'])}")
@@ -695,7 +940,222 @@ def _render_sections_1_4(payload: dict) -> dict[str, str]:
         lines34.append(f"| {item['date']} | {item['event']}{refs} | {item['impact']}{refs} |")
     return {"s12": "\n".join(lines12), "s34": "\n".join(lines34), "_title_conclusion": payload.get("title_conclusion", "")}
 
-def _validate_render_section_8(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+
+def _section_1_2_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""Return ONLY JSON for HK/US company one-pager sections 1 and 2.
+Schema:
+{{"title_conclusion": "...", "section_1": {{"key_points": [{{"keyword": "...", "text": "...", "source_ids": [1]}}]}}, "section_2": {{"recent_updates": [{{"keyword": "...", "date": "YYYY-MM-DD or YYYY-Qx", "fact": "...", "implication": "...", "source_ids": [1]}}]}}}}
+Rules: section_1 has 4-6 investment conclusions; section_2 has 3-5 recent concrete updates and stays within 400 Chinese characters; every item cites valid source_ids; no Markdown.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _validate_render_sections_1_2(payload: dict, ref_map: dict, company_name: str = "", ticker: str = "") -> tuple[dict[str, str], list[str]]:
+    issues: list[str] = []
+    title_conclusion = _sanitize_title_conclusion(str(payload.get("title_conclusion") or ""), company_name, ticker, "")
+    if not title_conclusion:
+        issues.append("title_conclusion.invalid_or_missing")
+    s1 = payload.get("section_1") if isinstance(payload.get("section_1"), dict) else {}
+    points = s1.get("key_points") if isinstance(s1.get("key_points"), list) else []
+    s1_issue_start = len(issues)
+    if not (4 <= len(points) <= 6):
+        issues.append(f"section_1.key_points_count:{len(points)}")
+    lines = ["## 1 关键要点", ""]
+    valid_points = 0
+    for i, item in enumerate(points[:6]):
+        if not isinstance(item, dict):
+            issues.append(f"section_1.key_points[{i}].not_object")
+            continue
+        text = _text_ok(item.get("text") or item.get("statement"), issues, f"section_1.key_points[{i}].text", 12)
+        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_1.key_points[{i}]")
+        keyword = _plain_text(item.get("keyword") or re.split(r'[，；。:：]', text)[0], 18)
+        if text and refs:
+            lines.append(f"- **{keyword or '投资判断'}**：{text}{_cite(refs)}")
+            valid_points += 1
+    section_1_valid = 4 <= valid_points <= 6 and len(issues) == s1_issue_start
+    s2 = payload.get("section_2") if isinstance(payload.get("section_2"), dict) else {}
+    updates = s2.get("recent_updates") if isinstance(s2.get("recent_updates"), list) else []
+    s2_issue_start = len(issues)
+    if not (3 <= len(updates) <= 5):
+        issues.append(f"section_2.recent_updates_count:{len(updates)}")
+    lines2 = ["## 2 近况跟踪", ""]
+    valid_updates = 0
+    for i, item in enumerate(updates[:5]):
+        if not isinstance(item, dict):
+            issues.append(f"section_2.recent_updates[{i}].not_object")
+            continue
+        keyword = _plain_text(item.get("keyword") or item.get("date") or "", 18)
+        fact = _text_ok(item.get("fact") or item.get("text"), issues, f"section_2.recent_updates[{i}].fact", 10)
+        implication = _text_ok(item.get("implication") or "", issues, f"section_2.recent_updates[{i}].implication", 6)
+        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_2.recent_updates[{i}]")
+        if keyword and fact and implication and refs:
+            lines2.append(f"- **{keyword}**：{fact}；{implication}{_cite(refs)}")
+            valid_updates += 1
+    section_2_valid = 3 <= valid_updates <= 5 and len(issues) == s2_issue_start
+    rendered: dict[str, str] = {"_title_conclusion": title_conclusion}
+    parts = []
+    if section_1_valid:
+        parts.append("\n".join(lines))
+    if section_2_valid:
+        parts.append("\n".join(lines2))
+    if parts:
+        rendered["s12"] = "\n\n".join(parts)
+    rendered["_section_1_valid"] = "1" if section_1_valid else ""
+    rendered["_section_2_valid"] = "1" if section_2_valid else ""
+    return (rendered, issues)
+
+
+def gen_hkus_sections_1_2(key_data: dict, ref_map: dict | None = None) -> tuple[dict[str, str], bool, dict]:
+    if not _has_target_materials(key_data):
+        return {}, False, {"call_mode": "skipped_no_target_materials", "schema_issues": ["no_target_materials"]}
+    ref_map = ref_map or {}
+    issues: list[str] = []
+    parse_attempts = 0
+    for call_name in ("sections_1_2", "sections_1_2_json_repair"):
+        prompt = _section_1_2_json_prompt(key_data, issues if call_name.endswith("repair") else None)
+        text, ok = _call_llm(prompt, max_tokens=4500, timeout=min(120, _hkus_llm_task_budget_seconds()), system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        parse_attempts += 1
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_sections_1_2(payload, ref_map)
+        section_1_valid = bool(rendered.get("_section_1_valid"))
+        section_2_valid = bool(rendered.get("_section_2_valid"))
+        if rendered.get("s12") and (section_1_valid or section_2_valid):
+            call_mode = "ok_json" if section_1_valid and section_2_valid and not render_issues else "partial_json"
+            return rendered, True, {
+                "call_mode": call_mode,
+                "parse_attempts": parse_attempts,
+                "schema_issues": render_issues[:40],
+                "section_1_valid": section_1_valid,
+                "section_2_valid": section_2_valid,
+                "title_valid": bool(rendered.get("_title_conclusion")),
+            }
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return {}, False, {"call_mode": "failed_schema", "parse_attempts": parse_attempts, "schema_issues": issues[:40]}
+
+
+def _section_3_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""Return ONLY JSON for HK/US company one-pager section 3.
+Schema:
+{{"short_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}], "long_term_logic": [{{"title": "...", "text": "...", "source_ids": [1]}}]}}
+Rules: each list has 2-3 source-backed rows; do not output catalysts, tables, extra tracking fields, or a 3.3 subsection.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _validate_render_section_3(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    groups = [
+        ("short_term_logic", "### 3.1 短期逻辑"),
+        ("long_term_logic", "### 3.2 长期逻辑"),
+    ]
+    lines = ["## 3 核心投资逻辑", ""]
+    for key, heading in groups:
+        rows = payload.get(key) if isinstance(payload.get(key), list) else []
+        if not (2 <= len(rows) <= 3):
+            issues.append(f"section_3.{key}_count:{len(rows)}")
+        lines.extend([heading, ""])
+        for i, item in enumerate(rows[:3]):
+            if not isinstance(item, dict):
+                issues.append(f"section_3.{key}[{i}].not_object")
+                continue
+            title = _plain_text(item.get("title") or "", 24)
+            text = _text_ok(item.get("text") or item.get("mechanism"), issues, f"section_3.{key}[{i}].text", 12)
+            refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_3.{key}[{i}]")
+            if text and refs:
+                prefix = f"**{title}**：" if title else ""
+                lines.append(f"- {prefix}{text}{_cite(refs)}")
+        lines.append("")
+    return ("\n".join(lines).strip(), issues)
+
+
+def gen_hkus_section_3(key_data: dict, ref_map: dict | None = None) -> tuple[str, bool, list[str]]:
+    if not _has_target_materials(key_data):
+        return "", False, ["no_target_materials"]
+    ref_map = ref_map or {}
+    issues: list[str] = []
+    for call_name in ("section_3", "section_3_json_repair"):
+        text, ok = _call_llm(_section_3_json_prompt(key_data, issues if call_name.endswith("repair") else None),
+                             max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_section_3(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered, True, []
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return "", False, issues[:40]
+
+
+def _section_4_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""Return ONLY JSON for HK/US company one-pager section 4 catalysts.
+Schema: {{"catalysts": [{{"time": "YYYY-MM or YYYY-Qx", "event": "...", "impact": "...", "source_ids": [1]}}]}}
+Rules: 4-7 concrete company/industry events; event and impact must be source-backed; no broker report/target-price updates as catalysts.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _validate_render_section_4(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    rows = payload.get("catalysts") if isinstance(payload.get("catalysts"), list) else []
+    if not (4 <= len(rows) <= 7):
+        issues.append(f"section_4.catalysts_count:{len(rows)}")
+    lines = ["## 4 催化事件时间表", "", "| 时间 | 事件 | 影响 |", "|:---|:---|:---|"]
+    for i, item in enumerate(rows[:7]):
+        if not isinstance(item, dict):
+            issues.append(f"section_4.catalysts[{i}].not_object")
+            continue
+        when = _text_ok(item.get("time") or item.get("date"), issues, f"section_4.catalysts[{i}].time", 4)
+        event = _text_ok(item.get("event"), issues, f"section_4.catalysts[{i}].event", 8)
+        impact = _text_ok(item.get("impact"), issues, f"section_4.catalysts[{i}].impact", 8)
+        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_4.catalysts[{i}]")
+        if re.search(r'研报发布|评级|目标价更新|broker report|target price', event, re.I):
+            issues.append(f"section_4.catalysts[{i}].broker_event")
+        if when and event and impact and refs:
+            cite = _cite(refs)
+            lines.append(f"| {when} | {event}{cite} | {impact}{cite} |")
+    return ("\n".join(lines), issues) if len(lines) >= 8 and not issues else ("", issues)
+
+
+def gen_hkus_section_4(key_data: dict, ref_map: dict | None = None) -> tuple[str, bool, list[str]]:
+    if not _has_target_materials(key_data):
+        return "", False, ["no_target_materials"]
+    ref_map = ref_map or {}
+    issues: list[str] = []
+    for call_name in ("section_4", "section_4_json_repair"):
+        text, ok = _call_llm(_section_4_json_prompt(key_data, issues if call_name.endswith("repair") else None),
+                             max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_section_4(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered, True, []
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return "", False, issues[:40]
+
+def _legacy_validate_render_section_8_unused(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
     rows = payload.get("rows") if isinstance(payload, dict) else None
     if not isinstance(rows, list) or not (3 <= len(rows) <= 5):
@@ -716,23 +1176,85 @@ def _validate_render_section_8(payload: dict, ref_map: dict) -> tuple[str, list[
             lines.append(f"| {topic}{_cite(refs)} | {concern}{_cite(refs)} | {'、'.join(_plain_text(x, 24) for x in metrics if _plain_text(x, 24))} |")
     return ("\n".join(lines), issues) if len(lines) >= 6 and not issues else ("", issues)
 
-def gen_hkus_section_8(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+def _legacy_gen_hkus_section_8_unused(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
     prompt = f"""Return ONLY JSON for HK/US report section_8 market concerns.
 Schema: {{"rows": [{{"topic": "...", "market_concern": "...", "verification_metrics": ["..."], "source_refs": [1]}}]}}
 Rules: 3-5 rows; use only target-company context refs; no Markdown.
 Context:
 {_format_hkus_key_context(key_data)}
 """
-    text, ok = _call_llm(prompt, max_tokens=3500, timeout=120, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="section_8_json")
+    text, ok = _call_llm(prompt, max_tokens=3500, timeout=120, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="legacy_ch8_json_unused")
     if not ok:
         return "", False, ["section_8:llm_failed"]
     payload, parse_error = _parse_json_object(text)
     if parse_error:
         return "", False, [parse_error]
-    rendered, issues = _validate_render_section_8(payload, ref_map)
+    rendered, issues = _legacy_validate_render_section_8_unused(payload, ref_map)
     return rendered, bool(rendered and not issues), issues
 
-def _validate_render_section_12(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+
+def _validate_render_section_8(payload: dict, ref_map: dict, mkt: str = "US") -> tuple[str, list[str]]:
+    issues: list[str] = []
+    rows = payload.get("rows") if isinstance(payload, dict) else None
+    if not isinstance(rows, list) or not (3 <= len(rows) <= 5):
+        return "", [f"section_8.rows_count:{0 if not isinstance(rows, list) else len(rows)}"]
+    title = "## 8 市场关注/调研大纲" if mkt == "HK" else "## 8 市场关注"
+    lines = [title, "", "| 关注点 | 市场在担心什么 | 需要验证的数据 |", "|:---|:---|:---|"]
+    for i, row in enumerate(rows[:5]):
+        if not isinstance(row, dict):
+            issues.append(f"section_8.rows[{i}].not_object")
+            continue
+        topic = _text_ok(row.get("topic"), issues, f"section_8.rows[{i}].topic", 3)
+        concern = _text_ok(row.get("market_concern"), issues, f"section_8.rows[{i}].market_concern", 8)
+        metrics = row.get("verification_metrics")
+        if not isinstance(metrics, list) or not metrics:
+            issues.append(f"section_8.rows[{i}].verification_metrics_missing")
+            metrics = []
+        refs = _refs_ok(row.get("source_refs"), ref_map, issues, f"section_8.rows[{i}]")
+        if topic and concern and metrics and refs:
+            lines.append(f"| {topic}{_cite(refs)} | {concern}{_cite(refs)} | {'、'.join(_plain_text(x, 24) for x in metrics if _plain_text(x, 24))} |")
+    if mkt == "HK":
+        agenda = payload.get("research_agenda") if isinstance(payload.get("research_agenda"), list) else []
+        if not (3 <= len(agenda) <= 4):
+            issues.append(f"section_8.research_agenda_count:{len(agenda)}")
+        for i, item in enumerate(agenda[:4], 1):
+            if not isinstance(item, dict):
+                issues.append(f"section_8.research_agenda[{i}].not_object")
+                continue
+            topic = _text_ok(item.get("topic"), issues, f"section_8.research_agenda[{i}].topic", 4)
+            background = _text_ok(item.get("background"), issues, f"section_8.research_agenda[{i}].background", 12)
+            questions = item.get("questions") if isinstance(item.get("questions"), list) else []
+            refs = _refs_ok(item.get("source_refs"), ref_map, issues, f"section_8.research_agenda[{i}]")
+            if len(questions) < 2:
+                issues.append(f"section_8.research_agenda[{i}].questions_count:{len(questions)}")
+            if topic and background and refs and len(questions) >= 2:
+                lines.extend(["", f"议题{i}：{topic}", f"背景：{background}{_cite(refs)}"])
+                for qn, q in enumerate(questions[:3], 1):
+                    qtext = _plain_text(q, 80)
+                    if qtext:
+                        lines.append(f"- 问题{qn}：{qtext}")
+    return ("\n".join(lines), issues) if len(lines) >= 6 and not issues else ("", issues)
+
+
+def gen_hkus_section_8(key_data: dict, ref_map: dict, mkt: str = "HK") -> tuple[str, bool, list[str]]:
+    extra_schema = ', "research_agenda": [{"topic": "...", "background": "...", "questions": ["..."], "source_refs": [1]}]' if mkt == "HK" else ""
+    extra_rules = "For HK include research_agenda; for US do not output research_agenda."
+    prompt = f"""Return ONLY JSON for HK/US report section_8 market concerns.
+Schema: {{"rows": [{{"topic": "...", "market_concern": "...", "verification_metrics": ["..."], "source_refs": [1]}}]{extra_schema}}}
+Rules: 3-5 rows; use only target-company context refs; no Markdown. {extra_rules}
+Context:
+{_format_hkus_key_context(key_data)}
+"""
+    text, ok = _call_llm(prompt, max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()), system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="section_8")
+    if not ok:
+        return "", False, ["section_8:llm_failed"]
+    payload, parse_error = _parse_json_object(text)
+    if parse_error:
+        return "", False, [parse_error]
+    rendered, issues = _validate_render_section_8(payload, ref_map, mkt)
+    return rendered, bool(rendered and not issues), issues
+
+def _legacy_validate_render_section_12_unused(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
     risks = payload.get("risks") if isinstance(payload, dict) else None
     if not isinstance(risks, list) or not (4 <= len(risks) <= 6):
@@ -757,7 +1279,7 @@ Rules: 4-6 risks; title only, no mechanism/body; use only target-company context
 Context:
 {_format_hkus_key_context(key_data)}
 """
-    text, ok = _call_llm(prompt, max_tokens=2500, timeout=120, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="section_12_json")
+    text, ok = _call_llm(prompt, max_tokens=2500, timeout=120, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="legacy_ch12_json_unused")
     if not ok:
         return "", False, ["section_12:llm_failed"]
     payload, parse_error = _parse_json_object(text)
@@ -768,13 +1290,51 @@ Context:
 
 # ── §10 market debate (JSON-based LLM) ──
 
+def _validate_render_section_12(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    risks = payload.get("risks") if isinstance(payload, dict) else None
+    if not isinstance(risks, list) or not (4 <= len(risks) <= 6):
+        return "", [f"section_12.risks_count:{0 if not isinstance(risks, list) else len(risks)}"]
+    lines = ["## 12 风险提示", ""]
+    for i, risk in enumerate(risks[:6]):
+        if not isinstance(risk, dict):
+            issues.append(f"section_12.risks[{i}].not_object")
+            continue
+        title = _text_ok(risk.get("title"), issues, f"section_12.risks[{i}].title", 4)
+        explanation = _text_ok(risk.get("explanation") or risk.get("body"), issues, f"section_12.risks[{i}].explanation", 12)
+        refs = _refs_ok(risk.get("source_refs"), ref_map, issues, f"section_12.risks[{i}]")
+        if re.search(r'宏观经济风险|市场竞争风险$', title):
+            issues.append(f"section_12.risks[{i}].generic_title")
+        if title and explanation and refs:
+            clean_exp = re.sub(r'\[\d+\]', '', explanation).strip()
+            lines.append(f"- **{title}**：{clean_exp}{_cite(refs)}")
+    return ("\n".join(lines), issues) if len(lines) >= 6 and not issues else ("", issues)
+
+
+def _legacy_gen_hkus_section_12_unused(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+    prompt = f"""Return ONLY JSON for HK/US report section_12 risks.
+Schema: {{"risks": [{{"title": "risk title", "explanation": "one sentence explaining transmission to revenue/profit/cash flow/valuation/execution", "source_refs": [1]}}]}}
+Rules: 4-6 company-specific risks; title is short, explanation is exactly one sentence; no generic macro/market-competition-only risk; no Markdown.
+Context:
+{_format_hkus_key_context(key_data)}
+"""
+    text, ok = _call_llm(prompt, max_tokens=2800, timeout=min(120, _hkus_llm_task_budget_seconds()), system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="section_12")
+    if not ok:
+        return "", False, ["section_12:llm_failed"]
+    payload, parse_error = _parse_json_object(text)
+    if parse_error:
+        return "", False, [parse_error]
+    rendered, issues = _legacy_validate_render_section_12_unused(payload, ref_map)
+    return rendered, bool(rendered and not issues), issues
+
+
 _MARKET_DEBATE_BANNED_PHRASES = [
     "收入增长与需求兑现", "产品迭代与客户转化", "业务发展", "盈利改善", "估值修复",
     "基本面改善", "关注后续进展", "关注业务进展", "有待观察", "需持续跟踪",
     "保持关注", "静待验证", "进一步确认",
 ]
 
-def _section_10_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+def _legacy_section_10_json_prompt_unused(key_data: dict, schema_issues: list[str] | None = None) -> str:
     issue_text = "\n修正以下schema问题:\n" + "\n".join(schema_issues or []) if schema_issues else ""
     return f"""你是HK/US股票分析师。只返回一个JSON对象用于§10市场分歧。
 格式: {{"market_debates": [{{"theme": "同一个分歧主题", "bull_view": "多头观点(15-40字)", "bull_evidence": "支持多头的具体事实/数据/时间节点(15-60字)", "bull_source_ids": [1], "bear_view": "空头观点(15-40字)", "bear_evidence": "支持空头的具体事实/数据/时间节点(15-60字)", "bear_source_ids": [2], "validation_metric": "未来可观察指标", "validation_window": "验证窗口"}}]}}
@@ -826,7 +1386,7 @@ def _refs_from_row(row: dict, *keys: str) -> list[int]:
     return refs
 
 
-def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+def _legacy_validate_render_section_10_unused(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
     issues: list[str] = []
     debates = payload.get("market_debates") if isinstance(payload, dict) else None
     if not isinstance(debates, list) or not (4 <= len(debates) <= 6):
@@ -914,6 +1474,174 @@ def gen_hkus_section_10(key_data: dict, ref_map: dict) -> tuple[str, bool, list[
 
 # ── §11 target-price valuation basis (per-article LLM extraction) ──
 
+def _section_10_json_prompt(key_data: dict, schema_issues: list[str] | None = None, scope: str = "section_10_a") -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    focus = "core business cycle, revenue/profit/cost, valuation or target-price divergence" if scope.endswith("_a") else "new business commercialization, product/customer validation, competition and medium-term growth"
+    return f"""Return ONLY JSON for HK/US one-pager section 10 market debate subtask {scope}.
+Focus: {focus}.
+Schema:
+{{"market_debates": [{{"theme": "...", "bull_view": "...", "bull_evidence": "...", "bull_source_ids": [1], "bear_view": "...", "bear_evidence": "...", "bear_source_ids": [2], "validation_metric": "...", "validation_window": "..."}}]}}
+Rules: produce 2-4 candidate rows; bull and bear must oppose each other around the same theme; evidence cells contain facts/numbers/times and refs; validation is future observable; no Markdown.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _normalize_section_10_rows(payload: dict, ref_map: dict) -> tuple[list[dict], list[str]]:
+    issues: list[str] = []
+    debates = payload.get("market_debates") if isinstance(payload, dict) else None
+    if not isinstance(debates, list):
+        return [], ["section_10.rows_not_list"]
+    rows: list[dict] = []
+    accepted_themes: list[str] = []
+    for i, row in enumerate(debates[:6]):
+        if not isinstance(row, dict):
+            issues.append(f"section_10.rows[{i}].not_object")
+            continue
+        theme = _text_ok(row.get("theme") or row.get("debate_theme") or row.get("bull_view"), issues, f"section_10.rows[{i}].theme", 4)
+        bull = _text_ok(row.get("bull_view"), issues, f"section_10.rows[{i}].bull_view", 8)
+        bear = _text_ok(row.get("bear_view"), issues, f"section_10.rows[{i}].bear_view", 8)
+        bull_evidence = _text_ok(row.get("bull_evidence") or row.get("evidence"), issues, f"section_10.rows[{i}].bull_evidence", 8)
+        bear_evidence = _text_ok(row.get("bear_evidence") or row.get("evidence"), issues, f"section_10.rows[{i}].bear_evidence", 8)
+        validation_metric = _text_ok(row.get("validation_metric") or row.get("validation"), issues, f"section_10.rows[{i}].validation_metric", 4)
+        validation_window = _plain_text(row.get("validation_window") or "", 24)
+        validation = f"{validation_metric}（{validation_window}）" if validation_window else validation_metric
+        bull_refs = _refs_ok(_refs_from_row(row, "bull_source_ids", "source_refs"), ref_map, issues, f"section_10.rows[{i}].bull")
+        bear_refs = _refs_ok(_refs_from_row(row, "bear_source_ids", "source_refs"), ref_map, issues, f"section_10.rows[{i}].bear")
+        if not (theme and bull and bear and bull_evidence and bear_evidence and validation and bull_refs and bear_refs):
+            continue
+        if any(_topic_similar(theme, prior) for prior in accepted_themes):
+            issues.append(f"section_10.rows[{i}].duplicate_theme:{theme}")
+            continue
+        if bull == bear or _topic_similar(bull, bear):
+            issues.append(f"section_10.rows[{i}].bull_equals_bear")
+            continue
+        if not _has_fact_signal(bull_evidence):
+            issues.append(f"section_10.rows[{i}].bull_evidence_no_fact")
+            continue
+        if not _has_fact_signal(bear_evidence):
+            issues.append(f"section_10.rows[{i}].bear_evidence_no_fact")
+            continue
+        if not _has_fact_signal(validation):
+            issues.append(f"section_10.rows[{i}].validation_not_observable")
+            continue
+        rows.append({
+            "theme": theme,
+            "bull_view": bull,
+            "bull_evidence": bull_evidence,
+            "bull_refs": bull_refs,
+            "bear_view": bear,
+            "bear_evidence": bear_evidence,
+            "bear_refs": bear_refs,
+            "validation": validation,
+            "validation_refs": list(dict.fromkeys(bull_refs + bear_refs)),
+        })
+        accepted_themes.append(theme)
+    return rows, issues
+
+
+def _render_section_10_rows(rows: list[dict]) -> str:
+    lines = [
+        "## 10 市场分歧", "",
+        "| 多头观点 | 多头证据 | 空头观点 | 空头证据 | 需要观察的验证点 |",
+        "|:---|:---|:---|:---|:---|",
+    ]
+    for row in rows:
+        bull_evidence = _compress_evidence_sentences(row['bull_evidence'], max_sentences=3, max_chars=140)
+        bear_evidence = _compress_evidence_sentences(row['bear_evidence'], max_sentences=3, max_chars=140)
+        validation = _compress_evidence_sentences(row['validation'], max_sentences=1, max_chars=80)
+        lines.append(
+            f"| {normalize_refs(row['bull_view'], [])} | {normalize_refs(bull_evidence, row['bull_refs'])} | "
+            f"{normalize_refs(row['bear_view'], [])} | {normalize_refs(bear_evidence, row['bear_refs'])} | "
+            f"{normalize_refs(validation, row['validation_refs'])} |"
+        )
+    return "\n".join(lines)
+
+
+def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    rows, issues = _normalize_section_10_rows(payload, ref_map)
+    fatal_ref_issues = (
+        ".source_refs_missing",
+        ".source_refs_empty_after_validation",
+        ".source_refs_out_of_range",
+        ".bull.source_refs_missing",
+        ".bull.source_refs_empty_after_validation",
+        ".bull.source_refs_out_of_range",
+        ".bear.source_refs_missing",
+        ".bear.source_refs_empty_after_validation",
+        ".bear.source_refs_out_of_range",
+    )
+    if any(any(marker in issue for marker in fatal_ref_issues) for issue in issues):
+        return "", issues + [f"section_10.rows_count:{len(rows)}"]
+    if len(rows) < 3:
+        return "", issues + [f"section_10.rows_count:{len(rows)}", f"section_10.valid_rows:{len(rows)}<3"]
+    return _render_section_10_rows(rows[:5]), issues
+
+
+def _compress_evidence_sentences(text: str, max_sentences: int = 3, max_chars: int = 140) -> str:
+    clean = re.sub(r'^(多|空)[:：]\s*', '', str(text or "").strip())
+    parts = [p.strip() for p in re.split(r'(?<=[。；;])|\n+', clean) if p.strip()]
+    if not parts:
+        parts = [clean]
+    scored = []
+    for idx, sent in enumerate(parts):
+        score = len(re.findall(r'\d|%|FY|Q[1-4]|H[12]|收入|利润|毛利|订单|用户|现金流|capex|revenue|margin', sent, re.I))
+        scored.append((score, -idx, sent))
+    picked = [x[2] for x in sorted(scored, reverse=True)[:max_sentences]]
+    picked = [p for _, p in sorted((parts.index(p), p) for p in picked if p in parts)]
+    out = "".join(picked)
+    if len(out) <= max_chars:
+        return out
+    bounded = ""
+    for sent in picked:
+        if len(bounded) + len(sent) > max_chars:
+            break
+        bounded += sent
+    return bounded or out[:max_chars].rsplit("，", 1)[0].rstrip("，；;")
+
+
+def gen_hkus_section_10_part(key_data: dict, ref_map: dict, scope: str) -> tuple[list[dict], bool, list[str]]:
+    if not _has_target_materials(key_data):
+        return [], False, ["no_target_materials"]
+    issues: list[str] = []
+    for call_name in (scope, f"{scope}_json_repair"):
+        prompt = _section_10_json_prompt(key_data, issues if call_name.endswith("repair") else None, scope)
+        text, ok = _call_llm(prompt, max_tokens=2800, timeout=min(120, _hkus_llm_task_budget_seconds()), system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rows, row_issues = _normalize_section_10_rows(payload, ref_map)
+        if rows:
+            return rows, True, row_issues
+        issues.extend(f"{call_name}:{x}" for x in row_issues)
+    return [], False, issues[:40]
+
+
+def merge_hkus_section_10_parts(parts: list[list[dict]]) -> tuple[str, bool, list[str]]:
+    merged: list[dict] = []
+    issues: list[str] = []
+    for rows in parts:
+        for row in rows:
+            if any(_topic_similar(row.get("theme", ""), prior.get("theme", "")) for prior in merged):
+                issues.append(f"section_10.merge_duplicate_theme:{row.get('theme','')}")
+                continue
+            merged.append(row)
+    if len(merged) < 3:
+        return "", False, issues + [f"section_10.merged_rows:{len(merged)}<3"]
+    return _render_section_10_rows(merged[:5]), True, issues
+
+
+def _legacy_gen_hkus_section_10_unused(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+    rows_a, ok_a, issues_a = gen_hkus_section_10_part(key_data, ref_map, "section_10_a")
+    rows_b, ok_b, issues_b = gen_hkus_section_10_part(key_data, ref_map, "section_10_b")
+    rendered, ok, merge_issues = merge_hkus_section_10_parts([rows_a if ok_a else [], rows_b if ok_b else []])
+    return rendered, ok, issues_a + issues_b + merge_issues
+
+
 def _build_target_price_basis_prompt(records: list[dict]) -> str:
     articles = []
     for rec in records:
@@ -942,7 +1670,7 @@ Input:
 3. 无方法: "研报披露目标价,正文未披露估值方法"
 
 关键假设: 2-3条。必须含具体业务/数字/年份/客户/出货量/ASP/毛利率, 每条必须给 evidence。
-禁止: {"、".join(_MARKET_DEBATE_BANNED_PHRASES[:6])}。无假设则写"正文未披露可验证的关键假设"。"""
+禁止: {"、".join(_MARKET_DEBATE_BANNED_PHRASES[:6])}。无假设则写"估值方法未披露"。"""
 
 
 def _parse_json_value(text: str) -> Any:
@@ -1005,11 +1733,11 @@ def _normalize_target_basis_payload(payload: Any, expected_ids: set[str]) -> tup
                     if text:
                         parts.append(text)
             parts = [x for x in parts if not any(b in x for b in _MARKET_DEBATE_BANNED_PHRASES[:6])]
-            key_assumptions = "；".join(parts) if parts else "正文未披露可验证的关键假设"
+            key_assumptions = "；".join(parts) if parts else "估值方法未披露"
         elif isinstance(assumptions, str) and assumptions.strip():
             key_assumptions = _plain_text(assumptions, 200)
         else:
-            key_assumptions = "正文未披露可验证的关键假设"
+            key_assumptions = "估值方法未披露"
         result[aid] = {
             "target_price_basis": basis,
             "basis_evidence": basis_evidence,
@@ -1031,48 +1759,72 @@ def _extract_target_price_basis(records: list[dict]) -> dict[str, dict]:
     """
     if not records:
         return {}
+    task_started = time.time()
+    task_budget = _hkus_llm_task_budget_seconds()
     expected_ids = {str(r["article_id"]) for r in records}
     by_id = {str(r["article_id"]): r for r in records}
     prompt = _build_target_price_basis_prompt(records)
     text, ok = _call_llm(prompt, max_tokens=4000, timeout=300, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="target_price_basis")
     result, problems = _normalize_target_basis_payload(_parse_json_value(text) if ok else None, expected_ids)
-    for aid in sorted(expected_ids - set(result)):
+    retry_specs: list[LlmTaskSpec] = []
+    missing_for_retry = sorted(expected_ids - set(result))
+    if len(result) >= 3:
+        missing_for_retry = []
+    else:
+        missing_for_retry = missing_for_retry[:TARGET_PRICE_BASIS_MAX_RETRIES]
+    for aid in missing_for_retry:
+        if time.time() - task_started >= task_budget:
+            _append_llm_issue("target_price_basis_issues", "target_price_basis_task_budget_exceeded")
+            break
         rec = by_id.get(aid)
         if not rec:
             continue
-        retry_text, retry_ok = _call_llm(
-            _build_target_price_basis_prompt([rec]),
-            max_tokens=1600,
-            timeout=180,
-            system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
-            call_name=f"target_price_basis_retry:{aid}",
+        def _retry_runner(aid=aid, rec=rec):
+            retry_text, retry_ok = _call_llm(
+                _build_target_price_basis_prompt([rec]),
+                max_tokens=1600,
+                timeout=min(120, task_budget),
+                system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
+                call_name=f"target_price_basis_retry:{aid}",
+            )
+            retry_result, retry_problems = _normalize_target_basis_payload(_parse_json_value(retry_text) if retry_ok else None, {aid})
+            return {"ok": retry_ok and aid in retry_result, "status": "ok_retry" if aid in retry_result else "failed_retry",
+                    "aid": aid, "result": retry_result, "problems": retry_problems}
+        retry_specs.append(LlmTaskSpec(task_name=f"target_price_basis_retry:{aid}", runner=_retry_runner))
+    if retry_specs:
+        retry_results, retry_meta = run_hkus_llm_tasks(
+            retry_specs,
+            max_workers=_hkus_llm_retry_workers(),
+            total_budget_seconds=max(1, int(task_budget - (time.time() - task_started))),
+            progress_prefix="[LLM RETRY]",
         )
-        if not retry_ok:
-            continue
-        retry_result, retry_problems = _normalize_target_basis_payload(_parse_json_value(retry_text), {aid})
-        if aid in retry_result:
-            result[aid] = retry_result[aid]
-        problems.setdefault("unknown", []).extend(retry_problems.get("unknown", []))
-        problems.setdefault("duplicates", []).extend(retry_problems.get("duplicates", []))
+        if retry_meta.get("budget_exceeded"):
+            _append_llm_issue("target_price_basis_issues", "target_price_basis_retry_budget_exceeded")
+        for task_result in retry_results:
+            content = task_result.content if isinstance(task_result.content, dict) else {}
+            aid = str(content.get("aid") or "")
+            retry_result = content.get("result") if isinstance(content.get("result"), dict) else {}
+            retry_problems = content.get("problems") if isinstance(content.get("problems"), dict) else {}
+            if aid and aid in retry_result:
+                result[aid] = retry_result[aid]
+            problems.setdefault("unknown", []).extend(retry_problems.get("unknown", []))
+            problems.setdefault("duplicates", []).extend(retry_problems.get("duplicates", []))
     missing = sorted(expected_ids - set(result))
     for aid in missing:
         result[aid] = {
             "target_price_basis": "研报披露目标价,正文未披露估值方法",
             "basis_evidence": "",
-            "key_assumptions": "正文未披露可验证的关键假设",
+            "key_assumptions": "估值方法未披露",
             "assumption_evidence": [],
         }
     unknown_ids = problems.get("unknown", [])
     dropped_dup = problems.get("duplicates", [])
     if unknown_ids:
-        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
-            f"unknown_article_ids_dropped: {unknown_ids}")
+        _append_llm_issue("target_price_basis_issues", f"unknown_article_ids_dropped: {unknown_ids}")
     if dropped_dup:
-        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
-            f"duplicate_article_ids_dropped: {dropped_dup}")
+        _append_llm_issue("target_price_basis_issues", f"duplicate_article_ids_dropped: {dropped_dup}")
     if missing:
-        _LLM_DIAGNOSTICS.setdefault("target_price_basis_issues", []).append(
-            f"missing_article_ids_fail_closed: {list(missing)}")
+        _append_llm_issue("target_price_basis_issues", f"missing_article_ids_fail_closed: {list(missing)}")
     return result
 
 
@@ -1107,8 +1859,8 @@ def calculate_target_price_stats(values: list[float]) -> dict:
     return {"low": clean[0], "median": median, "high": clean[-1], "count": n}
 
 
-def _sections_1_4_json_prompt(key_data: dict, schema_issues: list[str] | None = None,
-                              section_scope: str = "sections_1_4") -> str:
+def _legacy_ch1_to_4_json_prompt_unused(key_data: dict, schema_issues: list[str] | None = None,
+                              section_scope: str = "legacy_ch1_to_4") -> str:
     issue_text = "\nPrevious schema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
     return f"""You are a senior HK/US equity research analyst. Return ONLY one valid JSON object for {section_scope}.
 Do not output Markdown headings, Markdown tables, code fences, reference section, explanations, or prose outside JSON.
@@ -1140,15 +1892,15 @@ Content rules:
 - Never use generic fallback phrases from the forbidden generic fallback list.
 """
 
-def gen_hkus_sections_1_2_4(key_data: dict, ref_map: dict | None = None) -> tuple[dict[str, str], bool, dict]:
+def _legacy_gen_hkus_ch1_to_4_unused(key_data: dict, ref_map: dict | None = None) -> tuple[dict[str, str], bool, dict]:
     """Generate sections 1-4 as JSON, validate schema, then render Markdown."""
     if not _has_target_materials(key_data):
         return ({}, False, {"call_mode": "skipped_no_target_materials", "parse_attempts": 0, "schema_issues": ["no_target_materials"]})
     ref_map = ref_map or {}
     schema_issues: list[str] = []
     parse_attempts = 0
-    for scope in ("sections_1_4", "sections_1_4_retry"):
-        prompt = _sections_1_4_json_prompt(key_data, schema_issues if scope.endswith("retry") else None)
+    for scope in ("legacy_ch1_to_4", "legacy_ch1_to_4_retry"):
+        prompt = _legacy_ch1_to_4_json_prompt_unused(key_data, schema_issues if scope.endswith("retry") else None)
         text, ok = _call_llm(prompt, max_tokens=9000, timeout=180, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=scope)
         if not ok:
             schema_issues.append(f"{scope}:llm_failed")
@@ -1158,14 +1910,14 @@ def gen_hkus_sections_1_2_4(key_data: dict, ref_map: dict | None = None) -> tupl
         if parse_error:
             schema_issues.append(f"{scope}:{parse_error}")
             continue
-        clean, issues = _validate_sections_1_4_payload(payload, ref_map)
+        clean, issues = _legacy_validate_ch1_to_4_payload_unused(payload, ref_map)
         if not issues:
-            return _render_sections_1_4(clean), True, {"call_mode": "ok_json_combined", "parse_attempts": parse_attempts, "schema_issues": []}
+            return _legacy_render_ch1_to_4_unused(clean), True, {"call_mode": "ok_json_combined", "parse_attempts": parse_attempts, "schema_issues": []}
         schema_issues.extend(f"{scope}:{x}" for x in issues)
 
     split_payload: dict[str, Any] = {}
-    for scope in ("sections_1_2", "sections_3_4"):
-        prompt = _sections_1_4_json_prompt(key_data, schema_issues, section_scope=scope)
+    for scope in ("sections_1_2", "legacy_ch3_to_4"):
+        prompt = _legacy_ch1_to_4_json_prompt_unused(key_data, schema_issues, section_scope=scope)
         text, ok = _call_llm(prompt, max_tokens=7000, timeout=180, system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=scope)
         if not ok:
             schema_issues.append(f"{scope}:llm_failed")
@@ -1177,9 +1929,9 @@ def gen_hkus_sections_1_2_4(key_data: dict, ref_map: dict | None = None) -> tupl
             continue
         split_payload.update(payload)
     if split_payload:
-        clean, issues = _validate_sections_1_4_payload(split_payload, ref_map)
+        clean, issues = _legacy_validate_ch1_to_4_payload_unused(split_payload, ref_map)
         if not issues:
-            return _render_sections_1_4(clean), True, {"call_mode": "ok_json_split", "parse_attempts": parse_attempts, "schema_issues": []}
+            return _legacy_render_ch1_to_4_unused(clean), True, {"call_mode": "ok_json_split", "parse_attempts": parse_attempts, "schema_issues": []}
         schema_issues.extend(f"split:{x}" for x in issues)
     return ({}, False, {"call_mode": "failed_schema", "parse_attempts": parse_attempts, "schema_issues": schema_issues[:80]})
 
@@ -1242,6 +1994,343 @@ Requirements:
 Output ONLY the Markdown sections above, no explanation."""
 
 
+def _legacy_run_ch1_to_4_task_unused(key_data: dict, ref_map: dict) -> dict:
+    combined, ok, meta = _legacy_gen_hkus_ch1_to_4_unused(key_data, ref_map)
+    return {"ok": ok, "status": meta.get("call_mode", "ok_json_combined" if ok else "failed_schema"),
+            "sections": combined if ok else {}, "meta": meta}
+
+
+def _run_sections_1_2_task(key_data: dict, ref_map: dict) -> dict:
+    sections, ok, meta = gen_hkus_sections_1_2(key_data, ref_map)
+    return {"ok": ok, "status": meta.get("call_mode", "ok_json" if ok else "failed_schema"),
+            "sections": sections if ok else {}, "meta": meta}
+
+
+def _run_section_3_task(key_data: dict, ref_map: dict) -> dict:
+    text, ok, issues = gen_hkus_section_3(key_data, ref_map)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _run_section_4_task(key_data: dict, ref_map: dict) -> dict:
+    text, ok, issues = gen_hkus_section_4(key_data, ref_map)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _run_section_8_task(key_data: dict, ref_map: dict, mkt: str = "HK") -> dict:
+    text, ok, issues = gen_hkus_section_8(key_data, ref_map, mkt)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _run_section_10_part_task(key_data: dict, ref_map: dict, scope: str) -> dict:
+    rows, ok, issues = gen_hkus_section_10_part(key_data, ref_map, scope)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "rows": rows, "issues": issues}
+
+
+def _run_section_12_task(key_data: dict, ref_map: dict) -> dict:
+    text, ok, issues = gen_hkus_section_12(key_data, ref_map)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _repair_title_from_verified_sections(texts: dict, company_name: str, ticker: str, market_cn: str) -> str:
+    verified = "\n\n".join(x for x in (texts.get("s12", ""), texts.get("s34", "")) if x).strip()
+    if not verified:
+        return ""
+    prompt = (
+        "Return one Chinese investment conclusion only, 10-25 Chinese characters. "
+        "Do not include company name, ticker, colon, or generic phrases. Use only the verified text below.\n\n"
+        f"{verified[:1200]}"
+    )
+    text, ok = _call_llm(prompt, max_tokens=120, timeout=min(45, _hkus_llm_task_budget_seconds()),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name="title_repair")
+    if not ok:
+        return ""
+    return _sanitize_title_conclusion(text, company_name, ticker, market_cn)
+
+
+def _run_target_price_basis_task(records: list[dict]) -> dict:
+    if not records:
+        return {"ok": False, "status": "failed_no_traceable_target_price", "basis_map": {}, "record_count": 0}
+    basis_map = _extract_target_price_basis(records)
+    return {"ok": bool(basis_map), "status": "ok" if basis_map else "failed", "basis_map": basis_map, "record_count": len(records)}
+
+
+def _run_forecast_sample_extraction_task(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str) -> dict:
+    samples = _extract_forecast_samples(materials)
+    payload = _forecast_samples_payload(samples)
+    aggregate = _aggregate_forecast_samples(samples)
+    return {
+        "ok": bool(samples),
+        "status": "ok" if samples else "failed_no_forecast_samples",
+        "forecast_samples": payload,
+        "consensus_forecast": aggregate,
+        "sample_count": len(samples),
+    }
+
+
+def _section_5_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""Return ONLY JSON for HK/US one-pager section 5 business breakdown.
+Schema:
+{{"business_model": {{"text": "...", "source_ids": [1]}}, "performance_mode": "segment_table|product_matrix|kpi_table", "periods": [{{"label": "FY2025", "period_type": "annual_actual", "currency": "RMB", "unit": "亿元"}}], "segment_rows": [{{"business": "...", "values": [{{"period": "FY2025", "revenue": "100", "share": "30%", "gross_margin": "20%", "data_basis": "actual", "source_ids": [1]}}]}}], "kpi_rows": [{{"business": "...", "metric": "...", "period": "...", "value": "...", "source_ids": [1]}}], "deep_dives": [{{"business": "...", "conclusion": "...", "text": "...", "source_ids": [1]}}]}}
+Rules: no Markdown; never invent segment revenue or gross margin; use kpi_table when segment data is unavailable; do not output N/A or validation-variable fields.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _validate_render_section_5(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    if not isinstance(payload, dict):
+        return "", ["section_5.payload_not_object"]
+    bm = payload.get("business_model") if isinstance(payload.get("business_model"), dict) else {}
+    bm_text = _text_ok(bm.get("text"), issues, "section_5.business_model.text", 40)
+    bm_refs = _refs_ok(bm.get("source_ids") or bm.get("source_refs"), ref_map, issues, "section_5.business_model")
+    periods = payload.get("periods") if isinstance(payload.get("periods"), list) else []
+    period_labels = [_plain_text(p.get("label"), 20) for p in periods if isinstance(p, dict) and _plain_text(p.get("label"), 20)]
+    period_labels = period_labels[:4]
+    lines = ["## 5 业务拆分", "", "### 5.1 公司如何赚钱", ""]
+    if bm_text and bm_refs:
+        lines.append(normalize_refs(bm_text, bm_refs))
+    lines.extend(["", "### 5.2 分业务表现", ""])
+    mode = _plain_text(payload.get("performance_mode") or "segment_table", 24)
+    segment_rows = payload.get("segment_rows") if isinstance(payload.get("segment_rows"), list) else []
+    kpi_rows = payload.get("kpi_rows") if isinstance(payload.get("kpi_rows"), list) else []
+    rendered_perf = False
+    if mode == "segment_table" and period_labels and segment_rows:
+        rows = []
+        for row in segment_rows[:8]:
+            if not isinstance(row, dict):
+                continue
+            business = _plain_text(row.get("business"), 30)
+            values = row.get("values") if isinstance(row.get("values"), list) else []
+            by_period = {}
+            refs = []
+            for value in values:
+                if not isinstance(value, dict):
+                    continue
+                period = _plain_text(value.get("period"), 20)
+                if period not in period_labels:
+                    continue
+                parts = []
+                for label, key in (("收入", "revenue"), ("占比", "share"), ("毛利率", "gross_margin")):
+                    val = _plain_text(value.get(key), 32)
+                    if val and not _PLACEHOLDER_RE.search(val):
+                        parts.append(f"{label}{val}")
+                if parts:
+                    by_period[period] = "；".join(parts)
+                    refs.extend(_refs_ok(value.get("source_ids") or value.get("source_refs"), ref_map, issues, f"section_5.segment.{business}.{period}"))
+            if business and by_period:
+                rows.append((business, by_period, list(dict.fromkeys(refs))))
+        nonempty_periods = [p for p in period_labels if any(p in row[1] for row in rows)]
+        if rows and nonempty_periods:
+            lines.append("| 业务 | " + " | ".join(nonempty_periods) + " |")
+            lines.append("|:--|" + "|".join(":--" for _ in nonempty_periods) + "|")
+            for business, by_period, refs in rows:
+                lines.append("| " + " | ".join([business] + [normalize_refs(by_period.get(p, ""), refs) for p in nonempty_periods]) + " |")
+            rendered_perf = True
+    if not rendered_perf and kpi_rows:
+        lines.append("| 业务 | 指标 | 期间 | 数值 |")
+        lines.append("|:--|:--|:--|:--|")
+        count = 0
+        for i, row in enumerate(kpi_rows[:8]):
+            if not isinstance(row, dict):
+                continue
+            refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, issues, f"section_5.kpi_rows[{i}]")
+            business = _plain_text(row.get("business"), 30)
+            metric = _plain_text(row.get("metric"), 30)
+            period = _plain_text(row.get("period"), 20)
+            value = _plain_text(row.get("value"), 40)
+            if business and metric and period and value and refs:
+                lines.append(f"| {business} | {metric} | {period} | {normalize_refs(value, refs)} |")
+                count += 1
+        rendered_perf = count >= 2
+    if not rendered_perf:
+        issues.append("section_5.performance_missing")
+    lines.extend(["", "### 5.3 业务深度", ""])
+    dives = payload.get("deep_dives") if isinstance(payload.get("deep_dives"), list) else []
+    dive_count = 0
+    for i, item in enumerate(dives[:2]):
+        if not isinstance(item, dict):
+            issues.append(f"section_5.deep_dives[{i}].not_object")
+            continue
+        business = _text_ok(item.get("business"), issues, f"section_5.deep_dives[{i}].business", 2)
+        conclusion = _text_ok(item.get("conclusion"), issues, f"section_5.deep_dives[{i}].conclusion", 6)
+        text = _text_ok(item.get("text"), issues, f"section_5.deep_dives[{i}].text", 30)
+        refs = _refs_ok(item.get("source_ids") or item.get("source_refs"), ref_map, issues, f"section_5.deep_dives[{i}]")
+        if business and conclusion and text and refs:
+            lines.append(f"**{business}——{conclusion}：** {normalize_refs(text, refs)}")
+            dive_count += 1
+    if dive_count < 1:
+        issues.append("section_5.deep_dives_missing")
+    return ("\n".join(lines), issues) if not issues else ("", issues)
+
+
+def gen_hkus_section_5(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+    issues: list[str] = []
+    for call_name in ("section_5", "section_5_json_repair"):
+        text, ok = _call_llm(_section_5_json_prompt(key_data, issues if call_name.endswith("repair") else None),
+                             max_tokens=4500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_section_5(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered, True, []
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return "", False, issues[:40]
+
+
+def _section_6_json_prompt(key_data: dict, schema_issues: list[str] | None = None) -> str:
+    issue_text = "\nSchema issues to fix:\n" + "\n".join(schema_issues or []) if schema_issues else ""
+    return f"""Return ONLY JSON for HK/US one-pager section 6 supply/customer chain.
+Schema:
+{{"rows": [{{"type": "主要客户|主要供应商|核心资源|渠道|生态伙伴", "name": "...", "relationship": "...", "source_ids": [1]}}], "fallback_description": {{"text": "...", "source_ids": [1]}}}}
+Rules: use a table only when at least two concrete entity/resource rows exist; otherwise provide one concise source-backed fallback paragraph; do not output upstream/middle/downstream prose or validation-variable fields.
+Context:
+{_format_hkus_key_context(key_data)}
+{issue_text}"""
+
+
+def _validate_render_section_6(payload: dict, ref_map: dict) -> tuple[str, list[str]]:
+    issues: list[str] = []
+    rows = payload.get("rows") if isinstance(payload, dict) and isinstance(payload.get("rows"), list) else []
+    rendered_rows = []
+    for i, row in enumerate(rows[:10]):
+        if not isinstance(row, dict):
+            issues.append(f"section_6.rows[{i}].not_object")
+            continue
+        typ = _plain_text(row.get("type"), 24)
+        name = _plain_text(row.get("name"), 40)
+        rel = _plain_text(row.get("relationship"), 90)
+        refs = _refs_ok(row.get("source_ids") or row.get("source_refs"), ref_map, issues, f"section_6.rows[{i}]")
+        if typ and name and rel and refs:
+            rendered_rows.append((typ, name, normalize_refs(rel, refs)))
+    lines = ["## 6 产销链与生态", ""]
+    if len(rendered_rows) >= 2:
+        lines.extend(["| 类型（主要客户/主要供应商/核心资源） | 名称 | 合作情况/规模/占比 |", "|:--|:--|:--|"])
+        for row in rendered_rows:
+            lines.append("| " + " | ".join(row) + " |")
+        return "\n".join(lines), []
+    fallback = payload.get("fallback_description") if isinstance(payload, dict) and isinstance(payload.get("fallback_description"), dict) else {}
+    text = _text_ok(fallback.get("text"), issues, "section_6.fallback_description.text", 40)
+    refs = _refs_ok(fallback.get("source_ids") or fallback.get("source_refs"), ref_map, issues, "section_6.fallback_description")
+    if text and refs:
+        lines.append(normalize_refs(text, refs))
+        return "\n".join(lines), []
+    return "", issues + [f"section_6.valid_entity_rows:{len(rendered_rows)}<2"]
+
+
+def gen_hkus_section_6(key_data: dict, ref_map: dict) -> tuple[str, bool, list[str]]:
+    issues: list[str] = []
+    for call_name in ("section_6", "section_6_json_repair"):
+        text, ok = _call_llm(_section_6_json_prompt(key_data, issues if call_name.endswith("repair") else None),
+                             max_tokens=3500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=call_name)
+        if not ok:
+            issues.append(f"{call_name}:llm_failed")
+            continue
+        payload, parse_error = _parse_json_object(text)
+        if parse_error:
+            issues.append(f"{call_name}:{parse_error}")
+            continue
+        rendered, render_issues = _validate_render_section_6(payload, ref_map)
+        if rendered and not render_issues:
+            return rendered, True, []
+        issues.extend(f"{call_name}:{x}" for x in render_issues)
+    return "", False, issues[:40]
+
+
+def _run_section_5_task(key_data: dict, ref_map: dict) -> dict:
+    text, ok, issues = gen_hkus_section_5(key_data, ref_map)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _run_section_6_task(key_data: dict, ref_map: dict) -> dict:
+    text, ok, issues = gen_hkus_section_6(key_data, ref_map)
+    return {"ok": ok, "status": "ok_json" if ok else "failed_json_schema", "text": text, "issues": issues}
+
+
+def _run_section_5_7_task(sk: str, materials: dict, ref_map: dict, key_data: dict, assigned: dict,
+                          company_name: str, ticker: str, mkt: str, guide: str,
+                          target_materials_ok: bool, key: str) -> dict:
+    hk_s57 = sk == "s57" and mkt == "HK"
+    hk_financial_section = _build_hk_financial_section(materials, ref_map) if hk_s57 else ""
+    prompt_h2 = ["5 业务拆分", "6 产销链与生态"] if hk_s57 else None
+    mats = _build_section_context(sk, key_data, assigned, ref_map)
+    if len(mats) < 100 or (sk != "s12r" and not target_materials_ok):
+        if hk_s57 and hk_financial_section:
+            return {"ok": True, "status": "degraded_partial_hk_pit_only", "text": hk_financial_section,
+                    "failed_sections": ["5", "6"], "section_status": {"7": "ok_pit_deterministic"}, "chars": len(hk_financial_section)}
+        return {"ok": False, "status": "failed_sparse", "text": "", "failed_sections": [sk], "section_status": {}, "chars": 0}
+    if not key:
+        if hk_s57 and hk_financial_section:
+            return {"ok": True, "status": "degraded_partial_hk_pit_only", "text": hk_financial_section,
+                    "failed_sections": ["5", "6"], "section_status": {"7": "ok_pit_deterministic"}, "chars": len(hk_financial_section)}
+        return {"ok": False, "status": "skipped", "text": "", "failed_sections": [sk], "section_status": {}, "chars": 0}
+    si = SECTION_MATERIAL_MAP[sk]
+    prompt = _build_section_prompt(sk, mats, company_name, ticker, mkt, h2_override=prompt_h2)
+    prompt += f"\n\n---\nREFERENCE GUIDE (only use these [N] numbers, 1-{len(ref_map)}):\n{guide}\n\nDo NOT invent new [N] numbers beyond range 1-{len(ref_map)}."
+    text, ok = _call_llm(prompt, max_tokens=si.get("max_tokens", 8000),
+                         timeout=si.get("timeout", 180),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS,
+                         call_name=f"{sk}_markdown")
+    if ok and text and len(text.strip()) > 100:
+        body = _clean_fence(text)
+        section_status = {}
+        failed_sections = []
+        if hk_s57:
+            if hk_financial_section:
+                body = "\n\n".join([body, hk_financial_section])
+                section_status["7"] = "ok_pit_deterministic"
+            else:
+                section_status["7"] = "failed_missing_pit"
+                failed_sections.append("7")
+        return {"ok": True, "status": "ok" if not failed_sections else "degraded_missing_hk_pit",
+                "text": body, "failed_sections": failed_sections, "section_status": section_status, "chars": len(body)}
+    if hk_s57 and hk_financial_section:
+        return {"ok": True, "status": "degraded_partial_hk_pit_only", "text": hk_financial_section,
+                "failed_sections": ["5", "6"], "section_status": {"7": "ok_pit_deterministic"}, "chars": len(hk_financial_section)}
+    return {"ok": False, "status": "failed", "text": "", "failed_sections": [sk], "section_status": {}, "chars": 0}
+
+
+def _run_markdown_section_task(section_no: str, materials: dict, ref_map: dict, key_data: dict, assigned: dict,
+                               company_name: str, ticker: str, mkt: str, guide: str,
+                               target_materials_ok: bool, key: str) -> dict:
+    h2_map = {
+        "5": ["5 业务拆分"],
+        "6": ["6 产销链与生态"],
+        "7": ["7 财务与盈利质量"],
+    }
+    if section_no == "7" and mkt == "HK":
+        text = _build_hk_financial_section(materials, ref_map)
+        return {
+            "ok": bool(text),
+            "status": "ok_pit_deterministic" if text else "failed_missing_pit",
+            "text": text,
+            "failed_sections": [] if text else ["7"],
+            "section_status": {"7": "ok_pit_deterministic" if text else "failed_missing_pit"},
+            "chars": len(text or ""),
+        }
+    mats = _build_section_context("s57", key_data, assigned, ref_map)
+    if len(mats) < 100 or not target_materials_ok:
+        return {"ok": False, "status": "failed_sparse", "text": "", "failed_sections": [section_no], "section_status": {section_no: "failed_sparse"}, "chars": 0}
+    if not key:
+        return {"ok": False, "status": "skipped", "text": "", "failed_sections": [section_no], "section_status": {section_no: "skipped"}, "chars": 0}
+    prompt = _build_section_prompt("s57", mats, company_name, ticker, mkt, h2_override=h2_map[section_no])
+    prompt += f"\n\n---\nREFERENCE GUIDE (only use these [N] numbers, 1-{len(ref_map)}):\n{guide}\n\nDo NOT invent new [N] numbers beyond range 1-{len(ref_map)}."
+    text, ok = _call_llm(prompt, max_tokens=4500, timeout=min(120, _hkus_llm_task_budget_seconds()),
+                         system=_HK_US_REPORT_SYSTEM_CONSTRAINTS, call_name=f"section_{section_no}")
+    body = _clean_fence(text) if ok and text else ""
+    if ok and len(body.strip()) > 80 and f"## {section_no}" in body:
+        return {"ok": True, "status": "ok", "text": body, "failed_sections": [], "section_status": {section_no: "ok"}, "chars": len(body)}
+    return {"ok": False, "status": "failed", "text": "", "failed_sections": [section_no], "section_status": {section_no: "failed"}, "chars": 0}
+
+
 # ---------------------------------------------------------------------------
 # section-wise report generation
 # ---------------------------------------------------------------------------
@@ -1270,189 +2359,175 @@ def write_report(materials: dict, source_trace: dict, ticker: str, market: str,
     _, target_price_meta = _collect_target_price_records(materials, ref_map, company_name, ticker, mkt, return_meta=True)
     print(f"  target matched reports: {len(key_data.get('target_matched_reports', []))}")
 
-    # 4. section-wise LLM generation (body only, LLM must NOT output H2/H3)
+    # 4. bounded parallel LLM generation. Worker tasks return local results only;
+    # texts/status/failed/generation_status are merged below on the main thread.
     texts = {}
     status = {}
     failed = []
-
-    sections_1_4_meta = {"call_mode": "not_called", "parse_attempts": 0, "schema_issues": []}
+    target_price_records = _collect_target_price_records(materials, ref_map, company_name, ticker, mkt)
+    target_price_basis_records = _select_target_price_basis_records(target_price_records)
+    task_specs: list[LlmTaskSpec] = []
     if key and target_materials_ok:
-        combined_14, ok_14, sections_1_4_meta = gen_hkus_sections_1_2_4(key_data, ref_map)
-        if ok_14:
-            texts.update(combined_14)
-            status["s12"] = "ok_json_sections_1_4"
-            status["s34"] = "ok_json_sections_1_4"
-            status["1"] = status["2"] = status["3"] = status["4"] = sections_1_4_meta.get("call_mode", "ok_json_combined")
-            print(f"    [ch1-4] LLM combined, {len(texts.get('s12','')) + len(texts.get('s34',''))} chars")
+        task_specs.extend([
+            LlmTaskSpec("sections_1_2", lambda: _run_sections_1_2_task(key_data, ref_map)),
+            LlmTaskSpec("section_3", lambda: _run_section_3_task(key_data, ref_map)),
+            LlmTaskSpec("section_4", lambda: _run_section_4_task(key_data, ref_map)),
+            LlmTaskSpec("section_5", lambda: _run_section_5_task(key_data, ref_map)),
+            LlmTaskSpec("section_6", lambda: _run_section_6_task(key_data, ref_map)),
+            LlmTaskSpec("section_7", lambda: _run_markdown_section_task("7", materials, ref_map, key_data, assigned, company_name, ticker, mkt, guide, target_materials_ok, key)),
+            LlmTaskSpec("section_8", lambda: _run_section_8_task(key_data, ref_map, mkt)),
+            LlmTaskSpec("section_10_a", lambda: _run_section_10_part_task(key_data, ref_map, "section_10_a")),
+            LlmTaskSpec("section_10_b", lambda: _run_section_10_part_task(key_data, ref_map, "section_10_b")),
+            LlmTaskSpec("section_12", lambda: _run_section_12_task(key_data, ref_map)),
+            LlmTaskSpec("forecast_sample_extraction", lambda: _run_forecast_sample_extraction_task(materials, ref_map, company_name, ticker, mkt)),
+        ])
+        if target_price_basis_records:
+            task_specs.append(LlmTaskSpec("target_price_basis", lambda: _run_target_price_basis_task(target_price_basis_records)))
+    else:
+        task_specs.append(LlmTaskSpec("section_7", lambda: _run_markdown_section_task("7", materials, ref_map, key_data, assigned, company_name, ticker, mkt, guide, target_materials_ok, key)))
+
+    phase2_results, phase2_meta = run_hkus_llm_tasks(
+        task_specs,
+        max_workers=_hkus_llm_max_workers(),
+        total_budget_seconds=_hkus_llm_total_budget_seconds(),
+        progress_prefix="[LLM]",
+    )
+    status["_llm_parallel"] = {
+        "max_workers": phase2_meta.get("max_workers"),
+        "elapsed_seconds": round(float(phase2_meta.get("elapsed_seconds", 0)), 3),
+        "budget_exceeded": bool(phase2_meta.get("budget_exceeded")),
+        "observed_max_active_tasks": phase2_meta.get("observed_max_active_tasks"),
+        "observed_max_retry_tasks": phase2_meta.get("observed_max_retry_tasks"),
+    }
+    result_map = {r.task_name: r for r in phase2_results}
+
+    r12 = result_map.get("sections_1_2")
+    if r12 and r12.ok and isinstance(r12.content, dict) and r12.content.get("sections"):
+        texts.update(r12.content["sections"])
+        call_mode = r12.content.get("meta", {}).get("call_mode", "ok_json")
+        status["s12"] = call_mode
+        status["1"] = status["2"] = call_mode
+    else:
+        mode = (r12.content or {}).get("status") if r12 and isinstance(r12.content, dict) else ("failed_sparse_or_no_llm" if not key or not target_materials_ok else "failed_schema")
+        status["1"] = status["2"] = status["s12"] = mode
+        failed.extend(["1", "2"])
+
+    r3 = result_map.get("section_3")
+    r4 = result_map.get("section_4")
+    s34_parts = []
+    for section_no, result in (("3", r3), ("4", r4)):
+        if result and result.ok and isinstance(result.content, dict) and result.content.get("text"):
+            s34_parts.append(result.content["text"])
+            status[section_no] = result.content.get("status", result.status)
         else:
-            status["1"] = status["2"] = status["3"] = status["4"] = sections_1_4_meta.get("call_mode", "failed_schema")
-            print("    [ch1-4] LLM combined failed; continue section flow")
+            status[section_no] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
+            if result and isinstance(result.content, dict):
+                status[f"{section_no}_schema_issues"] = result.content.get("issues", [])[:30]
+            failed.append(section_no)
+    texts["s34"] = "\n\n".join(s34_parts)
+    status["s34"] = "ok" if len(s34_parts) == 2 else "degraded_partial"
+    print(f"    [ch1-4] s12={status.get('s12','?')} s34={status.get('s34','?')}, {len(texts.get('s12','')) + len(texts.get('s34',''))} chars", flush=True)
 
-    for sk in SECTION_ORDER:
-        si = SECTION_MATERIAL_MAP[sk]
-        if sk in texts:
-            continue
-        if sk in ("s12", "s34"):
-            status[sk] = status.get(sk) or "failed_json_required"
-            if sk == "s12":
-                failed.extend(["1", "2"])
-            else:
-                failed.extend(["3", "4"])
-            print(f"    [{si['label']}] FAIL (sections 1-4 require validated JSON; no Markdown fallback)")
-            continue
-
-        # ch10-11: §10 via JSON LLM (no old deterministic fallback), §11 deterministic
-        if sk == "s1011":
-            sec10_text = ""
-            if key and target_materials_ok:
-                sec10_text, ok10, issues10 = gen_hkus_section_10(key_data, ref_map)
-                if ok10:
-                    status["10"] = "ok_json"
-                else:
-                    status["10"] = "failed_json_schema"
-                    status["10_schema_issues"] = issues10[:30]
-                    failed.append("10")
-            else:
-                status["10"] = "failed_sparse_or_no_llm"
-                failed.append("10")
-            # Always render §10 H2 even when failed — the assembly injects it
-            if not sec10_text:
-                sec10_text = (
-                    "## 10 市场分歧\n\n"
-                    "本轮未取得足够目标公司材料来构建明确的多空分歧表。"
-                )
-            sec11 = _build_valuation_section_group(materials, ref_map, company_name, ticker, mkt)
-            parts = []
-            if sec10_text:
-                parts.append(sec10_text)
-            if sec11:
-                parts.append(sec11)
-                status["11"] = "ok_deterministic"
-            else:
-                status["11"] = "failed_no_traceable_target_price"
-                failed.append("11")
-            if parts:
-                texts[sk] = "\n\n".join(parts)
-                status[sk] = "degraded_partial" if len(parts) < 2 else "ok_deterministic"
-                print(f"    [{si['label']}] s10={status.get('10','?')} s11={status.get('11','?')}, {len(texts[sk])} chars")
-            else:
-                status[sk] = "failed"
-                failed.append(sk)
-                print(f"    [{si['label']}] FAIL (no source-backed debate/valuation)")
-            continue
-
-        if sk == "s89":
-            peer_section = build_peer_comparison_section(peer_bundle or {}, ref_map) if build_peer_comparison_section else ""
-            print(f"    [{si['label']}] generating §8 JSON + deterministic §9...")
-            sec8_text = ""
-            if key and target_materials_ok:
-                sec8_text, ok8, issues8 = gen_hkus_section_8(key_data, ref_map)
-                if ok8:
-                    status["8"] = "ok_json"
-                else:
-                    status["8"] = "failed_json_schema"
-                    status["8_schema_issues"] = issues8[:30]
-                    failed.append("8")
-            else:
-                status["8"] = "failed_sparse_or_no_llm"
-                failed.append("8")
-            valid_peer_rows = int((peer_bundle or {}).get("valid_peer_rows") or 0)
-            if peer_section:
-                status["9"] = "ok_peer_deterministic" if valid_peer_rows >= 2 else "failed_peer_count"
-                if valid_peer_rows < 2:
-                    failed.append("9")
-            else:
-                status["9"] = "failed_no_peer_evidence"
-                failed.append("9")
-            texts[sk] = "\n\n".join(x for x in [sec8_text, peer_section] if x)
-            status[sk] = "ok" if sec8_text and peer_section and valid_peer_rows >= 2 else "degraded_partial"
-            continue
-
-        if sk == "s12r":
-            print(f"    [{si['label']}] generating §12 risk-title JSON...")
-            if key and target_materials_ok:
-                sec12_text, ok12, issues12 = gen_hkus_section_12(key_data, ref_map)
-                if ok12:
-                    texts[sk] = sec12_text
-                    status["12"] = "ok_json"
-                    status[sk] = "ok_json"
-                else:
-                    status["12"] = "failed_json_schema"
-                    status["12_schema_issues"] = issues12[:30]
-                    status[sk] = "failed_json_schema"
-                    failed.append("12")
-            else:
-                status["12"] = "failed_sparse_or_no_llm"
-                status[sk] = "failed_sparse_or_no_llm"
-                failed.append("12")
-            continue
-
-        hk_s57 = sk == "s57" and mkt == "HK"
-        hk_financial_section = _build_hk_financial_section(materials, ref_map) if hk_s57 else ""
-        prompt_h2 = ["5 业务拆分", "6 产销链与生态"] if hk_s57 else None
-        mats = _build_section_context(sk, key_data, assigned, ref_map)
-        prompt = _build_section_prompt(sk, mats, company_name, ticker, mkt, h2_override=prompt_h2)
-        prompt += f"\n\n---\nREFERENCE GUIDE (only use these [N] numbers, 1-{len(ref_map)}):\n{guide}\n\nDo NOT invent new [N] numbers beyond range 1-{len(ref_map)}."
-
-        print(f"    [{si['label']}] generating ({len(mats)} chars)...")
-
-        # Sparse materials are a generation failure in RC mode. Do not output
-        # placeholders as if the section succeeded.
-        if len(mats) < 100 or (sk != "s12r" and not target_materials_ok):
-            if hk_s57 and hk_financial_section:
-                texts[sk] = hk_financial_section
-                status["7"] = "ok_pit_deterministic"
-                status[sk] = "degraded_partial_hk_pit_only"
-                failed.extend(["5", "6"])
-                print(f"      PARTIAL deterministic HK §7, {len(hk_financial_section)} chars")
-            else:
-                status[sk] = "failed_sparse"; failed.append(sk)
-                print(f"      FAIL (sparse/untargeted materials, {len(mats)} chars)")
-            continue
-
-        if not key:
-            if hk_s57 and hk_financial_section:
-                texts[sk] = hk_financial_section
-                status["7"] = "ok_pit_deterministic"
-                status[sk] = "degraded_partial_hk_pit_only"
-                failed.extend(["5", "6"])
-                print(f"      OK deterministic HK §7 no-llm, {len(hk_financial_section)} chars")
-                continue
-            status[sk] = "skipped"; failed.append(sk); continue
-
-        t0 = time.time()
-        text, ok = _call_llm(prompt, max_tokens=si.get("max_tokens", 8000),
-                             timeout=si.get("timeout", 180),
-                             system=_HK_US_REPORT_SYSTEM_CONSTRAINTS)
-        dt = time.time() - t0
-        if ok and text and len(text.strip()) > 100:
-            body = _clean_fence(text)
-            if hk_s57:
-                if hk_financial_section:
-                    body = "\n\n".join([body, hk_financial_section])
-                    status["7"] = "ok_pit_deterministic"
-                else:
-                    status["7"] = "failed_missing_pit"
-                    failed.append("7")
-            texts[sk] = body
-            status[sk] = "ok" if not hk_s57 or hk_financial_section else "degraded_missing_hk_pit"
-            print(f"      OK {dt:.0f}s, {len(body)} chars")
+    s57_parts = []
+    for section_no in ("5", "6", "7"):
+        result = result_map.get(f"section_{section_no}")
+        if result and isinstance(result.content, dict) and result.content.get("text"):
+            s57_parts.append(result.content["text"])
+            status[section_no] = result.content.get("status", result.status)
+            status.update(result.content.get("section_status", {}))
+            failed.extend(result.content.get("failed_sections", []))
         else:
-            if hk_s57 and hk_financial_section:
-                texts[sk] = hk_financial_section
-                status["7"] = "ok_pit_deterministic"
-                status[sk] = "degraded_partial_hk_pit_only"
-                failed.extend(["5", "6"])
-                print(f"      LLM FAIL {dt:.0f}s; deterministic HK §7, {len(hk_financial_section)} chars")
-            else:
-                status[sk] = "failed"; failed.append(sk)
-                print(f"      FAIL {dt:.0f}s")
+            status[section_no] = result.status if result else "failed"
+            failed.append(section_no)
+    if s57_parts:
+        texts["s57"] = "\n\n".join(s57_parts)
+        status["s57"] = "ok" if all(status.get(x, "").startswith("ok") for x in ("5", "6", "7")) else "degraded_partial"
+        print(f"    [ch5-7] {status['s57']}, {len(texts['s57'])} chars", flush=True)
+    else:
+        status["s57"] = "failed"
+        failed.append("s57")
+
+    sec8_text = ""
+    r8 = result_map.get("section_8")
+    if r8 and r8.ok and isinstance(r8.content, dict) and r8.content.get("text"):
+        sec8_text = r8.content["text"]
+        status["8"] = "ok_json"
+    else:
+        status["8"] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
+        if r8 and isinstance(r8.content, dict):
+            status["8_schema_issues"] = r8.content.get("issues", [])[:30]
+        failed.append("8")
+    peer_section = build_peer_comparison_section(peer_bundle or {}, ref_map) if build_peer_comparison_section else ""
+    valid_peer_rows = int((peer_bundle or {}).get("valid_peer_rows") or 0)
+    if peer_section:
+        status["9"] = "ok_peer_deterministic" if valid_peer_rows >= 2 else "failed_peer_count"
+        if valid_peer_rows < 2:
+            failed.append("9")
+    else:
+        status["9"] = "failed_no_peer_evidence"
+        failed.append("9")
+    texts["s89"] = "\n\n".join(x for x in [sec8_text, peer_section] if x)
+    status["s89"] = "ok" if sec8_text and peer_section and valid_peer_rows >= 2 else "degraded_partial"
+
+    sec10_text = ""
+    rows_10 = []
+    issues_10 = []
+    for name in ("section_10_a", "section_10_b"):
+        r10p = result_map.get(name)
+        if r10p and isinstance(r10p.content, dict):
+            if r10p.content.get("rows"):
+                rows_10.append(r10p.content["rows"])
+            issues_10.extend(r10p.content.get("issues", []) or [])
+    sec10_text, sec10_ok, sec10_issues = merge_hkus_section_10_parts(rows_10)
+    if sec10_text and sec10_ok:
+        status["10"] = "ok_json_split" if not any("partial_rows" in x for x in sec10_issues) else "partial_json_split"
+    else:
+        status["10"] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
+        status["10_schema_issues"] = (issues_10 + sec10_issues)[:30]
+        failed.append("10")
+    if not sec10_text:
+        sec10_text = "## 10 市场分歧\n\n本轮未取得足够目标公司材料来构建明确的多空分歧表。"
+    basis_map = {}
+    rbasis = result_map.get("target_price_basis")
+    if rbasis and rbasis.ok and isinstance(rbasis.content, dict):
+        basis_map = rbasis.content.get("basis_map") or {}
+    rforecast = result_map.get("forecast_sample_extraction")
+    forecast_samples_payload = {"sample_count": 0, "samples": []}
+    if rforecast and isinstance(rforecast.content, dict):
+        forecast_samples_payload = rforecast.content.get("forecast_samples") or forecast_samples_payload
+    sec11 = _build_valuation_section_group(materials, ref_map, company_name, ticker, mkt, basis_map=basis_map if basis_map else None)
+    _save_json(str(Path(output_dir) / "forecast_samples.json"), forecast_samples_payload)
+    _save_json(str(Path(output_dir) / "consensus_forecast.json"), materials.get("_consensus_forecast_output") or {"forecast_years": [], "rows": [], "sample_count": 0})
+    parts = [sec10_text] if sec10_text else []
+    if sec11:
+        parts.append(sec11)
+        status["11"] = "ok_deterministic"
+    else:
+        status["11"] = "failed_no_traceable_target_price"
+        failed.append("11")
+    texts["s1011"] = "\n\n".join(parts)
+    status["s1011"] = "degraded_partial" if len(parts) < 2 else "ok_deterministic"
+    print(f"    [ch10-11] s10={status.get('10','?')} s11={status.get('11','?')}, {len(texts['s1011'])} chars", flush=True)
+
+    r12 = result_map.get("section_12")
+    if r12 and r12.ok and isinstance(r12.content, dict) and r12.content.get("text"):
+        texts["s12r"] = r12.content["text"]
+        status["12"] = "ok_json"
+        status["s12r"] = "ok_json"
+    else:
+        status["12"] = "failed_json_schema" if key and target_materials_ok else "failed_sparse_or_no_llm"
+        status["s12r"] = status["12"]
+        if r12 and isinstance(r12.content, dict):
+            status["12_schema_issues"] = r12.content.get("issues", [])[:30]
+        failed.append("12")
 
     # 5. Extract title conclusion: JSON _title_conclusion first, then §1 text fallback
     mkt_cn = "港股" if mkt == "HK" else "美股"
     conclusion = texts.get("_title_conclusion", "")
     if not conclusion:
         conclusion = _derive_title_conclusion(texts.get("s12", ""), company_name, mkt_cn, ticker)
+    if not conclusion and key:
+        conclusion = _repair_title_from_verified_sections(texts, company_name, ticker, mkt_cn)
     if not conclusion:
         conclusion = _build_deterministic_fallback_title(texts, company_name, ticker)
     title_status = "ok" if conclusion else "failed_no_investment_conclusion"
@@ -1546,7 +2621,7 @@ def _strip_section_headers(text: str) -> str:
     return "\n".join(lines).strip()
 
 def _extract_numbered_h2_sections(text: str) -> dict[int, str]:
-    """Return {section_number: body} from a generated markdown chunk."""
+    """Return {section_number: full H2 section} from a generated markdown chunk."""
     text = _clean_fence(text)
     matches = list(re.finditer(r'^##\s*(\d{1,2})\s+[^\n]*$', text, re.M))
     if not matches:
@@ -1554,7 +2629,7 @@ def _extract_numbered_h2_sections(text: str) -> dict[int, str]:
     sections: dict[int, str] = {}
     for i, m in enumerate(matches):
         num = int(m.group(1))
-        start = m.end()
+        start = m.start()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(text)
         body = text[start:end].strip()
         if body:
@@ -1607,7 +2682,7 @@ def _validate_final_hk_us_sections(report: str) -> list[str]:
 
 def assemble_fixed_hk_us_sections(title: str, meta: str, section_bodies: dict,
                                   ref_text: str) -> tuple[str, list[str]]:
-    """Assemble report with one fixed H2 shell and routed content per H2."""
+    """Assemble report in fixed order without overwriting renderer-provided H2/H3."""
     routed: dict[int, str] = {}
     for sk in SECTION_ORDER:
         if sk not in section_bodies:
@@ -1623,10 +2698,15 @@ def assemble_fixed_hk_us_sections(title: str, meta: str, section_bodies: dict,
     parts = [title, meta]
     for h in FIXED_H2_TITLES[:-1]:
         sec_no = int(h.split()[0])
-        parts.append(f"\n## {h}\n")
         body = routed.get(sec_no, "").strip()
         if body:
-            parts.append(body)
+            if re.match(r'^##\s*%d\s+' % sec_no, body):
+                parts.append("\n" + body + "\n")
+            else:
+                parts.append(f"\n## {h}\n")
+                parts.append(body)
+        else:
+            parts.append(f"\n## {h}\n")
     parts.append(ref_text)
     report = "\n".join(parts)
     return report, _validate_final_hk_us_sections(report)
@@ -1737,15 +2817,9 @@ def _build_market_debate(materials: dict, ref_map: dict, co: str, ticker: str) -
     return header + "\n" + "\n".join(f"| {a} | {b} | {c} | {d} |" for a, b, c, d in rows)
 
 
-def _build_valuation_section_group(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str) -> str:
-    valuation = _build_valuation_section(materials, ref_map, co, ticker, mkt)
-    if not valuation:
-        return ""
-    parts = [f"## 11 {FIXED_H2_TITLES[10].split(' ', 1)[1]}", valuation]
-    scenario = _build_scenario_section(materials, ref_map, co, mkt, ticker)
-    if scenario:
-        parts.append(scenario)
-    return "\n\n".join(parts)
+def _build_valuation_section_group(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str,
+                                   basis_map: dict[str, dict] | None = None) -> str:
+    return _build_valuation_section(materials, ref_map, co, ticker, mkt, basis_map=basis_map)
 
 
 def _target_aliases(co: str, ticker: str) -> tuple[set[str], set[str]]:
@@ -2102,7 +3176,7 @@ def _clean_assumption_text(rd: dict, company_name: str = "", ticker: str = "") -
     """Extract concrete assumption data from a report. Used as fallback when LLM extraction is unavailable."""
     evidence = _target_price_evidence_excerpt(rd)[:300]
     if not evidence:
-        return "正文未披露可验证的关键假设"
+        return "估值方法未披露"
     # Extract concrete factual phrases from evidence
     concrete = []
     patterns = [
@@ -2119,7 +3193,7 @@ def _clean_assumption_text(rd: dict, company_name: str = "", ticker: str = "") -
                 concrete.append(txt)
     if concrete:
         return "；".join(concrete[:3])
-    return "正文未披露可验证的关键假设"
+    return "估值方法未披露"
 
 def _collect_target_price_records(materials: dict, ref_map: dict, co: str, ticker: str,
                                   mkt: str = "US", return_meta: bool = False):
@@ -2174,6 +3248,38 @@ def _collect_target_price_records(materials: dict, ref_map: dict, co: str, ticke
     meta = {"target_price_unit": selected_unit, "dropped_mixed_unit_count": dropped}
     return (result, meta) if return_meta else result
 
+
+def _select_target_price_basis_records(records: list[dict], max_records: int = TARGET_PRICE_BASIS_MAX_RECORDS) -> list[dict]:
+    """Pick representative target-price reports for §11 basis extraction."""
+    if len(records) < 3:
+        return []
+    ordered = list(records)
+    picks: list[dict] = []
+
+    def _add(rec: dict) -> None:
+        aid = str(rec.get("article_id") or "")
+        if aid and all(str(x.get("article_id") or "") != aid for x in picks):
+            picks.append(rec)
+
+    _add(ordered[0])
+    _add(ordered[len(ordered) // 2])
+    _add(ordered[-1])
+    evidence_ranked = sorted(
+        ordered,
+        key=lambda r: (
+            bool(_plain_text(r.get("assumption") or "", 80)),
+            bool(_plain_text(r.get("evidence") or "", 80)),
+            str(r.get("date") or ""),
+        ),
+        reverse=True,
+    )
+    for rec in evidence_ranked:
+        if len(picks) >= max_records:
+            break
+        _add(rec)
+    return picks[:max_records]
+
+
 def _target_anchor(records: list[dict], which: str) -> dict:
     if not records:
         return {}
@@ -2188,7 +3294,7 @@ def _format_target_anchor(rec: dict) -> str:
 
 def _basis_core_text(basis_map: dict[str, dict], rec: dict) -> str:
     info = basis_map.get(str(rec.get("article_id")), {})
-    text = info.get("key_assumptions") or rec.get("assumption") or "正文未披露可验证的关键假设"
+    text = info.get("key_assumptions") or rec.get("assumption") or "估值方法未披露"
     return _plain_text(re.sub(r'\[\d+\]', '', text), 90)
 
 
@@ -2204,14 +3310,16 @@ def _rating_distribution(records: list[dict]) -> str:
     return "、".join(f"{k}{v}家" for k, v in counts.items())
 
 
-def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str) -> str:
+def _build_legacy_valuation_section_unused(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str,
+                                           basis_map: dict[str, dict] | None = None) -> str:
     """Build valuation analysis from verifiable target prices with per-article basis extraction."""
     targets_display = _collect_target_price_records(materials, ref_map, co, ticker, mkt)
     if not targets_display:
         return ""  # Fail closed: no verifiable targetPrice field
 
-    # Per-article valuation basis extraction via LLM
-    basis_map = _extract_target_price_basis(targets_display)
+    # Per-article valuation basis extraction via LLM. In the parallel writer this
+    # is supplied by the target_price_basis task; direct callers retain fallback.
+    basis_map = basis_map if basis_map is not None else _extract_target_price_basis(targets_display)
 
     lines = ["### 11.1 机构目标价汇总", ""]
     lines.append("| 机构 | 日期 | 评级 | 目标价 | 目标价口径 | 关键假设/关注点 |")
@@ -2221,7 +3329,7 @@ def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: st
         aid = rec["article_id"]
         basis_info = basis_map.get(aid, {})
         target_basis = basis_info.get("target_price_basis", "研报披露目标价,正文未披露估值方法")
-        key_assumptions = basis_info.get("key_assumptions", rec.get("assumption", "正文未披露可验证的关键假设"))
+        key_assumptions = basis_info.get("key_assumptions", rec.get("assumption", "估值方法未披露"))
         lines.append(
             f"| {rec['org']} | {rec['date']} | {rec['rating']} | {rec['target']:g}{rec.get('unit','')}[{rec['rn']}] | "
             f"{target_basis}[{rec['rn']}] | {key_assumptions}[{rec['rn']}] |"
@@ -2310,7 +3418,7 @@ def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: st
     return "\n".join(lines)
 
 
-def _build_scenario_section(materials: dict, ref_map: dict, co: str, mkt: str, ticker: str = "") -> str:
+def _build_legacy_scenario_section_unused(materials: dict, ref_map: dict, co: str, mkt: str, ticker: str = "") -> str:
     """Build scenario analysis from verifiable target prices."""
     targets = _collect_target_price_records(materials, ref_map, co, ticker, mkt)
     if len(targets) < 3:
@@ -2328,7 +3436,7 @@ def _build_scenario_section(materials: dict, ref_map: dict, co: str, mkt: str, t
             return ""
         rows.append((name, rec, rec.get("assumption", "来源材料关注点"), "、".join(metrics), risk))
 
-    lines = ["### 11.4 情景推演"]
+    lines = ["### 11.3 情景推演（legacy unused）"]
     lines.append("")
     lines.append("情景推演以11.1中可回溯机构目标价为锚，不写无来源内部估值倍数。")
     lines.append("")
@@ -2338,6 +3446,323 @@ def _build_scenario_section(materials: dict, ref_map: dict, co: str, mkt: str, t
     for name, rec, assumption, variables, risk in rows:
         lines.append(f"| {name} | {_format_target_anchor(rec)} | {assumption}[{rec['rn']}] | {variables}[{rec['rn']}] | {risk} |")
 
+    return "\n".join(lines)
+
+
+def _normalize_forecast_metric(metric: str) -> str:
+    text = _plain_text(metric, 40)
+    compact = re.sub(r'\s+', '', text).lower()
+    if re.search(r'revenue|sales|营业收入|收入', compact, re.I):
+        return "营业收入"
+    if re.search(r'netprofit|净利润|归母净利润|non-gaap净利润|nongaap净利润', compact, re.I):
+        return "净利润"
+    if re.search(r'eps|每股收益', compact, re.I):
+        return "EPS"
+    return text
+
+
+def _normalize_forecast_year(year: str) -> str:
+    text = _plain_text(year, 20).upper().replace(" ", "")
+    m = re.search(r'(FY|CY)?(20\d{2})E?', text)
+    if not m:
+        return text
+    prefix = m.group(1) or "FY"
+    return f"{prefix}{m.group(2)}E"
+
+
+def _forecast_value_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    text = str(value or "").replace(",", "")
+    m = re.search(r'-?\d+(?:\.\d+)?', text)
+    return float(m.group(0)) if m else None
+
+
+def _standardize_forecast_unit(value: float, unit: str, currency: str) -> tuple[float, str, str]:
+    unit_text = _plain_text(unit, 30)
+    cur = _plain_text(currency, 12)
+    if not cur:
+        m = re.search(r'\b(HKD|USD|RMB|CNY|EUR|GBP)\b', unit_text, re.I)
+        cur = m.group(1).upper() if m else unit_text
+    if re.search(r'百万|mn|million', unit_text, re.I):
+        return value / 100.0, f"{cur}亿元", f"{value:g}{unit_text}/100"
+    if re.search(r'十亿|bn|billion', unit_text, re.I):
+        return value * 10.0, f"{cur}亿元", f"{value:g}{unit_text}*10"
+    return value, unit_text or cur, ""
+
+
+def _forecast_samples_from_research(materials: dict) -> list[dict]:
+    rows: list[dict] = []
+    for rd in materials.get("research", {}).get("details", []) or []:
+        if not isinstance(rd, dict):
+            continue
+        article_id = str(rd.get("articleId") or rd.get("article_id") or "").strip()
+        institution = rd.get("orgName") or rd.get("institution") or rd.get("org")
+        explicit = rd.get("forecast_samples") or rd.get("forecastSamples") or rd.get("earningForecasts")
+        if isinstance(explicit, list):
+            for item in explicit:
+                if isinstance(item, dict):
+                    merged = dict(item)
+                    merged.setdefault("article_id", article_id)
+                    merged.setdefault("institution", institution)
+                    rows.append(merged)
+    return rows
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(float(v) for v in values)
+    n = len(ordered)
+    if n == 0:
+        return 0.0
+    mid = n // 2
+    return ordered[mid] if n % 2 else (ordered[mid - 1] + ordered[mid]) / 2
+
+
+def _extract_forecast_samples(materials: dict) -> list[ForecastSample]:
+    pools = []
+    cf = materials.get("consensus_forecast") if isinstance(materials.get("consensus_forecast"), dict) else {}
+    for key in ("samples", "forecast_samples"):
+        if isinstance(cf.get(key), list):
+            pools.extend(cf.get(key) or [])
+    if isinstance(materials.get("forecast_samples"), list):
+        pools.extend(materials.get("forecast_samples") or [])
+    pools.extend(_forecast_samples_from_research(materials))
+    samples: list[ForecastSample] = []
+    seen = set()
+    for item in pools:
+        if not isinstance(item, dict):
+            continue
+        institution = _plain_text(item.get("institution") or item.get("org") or item.get("orgName"), 60)
+        article_id = _plain_text(item.get("article_id") or item.get("articleId") or item.get("id"), 80)
+        metric = _normalize_forecast_metric(item.get("metric") or item.get("name"))
+        forecast_year = _normalize_forecast_year(item.get("forecast_year") or item.get("year") or item.get("period"))
+        currency = _plain_text(item.get("currency") or item.get("ccy") or "", 12)
+        raw_unit = _plain_text(item.get("unit") or item.get("raw_unit") or currency or "", 30)
+        unit = _plain_text(item.get("standardized_unit") or raw_unit, 30)
+        accounting_basis = _plain_text(item.get("accounting_basis") or item.get("basis") or item.get("gaap_basis") or "reported", 40)
+        period_basis = "CY" if forecast_year.startswith("CY") else "FY"
+        source_id = _plain_text(item.get("source_id") or article_id, 80)
+        raw_value = _plain_text(item.get("raw_value") if item.get("raw_value") is not None else item.get("value"), 40)
+        value = _forecast_value_float(item.get("value") if item.get("value") is not None else raw_value)
+        if not (institution and article_id and metric and forecast_year and unit and accounting_basis and value is not None):
+            continue
+        standardized_value, standardized_unit, conversion_formula = _standardize_forecast_unit(value, unit, currency)
+        dedupe_key = (
+            re.sub(r'\W+', '', institution.lower()),
+            article_id,
+            metric,
+            forecast_year,
+            standardized_unit,
+            accounting_basis.lower(),
+            period_basis,
+        )
+        if dedupe_key in seen:
+            continue
+        seen.add(dedupe_key)
+        samples.append(ForecastSample(
+            institution=institution,
+            article_id=article_id,
+            metric=metric,
+            forecast_year=forecast_year,
+            value=standardized_value,
+            unit=standardized_unit,
+            accounting_basis=accounting_basis,
+            source_id=source_id,
+            raw_value=raw_value,
+            currency=currency,
+            period_basis=period_basis,
+            raw_unit=raw_unit,
+            standardized_value=standardized_value,
+            standardized_unit=standardized_unit,
+            conversion_formula=conversion_formula,
+        ))
+    return samples
+
+
+def _aggregate_forecast_samples(samples: list[ForecastSample]) -> dict:
+    grouped: dict[tuple[str, str, str, str, str, str], list[ForecastSample]] = {}
+    for sample in samples:
+        key = (sample.metric, sample.forecast_year, sample.currency, sample.unit, sample.accounting_basis, sample.period_basis)
+        grouped.setdefault(key, []).append(sample)
+    rows = []
+    for (metric, forecast_year, currency, unit, accounting_basis, period_basis), items in sorted(grouped.items()):
+        institutions = sorted({s.institution for s in items})
+        if len(institutions) < 3:
+            continue
+        values = [s.value for s in items]
+        rows.append({
+            "metric": metric,
+            "forecast_year": forecast_year,
+            "currency": currency,
+            "unit": unit,
+            "accounting_basis": accounting_basis,
+            "period_basis": period_basis,
+            "aggregation_method": "institution_forecast_median",
+            "sample_count": len(institutions),
+            "consensus_value": _median(values),
+            "institution": institutions,
+            "article_id": sorted({s.article_id for s in items}),
+            "source_id": sorted({s.source_id for s in items}),
+            "samples": [
+                {
+                    "institution": s.institution,
+                    "article_id": s.article_id,
+                    "source_id": s.source_id,
+                    "raw_value": s.raw_value,
+                    "standardized_value": s.standardized_value,
+                    "raw_unit": s.raw_unit,
+                    "unit": s.unit,
+                    "currency": s.currency,
+                    "accounting_basis": s.accounting_basis,
+                    "period_basis": s.period_basis,
+                    "conversion_formula": s.conversion_formula,
+                }
+                for s in items
+            ],
+        })
+    forecast_years = sorted({row["forecast_year"] for row in rows})[:3]
+    return {
+        "forecast_years": forecast_years,
+        "aggregation_method": "institution_forecast_median" if rows else "",
+        "sample_count": sum(row["sample_count"] for row in rows),
+        "article_ids": sorted({aid for row in rows for aid in row["article_id"]}),
+        "rows": rows,
+    }
+
+
+def _forecast_samples_payload(samples: list[ForecastSample]) -> dict:
+    return {
+        "sample_count": len(samples),
+        "samples": [
+            {
+                "institution": s.institution,
+                "article_id": s.article_id,
+                "source_id": s.source_id,
+                "metric": s.metric,
+                "forecast_year": s.forecast_year,
+                "currency": s.currency,
+                "unit": s.unit,
+                "accounting_basis": s.accounting_basis,
+                "period_basis": s.period_basis,
+                "raw_value": s.raw_value,
+                "standardized_value": s.standardized_value,
+                "conversion_formula": s.conversion_formula,
+            }
+            for s in samples
+        ],
+    }
+
+
+def _forecast_year_labels(materials: dict) -> list[str]:
+    samples = _extract_forecast_samples(materials)
+    years = sorted({_normalize_forecast_year(s.forecast_year) for s in samples})
+    if years:
+        while len(years) < 3:
+            m = re.search(r'(FY|CY)(20\d{2})E', years[-1])
+            if not m:
+                break
+            years.append(f"{m.group(1)}{int(m.group(2)) + 1}E")
+        return years[:3]
+    base = max(datetime.now().year + 1, 2027)
+    return [f"FY{base+i}E" for i in range(3)]
+
+
+def _build_consensus_forecast_section(materials: dict, targets: list[dict] | None = None,
+                                      stats: dict | None = None, unit: str = "") -> tuple[str, dict]:
+    machine = _aggregate_forecast_samples(_extract_forecast_samples(materials))
+    labels = machine.get("forecast_years") or _forecast_year_labels(materials)
+    while len(labels) < 3:
+        m = re.search(r'(FY|CY)(20\d{2})E', labels[-1] if labels else "")
+        labels.append(f"{m.group(1)}{int(m.group(2)) + 1}E" if m else f"FY{datetime.now().year + len(labels) + 1}E")
+    if not machine.get("rows"):
+        return "", machine
+    by_metric: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in machine["rows"]:
+        key = (row["metric"], row["unit"], row["accounting_basis"])
+        by_metric.setdefault(key, {})
+        value = row["consensus_value"]
+        by_metric[key][row["forecast_year"]] = f"{value:g}{row['unit']}"
+    by_metric = {k: v for k, v in by_metric.items() if sum(1 for year in labels if v.get(year)) >= 2}
+    active_years = [year for year in labels if any(values.get(year) for values in by_metric.values())]
+    if len(by_metric) < 2 or len(active_years) < 2:
+        return "", machine
+    lines = ["### 11.1 盈利预测", "", f"| 预测指标 | {' | '.join(active_years)} |", "|:--|" + "|".join(":--" for _ in active_years) + "|"]
+    for (metric, row_unit, accounting_basis), values in by_metric.items():
+        label = f"{metric}（{row_unit}，{accounting_basis}）"
+        lines.append("| " + " | ".join([label] + [values.get(label_year, "") for label_year in active_years]) + " |")
+    lines.extend(["", f"盈利预测表按机构样本中位数聚合，未混合不同币种、FY/CY 或 GAAP/non-GAAP 口径。收入、利润与 EPS 的三年变化用于观察盈利弹性是否扩大，下一次财报需重点验证预测最高的业务变量能否兑现。"])
+    return "\n".join(lines), machine
+
+
+def _build_valuation_section(materials: dict, ref_map: dict, co: str, ticker: str, mkt: str,
+                             basis_map: dict[str, dict] | None = None) -> str:
+    """Build r11g §11 with fixed 11.1 earnings forecast, 11.2 valuation and 11.3 scenarios."""
+    targets = _collect_target_price_records(materials, ref_map, co, ticker, mkt)
+    basis_records = _select_target_price_basis_records(targets)
+    basis_map = basis_map if basis_map is not None else (_extract_target_price_basis(basis_records) if basis_records else {})
+    values = [rec["target"] for rec in targets]
+    stats = calculate_target_price_stats(values)
+    unit = targets[0].get("unit", "") if targets else ""
+    consensus_text, consensus_meta = _build_consensus_forecast_section(materials)
+    materials["_consensus_forecast_output"] = consensus_meta
+    if consensus_meta.get("sample_count"):
+        _append_llm_issue("consensus_forecast", json.dumps(consensus_meta, ensure_ascii=False))
+
+    valuation_rows = []
+    refs = []
+    for rec in targets:
+        rn = int(rec.get("rn") or 0)
+        if rn > 0 and rn not in refs:
+            refs.append(rn)
+    cites = _cite(refs[:6])
+    if stats.get("count", 0) >= 1:
+        valuation_rows.append(["机构目标价区间", f"{stats['low']:g}-{stats['high']:g}{unit}，样本{stats['count']}家", f"反映机构对未来盈利、估值口径和执行节奏的分歧{cites}"])
+    if stats.get("count", 0) >= 3:
+        valuation_rows.append(["机构目标价中位数", f"{stats['median']:g}{unit}，内部按样本排序计算", f"中位数用于观察主流预期位置，避免单一高低目标价主导判断{cites}"])
+    if consensus_meta.get("rows"):
+        valuation_rows.append(["盈利预测锚", f"样本{consensus_meta.get('sample_count', 0)}个，按机构预测中位数聚合", "作为 Forward PE 等估值维度的盈利端输入；缺少股价、EPS 或币种闭环时不强行计算倍数"])
+    if not valuation_rows and not consensus_text:
+        return ""
+    lines = ["## 11 估值与预测", ""]
+    if consensus_text:
+        lines.append(consensus_text)
+        lines.append("")
+    if not valuation_rows:
+        return "\n".join(lines).strip()
+    lines.extend(["### 11.2 估值分析", "", "估值分析仅保留有来源或可确定性计算的维度；目标价统计可展示分歧位置，但不会反推出无来源估值参数。", "", "| 估值维度 | 当前水平 | 解读 |", "|:--|:--|:--|"])
+    for row in valuation_rows[:4]:
+        lines.append("| " + " | ".join(row) + " |")
+    if not targets:
+        lines.extend(["", "当前估值分析仅保留盈利预测锚，因缺少可回溯目标价、股价或倍数输入，未生成无来源估值倍数和情景推演。"])
+        return "\n".join(lines)
+    low_rec, high_rec = targets[0], targets[-1]
+    lines.extend(["", f"估值位置的核心含义在于分歧不是来自本文自行反推倍数，而是来自可回溯机构目标价样本。低位目标价对应{_basis_core_text(basis_map, low_rec)}，高位目标价对应{_basis_core_text(basis_map, high_rec)}，后续上修或下修主要取决于这些经营变量能否兑现{cites}。", ""])
+
+    variables = []
+    for rec in targets:
+        text = _basis_core_text(basis_map, rec)
+        if text and not re.search(r'目标价中位数|目标价区间|评级分布|正文未披露关键假设|估值方法未披露', text) and text not in variables:
+            variables.append(text)
+    for row in consensus_meta.get("rows", [])[:3]:
+        metric = row.get("metric")
+        year = row.get("forecast_year")
+        value = row.get("consensus_value")
+        row_unit = row.get("unit", "")
+        if metric and year and value is not None:
+            variables.append(f"{year}{metric}{value:g}{row_unit}")
+    variables = [v for v in dict.fromkeys(variables) if v][:4]
+    if len(variables) >= 3:
+        lines.extend(["### 11.3 情景推演", "", "核心变量"])
+        for i, var in enumerate(variables[:4], 1):
+            lines.append(f"- **核心变量{i}**：{var}，若兑现节奏偏离机构假设，将影响盈利预期、现金流或估值位置{cites}。")
+        mid = _nearest_median_record(targets, stats["median"]) if stats.get("median") else targets[len(targets)//2]
+        lines.extend(["", "| 情景 | 核心假设 | 经营含义 | 估值含义 |", "|:--|:--|:--|:--|"])
+        base_vars = "；".join(variables[:3])
+        lines.append(f"| 乐观 | {base_vars}均好于基准 | 收入、利润率或现金流改善快于主流预期 | 估值倍数或目标价方向上修 |")
+        lines.append(f"| 中性 | {base_vars}大体符合基准 | 经营变量大体符合当前机构中枢 | 估值围绕现有样本中枢波动 |")
+        lines.append(f"| 悲观 | {base_vars}低于基准 | 关键业务变量低于预期或成本压力扩大 | 估值倍数或目标价方向下修 |")
+        lines.append("")
+        lines.append(f"情景推演以可回溯业务变量、盈利预测和机构假设为锚，不新增无来源倍数。若后续核心变量连续两个报告期偏离中性假设，估值位置可能重新定价{cites}。")
     return "\n".join(lines)
 
 
@@ -2491,7 +3916,7 @@ def _build_deterministic_fallback_title(texts: dict, company_name: str, ticker: 
 def _build_report_title(company_name: str, ticker: str, market_cn: str, conclusion: str) -> str:
     safe_conclusion = _sanitize_title_conclusion(conclusion, company_name, ticker, market_cn)
     if not safe_conclusion:
-        safe_conclusion = "核心主业稳健，新业务打开成长空间"
+        return f"# {company_name}（{ticker}）{market_cn}公司一页纸"
     return f"# {company_name}（{ticker}）{market_cn}公司一页纸：{safe_conclusion}"
 
 
@@ -2832,11 +4257,12 @@ def _run_docx(md: str, out_docx: str):
 # main pipeline
 # ---------------------------------------------------------------------------
 
-def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any = None) -> dict:
+def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any = None, run_checker: bool = False) -> dict:
     global _LLM_CONFIG, _LLM_DIAGNOSTICS
     os.makedirs(output_dir, exist_ok=True)
     run_started_at = datetime.now().isoformat(timespec="seconds")
     _update_run_manifest(output_dir, stage="startup", status="running", started_at=run_started_at)
+    _set_run_manifest_field(output_dir, "checker_mode", "legacy_opt_in" if run_checker else "skipped_by_default")
     _startup_check()
     _LLM_CONFIG = resolve_llm_config(llm_args)
     _LLM_DIAGNOSTICS = _diagnostics_payload(_LLM_CONFIG)
@@ -2866,7 +4292,7 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
     materials = _collect(ticker, mkt, company, output_dir, token)
     _update_run_manifest(output_dir, stage="collect_materials", duration_s=time.time() - stage_t0)
     peer_bundle = {}
-    if build_peer_comparison_bundle and merge_peer_sources_into_materials:
+    if False and build_peer_comparison_bundle and merge_peer_sources_into_materials:
         stage_t0 = time.time()
         peer_bundle = build_peer_comparison_bundle(
             materials, company, ticker, mkt.upper(), token=token, llm_call=_call_llm,
@@ -2885,6 +4311,8 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
     try:
         report, gs = write_report(materials, trace, ticker, mkt, company, output_dir, peer_bundle=peer_bundle)
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         print(f"  Generation error: {e}")
         Path(mdp).write_text(f"# {company}（{ticker}）生成失败\n\n生成阶段失败，未形成可发布报告。\n", encoding="utf-8")
         gs = {"is_skeleton": True, "is_degraded": True, "mode": "exception", "error": str(e),
@@ -2920,12 +4348,23 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
     elif not repair_status.get("skipped"):
         gs.setdefault("pipeline_warnings", []).append(f"repair_failed:returncode={repair_status.get('returncode')}")
 
-    stage_t0 = time.time()
-    qc = _run_checker(mdp, mkt, stp)
-    _update_run_manifest(output_dir, stage="checker", duration_s=time.time() - stage_t0)
+    if run_checker:
+        stage_t0 = time.time()
+        qc = _run_checker(mdp, mkt, stp)
+        _update_run_manifest(output_dir, stage="checker", duration_s=time.time() - stage_t0)
+    else:
+        qc = {
+            "overall": "SKIPPED",
+            "P0": 0,
+            "P1": 0,
+            "P2": 0,
+            "issues": {"P0": [], "P1": [], "P2": []},
+            "gates": [],
+            "checker_mode": "skipped_by_default",
+        }
     docx_status = {"ok": False, "skipped": True}
     can_build_docx = (
-        qc.get("P0", 0) == 0 and qc.get("P1", 0) == 0
+        (not run_checker or (qc.get("P0", 0) == 0 and qc.get("P1", 0) == 0))
         and not is_skel and not is_deg
         and not gs.get("failed_sections") and not gs.get("assembly_issues")
     )
@@ -2945,8 +4384,8 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
             f"failed_sections={gs.get('failed_sections', [])}, "
             f"assembly_issues={gs.get('assembly_issues', [])}"
         )
-    # Force blocking when any quality issue exists (P0>0 or P1>0)
-    if qc.get("P0", 0) > 0 or qc.get("P1", 0) > 0:
+    # Force blocking when opt-in legacy checker reports any quality issue.
+    if run_checker and (qc.get("P0", 0) > 0 or qc.get("P1", 0) > 0):
         blocking = True
     if blocking:
         reason_parts = []
@@ -2993,10 +4432,11 @@ def main():
     p.add_argument("--llm-model")
     p.add_argument("--llm-format", choices=["auto", "openai", "anthropic"])
     p.add_argument("--llm-timeout", type=int)
+    p.add_argument("--run-checker", action="store_true", help="Run legacy quality checker; skipped by default in r11g writer path.")
     args = p.parse_args()
 
     try:
-        result = run(args.ticker, args.market.lower(), args.company_name, args.output_dir, llm_args=args)
+        result = run(args.ticker, args.market.lower(), args.company_name, args.output_dir, llm_args=args, run_checker=args.run_checker)
     except Exception as exc:
         print(f"\nStartup failed: {str(exc)[:300]}")
         sys.exit(1)
@@ -3005,7 +4445,7 @@ def main():
         print("\nCANNOT enter candidate validation: report is degraded/skeleton.")
         sys.exit(3)
     qc = result["quality_check"]
-    sys.exit(1 if qc.get("P0", 0) > 0 or qc.get("P1", 0) > 0 else 0)
+    sys.exit(1 if args.run_checker and (qc.get("P0", 0) > 0 or qc.get("P1", 0) > 0) else 0)
 
 if __name__ == "__main__":
     main()

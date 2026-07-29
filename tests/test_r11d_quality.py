@@ -153,20 +153,20 @@ class TestSection10R11D(unittest.TestCase):
     def test_07_valid_new_schema_renders(self):
         rendered, issues = writer._validate_render_section_10(self._payload(), {i: {"id": str(i)} for i in range(1, 5)})
         self.assertTrue(rendered, issues)
-        self.assertIn("多：", rendered)
+        self.assertNotIn("多：", rendered)
 
     def test_08_duplicate_theme_is_deduped_to_fail_if_below_four(self):
         payload = self._payload()
         payload["market_debates"][1]["theme"] = "AI云收入"
         rendered, issues = writer._validate_render_section_10(payload, {i: {"id": str(i)} for i in range(1, 5)})
-        self.assertFalse(rendered)
-        self.assertTrue(any("duplicate_theme" in x or "valid_rows" in x for x in issues))
+        self.assertTrue(rendered)
+        self.assertTrue(any("duplicate_theme" in x for x in issues))
 
     def test_09_missing_bear_evidence_filtered(self):
         payload = self._payload()
         payload["market_debates"][0]["bear_evidence"] = ""
         rendered, issues = writer._validate_render_section_10(payload, {i: {"id": str(i)} for i in range(1, 5)})
-        self.assertFalse(rendered)
+        self.assertTrue(rendered)
         self.assertTrue(any("bear_evidence" in x for x in issues))
 
     def test_10_cell_refs_are_deduped(self):
@@ -233,9 +233,10 @@ class TestValuationR11D(unittest.TestCase):
     def test_20_valuation_section_has_three_113_paras(self):
         writer._call_llm = lambda *a, **k: (json.dumps([{"articleId": x, "target_price_basis": "2027E PE 18x", "basis_evidence": "PE 18x", "key_assumptions": [{"text": "2027年收入增长20%", "evidence": "收入增长20%"}]} for x in ["a1", "a2", "a3", "a4"]], ensure_ascii=False), True)
         sec = writer._build_valuation_section(_valuation_materials(), {i: {"id": f"a{i}"} for i in range(1, 5)}, "舜宇光学科技", "02382.HK", "HK")
-        self.assertIn("目标价分布", sec)
-        self.assertIn("估值分歧来源", sec)
-        self.assertIn("验证框架", sec)
+        self.assertNotIn("### 11.1", sec)
+        self.assertIn("### 11.2", sec)
+        self.assertNotIn("### 11.3", sec)
+        self.assertNotIn("### 11.4", sec)
 
     def test_21_valuation_section_cites_111_refs(self):
         writer._call_llm = lambda *a, **k: ("[]", True)
@@ -285,7 +286,7 @@ class TestCheckerR11D(unittest.TestCase):
             writer._call_llm = old_call
         self.assertIn("## 9", section9)
         self.assertTrue(section10, issues)
-        self.assertIn("### 11.3", section11)
+        self.assertNotIn("### 11.3", section11)
 
 
 if __name__ == "__main__":

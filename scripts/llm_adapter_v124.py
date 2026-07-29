@@ -498,7 +498,11 @@ def call_llm(
     if config.error_type or not config.api_key or not config.endpoint or not config.model:
         return LLMResult(False, "", config.error_type or "LLM_CONFIG_MISSING", config.error_message or "invalid llm config", None, 0.0, 0, config.model, config.api_format, config.endpoint)
 
-    attempts = [(max_tokens, timeout or config.timeout), (max_tokens, timeout or config.timeout), (min(max_tokens, 6000), timeout or config.timeout)]
+    # Writer v1.2.4 r11f splits large prompts into smaller tasks. Keep transport
+    # retry bounded: the same HTTP-scale prompt should not repeat three times on
+    # 504/temporary network errors. JSON repair is handled by the writer's
+    # schema-aware small-task retry, not by another full HTTP attempt here.
+    attempts = [(max_tokens, timeout or config.timeout), (max_tokens, timeout or config.timeout)]
     last_error = ""
     last_type = ""
     last_status: int | None = None
