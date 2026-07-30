@@ -300,6 +300,6 @@ Changed files:
 
 Compliance updates:
 
-- Updated Datayes token URL to `https://r.datayes.com/auth/token/login`.
+- Updated Datayes token URL to `https://ai.datayes.com`.
 - Unified metadata API references to `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api`.
 - Removed hardcoded `gptMaterials/v2` business URL from references.

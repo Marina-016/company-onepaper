@@ -1,6 +1,7 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.11
+version: v1.2.12
+license: MIT
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径依赖 DATAYES_TOKEN、python3、Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
@@ -8,11 +9,18 @@ description: |
   当用户要求生成”一页纸””公司一页纸””股票研究报告””公司研究报告”或输入上市公司名称/代码要求分析时触发。
   不处理非上市主体、非金融研究任务或无法取得可验证来源的公司分析，不在证据不足时编造报告。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.11）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.12）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]
       bins: [python3]
+    network:
+      allow:
+        - gw.datayes.com
+        - api.datayes.com
+        - ai.datayes.com
+        - api.wmcloud.com
+        - llm-proxy.datayes.com
 ---
 
 # 公司一页纸深度研究报告
@@ -47,7 +55,7 @@ metadata:
 
 ### 1.1 获取与配置 Datayes Token
 
-访问 https://r.datayes.com/auth/token/login 获取可撤销的 API token。
+访问 https://ai.datayes.com 获取可撤销的 API token。
 
 macOS / Linux：
 
