@@ -25,19 +25,13 @@ metadata:
 
 # 公司一页纸深度研究报告
 
-当前文档只描述 **v1.2.11 生效规则**。历史版本说明统一放在文末 Appendix，正文不再重复版本堆叠。
-
-## 执行要求
-运行 hk_us_report_writer.py 时 Bash timeout 必须设为 1200000ms（20分钟），
-默认 300s 不足以完成全管线。
-
 ## 0. Core Principles
 - 真实数据优先，禁止编造、拼接或臆测数值。
 - 报告文件是唯一交付物，聊天窗口只用于进度、路径和阻断原因。
 - 不输出占位符、模板壳、内部工程话术、"已隐藏原因"或假通过结论。
 - 严重质量问题必须在 writer 内修复、fail closed 或明确记录降级原因，不能假通过。
 - 任何正文事实、数值、结论、比较、推演都必须能回溯到真实来源。
-- 同一规则只保留一处权威写法；历史信息只出现在 Appendix。
+- 同一规则只保留一处权威写法。
 - 不降低当前质量标准，不因为单一来源缺失就跳过核心门禁。
 
 ## 1. Trigger & Input
@@ -149,7 +143,7 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
 - 若自动 writer 失败，按 `references/a-share-report-structure.md` 手工组织内容，并按 `references/a-share-quality-checklist.md` 自检。
 - 手工降级不等于放宽标准，所有质量门禁仍然有效。
 
-### 3.5 A-Share Risk Guard (v1.2.10)
+### 3.5 A-Share Risk Guard
 - §10 风险提示固定输出 3-4 条，每条使用 `• **公司特有风险标题**：触发条件/影响[N]`，必须有真实行内引用。
 - 风险上下文从目标公司研报的 `title/detail_text/abstract/text`、会议纪要、机构调研及最新 `fdmtNew` 财务数据构建；不得读取不存在的 `content/summary` 字段，也不得依赖并行章节尚未生成的 `catalyst_table_ctx`。
 - 后处理统一识别 `•`、`-`、`*` 三种项目符号；合规的 `•` 输出不得再被误判为 0 条。
@@ -311,7 +305,7 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
   - 删除后若仍不足以支撑 2 个有效指标或 2 个比较维度，删除整张表。
   - 不能用空白、`N/A`、`未披露`、`--`、`待补充` 大面积充数。
 
-### 5.7 Chapter 9 Data-Availability Rules (v1.2.11)
+### 5.7 Chapter 9 Data-Availability Rules
 - 第九章各小节（9.1-9.4）在无可用数据时必须**整节跳过**，不得保留空壳标题或”暂缺”占位符。
 - 9.1 市场一致预期：`research_sec_coredata` 接口无数据 → 跳过整节。
 - 9.2 各机构盈利预测：`research_sec_foredata` 接口无数据 → 跳过整节。
@@ -378,72 +372,4 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - `references/hk-us-api-playbook.md`：港美股 API 使用手册
 - `references/hk-us-report-structure.md`：港美股章节结构、写作规范、同业比较 schema
 - `references/hk-us-quality-checklist.md`：港美股质量清单与检查项
-
-## Appendix A. Version History
-
-### v1.2.11
-- **第九章无数据处理**：9.1/9.2/9.3/9.4 各小节按数据可用性独立跳过——9.1 无一致预期数据 → 跳过；9.3 估值维度全空 → 跳过；9.4 无 EPS/PE+无可提取业务变量 → 跳过；整章全空时 `## 9` 标题也不出现。
-- **9.3/9.4 拆分生成**：原 270 行单函数 `gen_section9_valuation` 拆为 `_gen_section93` + `_gen_section94`，各带独立的数据预判检查（`_has_valuation_data` / `_has_scenario_input`），无数据时不调用 LLM。
-- **9.4 增强校验 + fail-closed**：核心变量新增具体性校验（必须含数字+`[N]` 引用模式）；LLM 修复失败或找不到上下文时删除 9.4 空壳，不再保留模板内容。
-- **组装处 9.1 条件跳过**：与 9.2 对齐——`consensus_table` 为空或含"暂缺"时整节不输出；新增 `_chapter_9_block` 变量实现整章条件显示。
-- **新增辅助函数**：`_find_section_start` / `_remove_section` 用于安全删除空章节。
-
-### v1.2.10
-- **A 股 §10 项目符号回归修复**：风险校验从仅识别 `-/*` 改为统一识别 `•/-/*`，避免合规 `•` 输出被误判为空。
-- **风险上下文字段修复**：研报改读真实字段 `title/detail_text/abstract/text`；财务快照改读 `latest_data` 或最近年报，不再读取不存在的字段。
-- **纪要/调研事件注入**：风险 Prompt 直接从研报、纪要和调研构建带引用事件上下文，不再依赖从未赋值且与 §10 并行的 `catalyst_table_ctx`。
-- **证据型 fallback**：删除 `_a_share_profile` 中四条静态通用风险，只允许从目标公司带引用风险句重建 3-4 条。
-- **最终风险门禁**：新增条数、标题、引用、长度、重复标题及通用模板检查；修复失败时 fail closed。
-- **测试**：新增 `tests/datayes-company-onepaper/test_a_share_risk_logic.py`，覆盖三种项目符号、通用模板拦截、证据 fallback、财务快照与整章修复。
-### v1.2.9
-- **列表标记统一**：所有 LLM prompt 统一使用 `•`；新增 `_normalize_bullet_markers` 后处理，将 `-`/`*`/`1)`/`2)`/`3)`/`1）`/`2）`/`3）` 归一化为无缩进 `•`；`markdown_to_docx.py` 同步适配 `•` 行零缩进渲染。
-- **§2.1 标题强制检测**：`_enforce_v124_a_share_blocks` 增加 LLM 格式漂移兜底——若 `## 2` 后无 `### 2.1` 子标题，自动插入。
-- **调研问答格式精简**：LLM prompt 显式要求 Q/A 分两行；`_normalize_survey_qa_markdown` 从 17 行堆砌 regex 精简为 7 行核心模式，覆盖 `question:`/`answer:` → `**Q：**`/`**A：**`，末尾截断标注 `…[内容截断]`。
-- **§4.4 prompt 修复**：上一次 bullet 统一遗漏了 `gen_section4_deep` 的 §4.4 prompt，导致 LLM 仍输出 `1）2）3）`。现已改为 `•`；同时 `_normalize_bullet_markers` 正则扩展兼容 ASCII `)` 和全角 `）` 两种括号。
-- **profile long_term 模板**：`_a_share_profile` 中 §2.2 兜底模板的 `1）2）3）` → `•`。
-- **同业比较表 schema 分市场**：§5.6 拆分为 A 股 10 列（含市值，缺数据可删，见 `references/a-share-report-structure.md`）和港美股 9 列（不含市值），各附示例 Markdown 表头。
-- **风险提示去模板化**：`gen_section10` prompt 注入公司近况摘要、催化事件与禁止模板列表；profile 兜底风险替换为非通用表述；后处理关键词检测命中模板自动替换。
-- **§9.4 核心变量加冒号**：prompt `• **[变量]**：[数值]`（变量名与数值间补冒号）。
-- **§10 风险标题去双写**：enforcer 格式化修复 `split('风险')[0]` → `split('：')[0]`，消除"风险**：风险：**"双写。
-- **占位文本清洗**：`_normalize_final_markdown_format` 增加 `第X节：…` 正则移除 LLM 泄漏的章节标注。
-- **图表策略回退**：v1.2.9 初期尝试的图表本地化（`_download_chart_images`）已移除；图表保留远程 URL，由 `markdown_to_docx.py` 的 `try_insert_image` 负责 DOCX 嵌入，MD 预览与 DOCX 双通路均正常。
-
-### v1.2.8
-- 标题生成重构：A 股和港美股统一为全文生成后读全文产出标题，移除 §§1&2 内嵌 title_conclusion。
-- 移除所有硬编码公司级兜底（中际旭创等），统一降级为关键词拼接。
-- 港美股 `normalize_refs` 全角括号 `【N】` 归一化修复，消除重复引用。
-- A 股标题上下文从 s1+s2 扩展为 s1+s2+s5，s3(表格)不再误喂 LLM。
-- A 股 `_compact_reports` / `gen_peer_table` 加 `None` 防护。
-- v1.2.8-R1: 正文段落去前导缩进 `_dedent_body_paragraphs`（§2/§4.4/§4.5 等章正文首字符顶格）。
-- v1.2.8-R1: §4.5 调研问答 "A：" 前强制换行 `_normalize_survey_qa_markdown` 强化。
-- v1.2.8-R1: `a-share-report-structure.md` 新增正文缩进规范与 QA 换行规范条目。
-
-### v1.2.3
-- 收敛章节编号规则，强制 H2/H3 编号一致。
-- 固化数据获取优先级，要求逐级降级。
-- 强化稀疏行列处理，禁止空表、空占位符和伪造数据。
-- 强化正文行内引用闭环和参考资料逐字复制。
-- 补充派生测算、特殊行业适配和输出前自检。
-
-### v1.2.3-R2
-- 增加必填章节非空检查。
-- 增加情景推演有效性检查。
-- 增加同业比较表正式 schema 检查。
-- 增加港美股最小结构检查、结构化接口 ID 口径修正、空占位符检查。
-- 增加内部 checker 术语泄漏检查和 pipeline 结尾内容清理。
-
-### v1.2.6
-- DeepSeek-V4 thinking 模式导致标题落兜底：LLM payload 加 `"thinking": {"type": "disabled"}`。
-- `_is_numeric_cell` 误判含中文单元格为数值，导致同业比较表被 `_sparse_cleanup` 误删：排除含中文的单元格。
-- §4.2 分板块业务数据增加树状缩进（`├`/`│ ├`），一二三级业务层次一目了然。
-- 港美股 §3 核心投资逻辑：固定 3 点→2-4 点，每点 80-150 字→140-220 字，max_tokens 2200→3500。
-- 港美股 §9 同业比较：`peer_row_company_not_in_evidence` 校验降级为非阻塞（证据文本不必然含竞对公司名）。
-
-### v1.2.5
-- 增加港股 PIT 三表聚合。
-- 增加近况跟踪句首加粗规则。
-- 增加参考资料时效性约束和空预测节省略规则。
-- 增加港美股特殊行业 GAAP / non-GAAP 等适配。
-- 港美股 writer 移除独立 post-repair/checker 阻断链路，改为脚本内置引用清洗、表格清洗和连续重编号。
-- 强化港美股 §5.2、§6、§8、§9、§10、§11：年度分业务证据优先；§5.2 缺表时转分点业务深度；§6 三行 partial、少于三行 fail closed；§9 peer 证据校验且不做 raw snippet 兜底；§10 compact short retry、禁用确定性摘录兜底；§11 保留轻量空响应/网络重试。
 
