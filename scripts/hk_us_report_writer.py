@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from llm_adapter import (
     LLMConfig,
@@ -117,6 +118,7 @@ _HK_US_REPORT_SYSTEM_CONSTRAINTS = (
 )
 
 META_BASE = "https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api"
+ALLOWED_HOSTS = {"gw.datayes.com", "api.datayes.com", "api.wmcloud.com", "r.datayes.com"}
 
 HK_PIT_API_NAMES = ("getHkFdmtIsPit", "getHkFdmtBsPit", "getHkFdmtCfPit")
 
@@ -129,6 +131,13 @@ def _get_hk_pit_api_sources(token: str) -> dict[str, dict]:
         return _HK_PIT_API_CACHE
 
     import urllib.request, urllib.error
+
+    # 校验元信息网关域名在白名单内
+    meta_host = urlparse(META_BASE).hostname or ""
+    if meta_host not in ALLOWED_HOSTS:
+        print(f"  ✗ 元信息网关域名不在白名单: {meta_host}", file=sys.stderr)
+        return {}
+
     result = {}
     for name in HK_PIT_API_NAMES:
         try:
