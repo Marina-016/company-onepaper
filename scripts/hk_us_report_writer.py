@@ -116,23 +116,43 @@ _HK_US_REPORT_SYSTEM_CONSTRAINTS = (
     "Never mention pipeline, checker, quality gate, P0, P1, P2."
 )
 
-HK_PIT_API_SOURCES = {
-    "getHkFdmtIsPit": {
-        "api_id": "923",
-        "title": "港股 PIT 利润表",
-        "url": "https://r.datayes.com/mdpt/dashboard/apis/923",
-    },
-    "getHkFdmtBsPit": {
-        "api_id": "924",
-        "title": "港股 PIT 资产负债表",
-        "url": "https://r.datayes.com/mdpt/dashboard/apis/924",
-    },
-    "getHkFdmtCfPit": {
-        "api_id": "925",
-        "title": "港股 PIT 现金流量表",
-        "url": "https://r.datayes.com/mdpt/dashboard/apis/925",
-    },
-}
+META_BASE = "https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api"
+
+HK_PIT_API_NAMES = ("getHkFdmtIsPit", "getHkFdmtBsPit", "getHkFdmtCfPit")
+
+_HK_PIT_API_CACHE: dict[str, dict] | None = None
+
+def _get_hk_pit_api_sources(token: str) -> dict[str, dict]:
+    """通过元信息接口动态获取港股 PIT 三表的 URL / api_id / title，避免硬编码链接。"""
+    global _HK_PIT_API_CACHE
+    if _HK_PIT_API_CACHE is not None:
+        return _HK_PIT_API_CACHE
+
+    import urllib.request, urllib.error
+    result = {}
+    for name in HK_PIT_API_NAMES:
+        try:
+            req = urllib.request.Request(
+                f"{META_BASE}?nameEn={name}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            info = (data.get("data") or {}) if isinstance(data, dict) else {}
+            result[name] = {
+                "api_id": str(info.get("id", "")),
+                "title": info.get("name", ""),
+                "url": info.get("httpUrl", ""),
+            }
+        except Exception as e:
+            print(f"  ⚠ 获取 {name} 元信息失败: {e}", file=sys.stderr)
+    _HK_PIT_API_CACHE = result
+    return result
+
+
+def _hk_pit_api_sources() -> dict[str, dict]:
+    """读取已缓存的元信息；若尚未加载则返回空 dict（调用方自行处理）。"""
+    return _HK_PIT_API_CACHE or {}
 
 
 # ---------------------------------------------------------------------------
@@ -3886,7 +3906,7 @@ def _hk_pit_ref_numbers(ref_map: dict) -> dict:
     refs = {}
     for rn, meta in ref_map.items():
         api = meta.get("api_nameEn", "")
-        if api in HK_PIT_API_SOURCES:
+        if api in HK_PIT_API_NAMES:
             refs[api] = rn
     return refs
 
@@ -5027,7 +5047,8 @@ def _build_trace(materials: dict, out: str) -> dict:
             "company_match": s.get("company_match", "industry_background"),
             "id_field": "id", "id_value": sid})
     hk_fin = materials.get("structured", {}).get("hk_financials", {}) or {}
-    for api_name, meta in HK_PIT_API_SOURCES.items():
+    pit_sources = _hk_pit_api_sources()
+    for api_name, meta in pit_sources.items():
         rows = hk_fin.get(api_name, []) or []
         if not rows:
             continue
@@ -5214,6 +5235,12 @@ def run(ticker: str, market: str, company: str, output_dir: str, llm_args: Any =
     if not token: raise RuntimeError("No DATAYES_TOKEN found")
     mkt = market.lower()
     t0 = time.time()
+
+    # Step 0: 预加载港股 PIT 接口元信息（避免硬编码 URL）
+    if mkt == "hk":
+        pit_src = _get_hk_pit_api_sources(token)
+        loaded = [k for k, v in pit_src.items() if v.get("url")]
+        print(f"  HK PIT API 元信息: {len(loaded)}/3 加载成功", flush=True)
 
     # Step 1: 采集材料
     stage_t0 = time.time()
