@@ -2,6 +2,7 @@
 name: datayes-company-onepaper
 version: v1.2.12
 license: MIT
+compatibility: network
 description: |
   生成 A股、港股和美股公司的买方视角公司一页纸报告。
   主路径依赖 DATAYES_TOKEN、python3、Datayes 数据采集脚本和自动化 writer 生成 MD + DOCX。
@@ -101,7 +102,7 @@ $env:DATAYES_TOKEN = "your-token"
 
 ### 3.1 Entry Rules
 - A 股主路径是 `a_share_fetch_data.py` → `a_share_report_writer.py`。
-- 必须先通过元信息接口发现 API URL 和参数，不允许自己拼接业务 API URL。
+- 必须先通过中台网关 `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api` 发现 API URL 和参数，不允许自己拼接业务 API URL。
 - 每个业务接口只接受元信息接口返回的调用 URL；如果元信息查不到或接口失败，就跳过该接口，不要自行重试构造 URL。
 - 数据获取优先级固定为：
   1. 结构化接口
