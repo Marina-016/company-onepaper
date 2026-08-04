@@ -45,12 +45,28 @@ TODAY = datetime.date.today().isoformat()
 
 # 域名白名单：LLM API 端点只能指向受信任的地址
 ALLOWED_LLM_HOSTS = {
+    # 国际厂商
     "api.anthropic.com",
     "api.openai.com",
+    # 通联代理
     "llm-proxy.datayes.com",
     "llm-proxy.wmcloud.com",
     "openai.datayes.com",
+    # 俄罗斯/其他
     "gateway.ai.cloud.ru",
+    # 国产 LLM 厂商
+    "open.bigmodel.cn",             # 智谱AI (GLM)
+    "api.deepseek.com",             # DeepSeek
+    "dashscope.aliyuncs.com",       # 阿里通义千问 (Qwen)
+    "api.moonshot.cn",              # 月之暗面 (Kimi)
+    "api.baichuan-ai.com",          # 百川智能
+    "api.minimax.chat",             # MiniMax
+    "ark.cn-beijing.volces.com",    # 字节豆包 (火山引擎)
+    "api.stepfun.com",              # 阶跃星辰
+    "api.lingyiwanwu.com",          # 零一万物 (Yi)
+    "spark-api-open.xf-yun.com",    # 讯飞星火
+    "aip.baidubce.com",             # 百度文心 (ERNIE)
+    "hunyuan.tencentcloudapi.com",  # 腾讯混元
 }
 
 def _check_llm_host(url: str):
