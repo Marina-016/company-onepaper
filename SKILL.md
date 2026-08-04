@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.12
+version: v1.2.13
 license: MIT
 compatibility: network
 description: |
@@ -10,7 +10,7 @@ description: |
   当用户要求生成”一页纸””公司一页纸””股票研究报告””公司研究报告”或输入上市公司名称/代码要求分析时触发。
   不处理非上市主体、非金融研究任务或无法取得可验证来源的公司分析，不在证据不足时编造报告。
 metadata:
-  short-description: 生成A股/港股/美股公司一页纸（v1.2.12）
+  short-description: 生成A股/港股/美股公司一页纸（v1.2.13）
   openclaw:
     requires:
       env: [DATAYES_TOKEN]

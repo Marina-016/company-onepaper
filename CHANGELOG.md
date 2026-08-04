@@ -1,5 +1,30 @@
 # Changelog
 
+## v1.2.13
+
+Status: LLM 域名白名单扩容，解除国产 LLM 厂商阻断。
+
+### P0: A 股 writer 域名白名单扩展
+
+`a_share_report_writer.py` 的 `ALLOWED_LLM_HOSTS` 从 6 个扩展至 18 个，新增 12 家国产 LLM 厂商域名：
+
+- 智谱AI (`open.bigmodel.cn`)
+- DeepSeek (`api.deepseek.com`)
+- 阿里通义千问 (`dashscope.aliyuncs.com`)
+- 月之暗面 Kimi (`api.moonshot.cn`)
+- 百川智能 (`api.baichuan-ai.com`)
+- MiniMax (`api.minimax.chat`)
+- 字节豆包 (`ark.cn-beijing.volces.com`)
+- 阶跃星辰 (`api.stepfun.com`)
+- 零一万物 Yi (`api.lingyiwanwu.com`)
+- 讯飞星火 (`spark-api-open.xf-yun.com`)
+- 百度文心 (`aip.baidubce.com`)
+- 腾讯混元 (`hunyuan.tencentcloudapi.com`)
+
+### Files changed
+
+- `datayes-company-onepaper/scripts/a_share_report_writer.py`：`ALLOWED_LLM_HOSTS` 扩展
+
 ## v1.2.11
 
 Status: Chapter 9 subsection-level no-data handling — conditional skip + fail-closed.
