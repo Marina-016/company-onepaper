@@ -1345,6 +1345,18 @@ def _compact_meetings(meetings: list, n: int = 3, include_text: bool = False, re
     return "\n\n".join(parts)
 
 
+def _fact_card_prompt_block(key_data: dict) -> str:
+    """供所有叙述性章节复用的事实卡规则，避免只在某一节启用溯源。"""
+    cards = key_data.get("operating_fact_cards", "（无可核验经营事实卡；不得编造经营数字）")
+    return f"""【可核验经营事实卡】
+{cards}
+
+【事实卡规则】
+- 对销量、产量、出货、单价、渠道占比、市占率、产能、产品增速、客户数及报告/纪要中的精确收入或利润数字，必须直接输出对应的 `{{{{FACT:F编号}}}}`；不得手写该数字或猜测[N]。
+- 程序会把标记替换为原文数值及其唯一引用。没有事实卡则删除该具体数字。
+- fdmtNew、consensus、估值接口不能作为经营事实的来源。
+"""
+
 def _compact_mgmt(data: dict, max_len: int = 3000) -> str:
     """提取管理层讨论（MD&A）关键内容"""
     md = data.get("mgmt_discussion")
@@ -1863,16 +1875,18 @@ def gen_section4_deep(client, key_data: dict) -> str:
 {_compact_fin(fin)}
 
 【研报分析（含各板块深度分析）】
-{_compact_reports(reports, n=4)}
+{_compact_reports(reports, n=3, ref_map=ref_map)}
 
 【会议纪要（管理层表述）】
-{_compact_meetings(meetings, n=2, include_text=True)}
+{_compact_meetings(meetings, n=1, include_text=True, ref_map=ref_map)}
 
 {"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
+{_fact_card_prompt_block(key_data)}
+
 【引用映射】
-{_refs_str(reports, ref_map, 4)}
-{_meeting_refs_str(meetings, ref_map, n=2)}
+{_refs_str(reports, ref_map, 3)}
+{_meeting_refs_str(meetings, ref_map, n=1)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('maincomp',{}).get('n','')}]
 
 【格式要求】**两个子节合计400字以内**（精炼专业）。直接输出以下两节：
@@ -2447,8 +2461,9 @@ def gen_section5(client, key_data: dict) -> str:
 {"【管理层讨论（客户/供应商相关）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
 【研报关键信息（客户结构、供应商、竞争关系）】
-{_compact_reports(reports, n=3)}
+{_compact_reports(reports, n=3, ref_map=ref_map)}
 {region_block}
+{_fact_card_prompt_block(key_data)}
 【引用映射】
 {_refs_str(reports, ref_map, 3)}
 {"mgmt=[" + str(ref_map.get('mgmt_discussion',{}).get('n','')) + "]" if mgmt_text else ""}
@@ -5288,7 +5303,7 @@ _QUANTITATIVE_TOKEN_RE = re.compile(
 _FACT_MARKER_RE = re.compile(r'\{\{FACT:([A-Z]\d+)\}\}')
 
 
-def _build_operating_fact_cards(key_data: dict, max_cards: int = 42) -> tuple:
+def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     """从原始来源提取可程序化渲染的高风险事实卡。
 
     LLM 只能在报告/纪要/MD&A承载的精确数字位置输出 ``{{FACT:F1}}``；
