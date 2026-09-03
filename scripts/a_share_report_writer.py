@@ -5621,6 +5621,42 @@ def _validate_numeric_source_claims(md_content: str, key_data: dict) -> list:
                 # 术语/数值分别出现于不同来源也不能证明同一事实，维持 fail-closed。
                 issues.append(f"16.经营数字来源组合不完整: 行{line_no} 引用[{joined}]无法由单一来源完整支撑")
     return issues
+def _drop_unverifiable_numeric_lines(md_content: str, key_data: dict, max_rounds: int = 3) -> tuple:
+    """交付前 fail-closed：删除无法由原始来源支撑的整行事实。
+
+    生成模型偶尔会绕过 FACT 标记手写数字。此前只报错中止，导致用户不得不
+    人工排查；这里宁可删除整条叙述/事件行，也不把无法审计的数字交付出去。
+    """
+    text = str(md_content or "")
+    removed = []
+    for _ in range(max_rounds):
+        issues = _validate_numeric_source_claims(text, key_data)
+        line_numbers = set()
+        for issue in issues:
+            match = re.search(r'行(\d+)', issue)
+            if match:
+                line_numbers.add(int(match.group(1)))
+        if not line_numbers:
+            break
+        lines = text.splitlines()
+        changed = False
+        for line_no in sorted(line_numbers, reverse=True):
+            index = line_no - 1
+            if index < 0 or index >= len(lines):
+                continue
+            line = lines[index]
+            # 不删除章节标题或表头；这类情况交给最终门禁阻断，以免结构被静默破坏。
+            if re.match(r'^#{1,3}\s|^\|\s*:?-{3,}', line.strip()):
+                continue
+            if line.strip():
+                removed.append(f"行{line_no}:{line.strip()[:90]}")
+                del lines[index]
+                changed = True
+        if not changed:
+            break
+        text = "\n".join(lines)
+    return text, removed
+
 def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None) -> list:
     """v1.2.3 报告生成完成前自检，返回阻断问题列表。为空则通过。
 
@@ -6682,6 +6718,13 @@ def main():
     # ── v1.2.5-R3: 情景推演表列修复（在 normalize 之后执行）──────────────────────
     md_content = _fix_scenario_table_columns(md_content)
     md_content = _format_scenario_analysis(md_content)
+
+    # ── v1.2.18：无法审计的经营数字绝不进入交付物 ────────────────────────────
+    md_content, _provenance_drops = _drop_unverifiable_numeric_lines(md_content, key_data)
+    if _provenance_drops:
+        print(f"[{time.time()-t0:.1f}s] 溯源清洗：删除{len(_provenance_drops)}条无法核验的生成行")
+    md_content = _postprocess_v123(md_content, ref_map)
+    md_content = _normalize_markdown_tables(md_content)
 
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
     md_content = _clean_empty_bold_tags(md_content)
