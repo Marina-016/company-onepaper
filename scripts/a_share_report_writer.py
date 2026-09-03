@@ -1309,16 +1309,19 @@ def gen_forecast_table(orgs: list) -> str:
 # 叙述性章节生成（调用 Claude API）
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _compact_reports(reports: list, n: int = 5) -> str:
+def _compact_reports(reports: list, n: int = 5, ref_map: dict = None) -> str:
     """将研报列表压缩为 prompt 友好的格式，保留足够的正文供深度分析"""
     parts = []
     for r in reports[:n]:
-        src = f"[{r['id']}]机构:{r['org']} 日期:{r['date']} 评级:{r['rating']} 目标价:{r['target']}"
+        rid = str(r.get("id", ""))
+        ref_no = str((ref_map or {}).get("report_" + rid, {}).get("n", ""))
+        source_tag = f"[{ref_no}]" if ref_no else "[未编号]"
+        src = f"【唯一引用{source_tag} | 文档ID:{rid} | 机构:{r.get('org','')} | 日期:{r.get('date','')} | 标题:{r.get('title','')}】"
         parts.append(f"{src}\n摘要:{(r.get('abstract') or '')[:1500]}\n正文:\n{(r.get('text') or '')[:3500]}")
     return "\n\n---\n\n".join(parts)
 
 
-def _compact_meetings(meetings: list, n: int = 3, include_text: bool = False) -> str:
+def _compact_meetings(meetings: list, n: int = 3, include_text: bool = False, ref_map: dict = None) -> str:
     """将会议纪要压缩为 prompt 友好的格式
 
     include_text=True 时追加 aiOriBody 完整正文，用于核心分析章节（第2/4节）。
@@ -1327,7 +1330,10 @@ def _compact_meetings(meetings: list, n: int = 3, include_text: bool = False) ->
         return "（无会议纪要数据）"
     parts = []
     for m in meetings[:n]:
-        header = f"【{m['date']} {m['type']} {m['title']}】"
+        key = "meeting_" + str(m.get("date", "")) + "_" + str(m.get("title", ""))[:20]
+        ref_no = str((ref_map or {}).get(key, {}).get("n", ""))
+        source_tag = f"[{ref_no}]" if ref_no else "[未编号]"
+        header = f"【唯一引用{source_tag} | 纪要ID:{m.get('id','')} | {m['date']} {m['type']} {m['title']}】"
         body = ""
         if m["overview"]:
             body += f"AI概述：\n{m['overview']}\n"
@@ -1472,10 +1478,10 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 {segs_pct}
 
 【近期研报（5篇，含完整分析）】
-{_compact_reports(reports, n=5)}
+{_compact_reports(reports, n=5, ref_map=ref_map)}
 
 【近期会议纪要（含完整正文）】
-{_compact_meetings(meetings, n=3, include_text=True)}
+{_compact_meetings(meetings, n=3, include_text=True, ref_map=ref_map)}
 
 {"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
@@ -1712,10 +1718,10 @@ def gen_section2(client, key_data: dict) -> str:
     ]) + f"""
 
 【近期研报全文（5篇，含完整分析）】
-{_compact_reports(reports, n=5)}
+{_compact_reports(reports, n=5, ref_map=ref_map)}
 
 【近期会议纪要（管理层路演/业绩发布会，含完整正文）】
-{_compact_meetings(meetings, n=3, include_text=True)}
+{_compact_meetings(meetings, n=3, include_text=True, ref_map=ref_map)}
 
 {"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
@@ -2583,7 +2589,7 @@ PE: {pe_data.get('val','—')}x (行业均值{pe_data.get('avg','—')}x, 排名
 估值评价: {valuation.get('comment','')}
 
 【研报行业分析内容（含同业对比数据）】
-{_compact_reports(reports, n=5)}
+{_compact_reports(reports, n=5, ref_map=ref_map)}
 
 【财务数据】
 {_compact_fin(fin)}
@@ -2886,6 +2892,7 @@ consensus=[{ref_map.get('consensus',{}).get('n','')}]
 ⚠️ **核心变量必须是驱动业务的输入侧指标**，例如：出货量/装机量、单价/单瓦盈利、产能利用率、市占率、毛利率、扩产节奏、原材料成本等——取决于行业特性。
 ⚠️ **严禁将营收、净利润、EPS、归母净利润等财务结果填为核心变量**，这些是预测的输出，不是输入。
 ⚠️ **每个变量必须来自不同来源**（研报/纪要/公告等），不得所有变量统一标注同一个引用如[N]。
+⚠️ `research_sec_coredata` 只可引用全公司营收、净利润、EPS、PE 等一致预期输出；严禁把它作为投放量、销量、产量、渠道占比、产品增速等经营假设的来源。未提供研报、纪要、MD&A 或业务明细来源时，不写该经营变量。
 ⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
 ⚠️ **每个核心变量只写当前数值和选择该变量作为核心驱动因素的理由，不要写敏感性区间**。
 ⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
@@ -5290,7 +5297,22 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
         api_name = entry.get("api_name", "")
         source = ""
         if source_type == "结构化数据":
-            source = json.dumps(raw.get(api_data_keys.get(api_name, ""), {}), ensure_ascii=False)
+            dataset = raw.get(api_data_keys.get(api_name, ""), {})
+            source = json.dumps(dataset, ensure_ascii=False)
+            # 将接口原始金额同时转为报告使用的亿元口径，避免“原始元值 vs 正文亿元值”误拦。
+            if api_name == "getFdmtMoStdItem":
+                rows = dataset.get("data", []) if isinstance(dataset, dict) else []
+                normalized = []
+                for row in rows:
+                    if not isinstance(row, dict):
+                        continue
+                    rev = row.get("revenue")
+                    margin = row.get("grossMargin")
+                    if isinstance(rev, (int, float)):
+                        normalized.append(f"{row.get('endDate','')} {row.get('itemName','')} 收入{rev / 1e8:.2f}亿元")
+                    if isinstance(margin, (int, float)):
+                        normalized.append(f"{row.get('endDate','')} {row.get('itemName','')} 毛利率{margin:.2f}%")
+                source += "\n" + "\n".join(normalized)
         elif source_type == "研报":
             item = reports.get(str(entry.get("id", "")), {})
             source = " ".join(str(item.get(k, "") or "") for k in ("title", "abstract", "detail_text", "text"))
