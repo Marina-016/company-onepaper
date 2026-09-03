@@ -1477,11 +1477,11 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 【主营构成（最新年占比）】
 {segs_pct}
 
-【近期研报（5篇，含完整分析）】
-{_compact_reports(reports, n=5, ref_map=ref_map)}
+【近期研报（3篇，含完整分析）】
+{_compact_reports(reports, n=3, ref_map=ref_map)}
 
 【近期会议纪要（含完整正文）】
-{_compact_meetings(meetings, n=3, include_text=True, ref_map=ref_map)}
+{_compact_meetings(meetings, n=1, include_text=True, ref_map=ref_map)}
 
 {"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
@@ -1491,9 +1491,17 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 【市场一致预期】
 {con_summary}
 
+【可核验经营事实卡（经营数字必须仅使用此处的标记）】
+{key_data.get("operating_fact_cards", "（无可核验经营事实卡；不得编造经营数字）")}
+
+【事实卡硬规则】
+- 涉及销量、产量、出货、单价、渠道占比、市占率、产能、系列酒、基酒、客户数等经营数字时，正文必须直接输出对应的 `{{{{FACT:F编号}}}}`，不要手写数字、不要手写[N]。
+- 渲染程序会把标记替换成该来源原文中的“数字[N]”；没有事实卡就删去该经营数字，不得根据主题联想或自行换算。
+- 不得把 fdmtNew、consensus、估值接口当作经营事实来源；它们只能支撑财务、预测或估值字段。
+
 【引用映射（正文中用[N]标注）】
-研报：{_refs_labels(reports, ref_map, n=5)}
-会议纪要：{_meeting_refs_str(meetings, ref_map, n=3)}
+研报：{_refs_labels(reports, ref_map, n=3)}
+会议纪要：{_meeting_refs_str(meetings, ref_map, n=1)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('consensus',{}).get('n','')}], valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}], maincomp=[{ref_map.get('maincomp',{}).get('n','')}]{"," + "mgmt=[" + str(ref_map.get('mgmt_discussion',{}).get('n','')) + "]" if mgmt_text else ""}
 
 ---
@@ -1718,16 +1726,16 @@ def gen_section2(client, key_data: dict) -> str:
     ]) + f"""
 
 【近期研报全文（5篇，含完整分析）】
-{_compact_reports(reports, n=5, ref_map=ref_map)}
+{_compact_reports(reports, n=3, ref_map=ref_map)}
 
 【近期会议纪要（管理层路演/业绩发布会，含完整正文）】
-{_compact_meetings(meetings, n=3, include_text=True, ref_map=ref_map)}
+{_compact_meetings(meetings, n=1, include_text=True, ref_map=ref_map)}
 
 {"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
 
 【引用映射】
 {_refs_str(reports, ref_map, 5)}
-{_meeting_refs_str(meetings, ref_map, n=3)}
+{_meeting_refs_str(meetings, ref_map, n=1)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('maincomp',{}).get('n','')}]
 {"mgmt=[" + str(ref_map.get('mgmt_discussion',{}).get('n','')) + "]" if mgmt_text else ""}
 
@@ -2547,7 +2555,7 @@ def gen_section7(client, key_data: dict) -> str:
 
 【引用映射】
 {_refs_str(reports, ref_map, 4)}
-{_meeting_refs_str(meetings, ref_map, n=3)}
+{_meeting_refs_str(meetings, ref_map, n=1)}
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
 【格式要求】**全节250-280字**，精炼专业。精选3-4个议题，每议题格式如下：
@@ -2589,7 +2597,7 @@ PE: {pe_data.get('val','—')}x (行业均值{pe_data.get('avg','—')}x, 排名
 估值评价: {valuation.get('comment','')}
 
 【研报行业分析内容（含同业对比数据）】
-{_compact_reports(reports, n=5, ref_map=ref_map)}
+{_compact_reports(reports, n=3, ref_map=ref_map)}
 
 【财务数据】
 {_compact_fin(fin)}
@@ -2880,6 +2888,13 @@ def _gen_section94(client, key_data: dict) -> str:
 {scenario_valuation_rule}
 【财务数据（最近实际年度）】
 {_compact_fin(fin)}
+
+【可核验经营事实卡】
+{key_data.get("operating_fact_cards", "（无可核验经营事实卡；不得编造经营数字）")}
+
+【事实卡硬规则】
+- 核心变量如涉及销量、产量、出货、单价、渠道占比、市占率、产能、系列酒或基酒，必须原样使用 `{{{{FACT:F编号}}}}` 代替数值和引用；不得自己填写数值或[N]。
+- 程序会将标记渲染为原始来源的“数值[N]”。无卡片的经营变量不可写入核心变量或情景假设。
 
 【引用映射】
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
@@ -5270,6 +5285,123 @@ _FINANCIAL_ONLY_APIS = {
 _QUANTITATIVE_TOKEN_RE = re.compile(
     r'(?<!\d)(\d+(?:\.\d+)?)\s*(%|pct|万吨|万台|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
 )
+_FACT_MARKER_RE = re.compile(r'\{\{FACT:([A-Z]\d+)\}\}')
+
+
+def _build_operating_fact_cards(key_data: dict, max_cards: int = 42) -> tuple:
+    """从原始来源提取可程序化渲染的高风险事实卡。
+
+    LLM 只能在报告/纪要/MD&A承载的精确数字位置输出 ``{{FACT:F1}}``；
+    渲染阶段再由程序写入原文数值和对应引用，避免句末按语义贴号。
+    """
+    evidence = _build_reference_evidence(key_data)
+    allowed_apis = {
+        "batchGetReportContent", "getMeetingSummaryDetail",
+        "management_discussion", "getFdmtMoStdItem",
+    }
+    unit_re = r'(%|pct|万吨|万台|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
+    token_re = re.compile(r'(?<!\d)([-+]?\d+(?:\.\d+)?)\s*' + unit_re)
+    grouped_re = re.compile(r'([-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?){1,5})\s*' + unit_re)
+    fact_terms = _OPERATIONAL_NUMERIC_TERMS + ("营业收入", "营收", "收入", "归母净利润", "净利润", "占比", "渠道", "直营", "i茅台")
+    primary_terms = {"销量", "产量", "出货", "吨价", "单价", "直销", "经销", "渠道占比", "市占率", "产能", "系列酒", "基酒", "营业收入", "营收", "收入", "归母净利润", "净利润", "占比", "渠道", "直营", "i茅台"}
+    candidates, seen = [], set()
+    for ref_no in sorted(evidence):
+        src = evidence[ref_no]
+        if src.get("api") not in allowed_apis:
+            continue
+        text = re.sub(r'\s+', ' ', str(src.get("text") or ""))
+        for sentence in re.split(r'(?<=[。；;！？])', text):
+            terms = [term for term in fact_terms if term in sentence]
+            if not terms:
+                continue
+            grouped = list(grouped_re.finditer(sentence))
+            tokens = [
+                (f"{m.group(1)}{m.group(2)}", m.start())
+                for m in token_re.finditer(sentence)
+                if not any(group.start() <= m.start() < group.end() for group in grouped)
+            ]
+            # “375.75/172.74亿元”这类并列数字共用单位：优先保留首项，
+            # 既保留该句的核心指标，又避免同一句的并列数字占满来源配额。
+            grouped_positions = set()
+            for group in grouped:
+                number = next(re.finditer(r'[-+]?\d+(?:\.\d+)?', group.group(1)), None)
+                if number:
+                    group_pos = group.start(1) + number.start()
+                    tokens.append((f"{number.group(0)}{group.group(2)}", group_pos))
+                    grouped_positions.add(group_pos)
+            for display, pos in tokens:
+                positions = [(term, match.start()) for term in terms for match in re.finditer(re.escape(term), sentence)]
+                nearest_term, nearest_pos = min(positions, key=lambda x: abs(pos - x[1]))
+                nearest = abs(pos - nearest_pos)
+                if nearest > 120:
+                    continue
+                key = (int(ref_no), display, nearest_term, pos)
+                if key in seen:
+                    continue
+                seen.add(key)
+                score = (10 if nearest_term in primary_terms else 5) + max(0, 120 - nearest) / 20
+                if pos in grouped_positions:
+                    score += 20  # 共用单位的首项通常是该句最需要引用的核心指标。
+                start = max(0, pos - 110)
+                end = min(len(sentence), pos + len(display) + 150)
+                snippet = sentence[start:end].strip(" ，,;；")
+                candidates.append({
+                    "score": score, "ref": int(ref_no), "value": display,
+                    "api": src.get("api", ""), "snippet": snippet,
+                })
+
+    # 相同来源的同一个数值只保留相关性最高的一张卡，避免 61% 等重复事实挤掉唯一数据。
+    best_by_value = {}
+    for item in candidates:
+        identity = (item["ref"], item["value"])
+        if identity not in best_by_value or item["score"] > best_by_value[identity]["score"]:
+            best_by_value[identity] = item
+    candidates = list(best_by_value.values())
+
+    # 每个来源选最高相关的四项，并按来源轮转取数：每个唯一宿主都有机会进入 prompt。
+    by_source = {}
+    for item in candidates:
+        by_source.setdefault(item["ref"], []).append(item)
+    selected, selected_ids = [], set()
+    ranked_by_source = {
+        ref: sorted(items, key=lambda x: -x["score"])[:4]
+        for ref, items in by_source.items()
+    }
+    for rank in range(4):
+        for ref_no in sorted(ranked_by_source):
+            items = ranked_by_source[ref_no]
+            if rank >= len(items) or len(selected) >= max_cards:
+                continue
+            item = items[rank]
+            identity = (item["ref"], item["value"])
+            if identity not in selected_ids:
+                selected.append(item)
+                selected_ids.add(identity)
+    for item in sorted(candidates, key=lambda x: (-x["score"], x["ref"])):
+        identity = (item["ref"], item["value"])
+        if identity in selected_ids or len(selected) >= max_cards:
+            continue
+        selected.append(item)
+        selected_ids.add(identity)
+
+    cards, fact_map = [], {}
+    for item in selected[:max_cards]:
+        marker = f"F{len(fact_map) + 1}"
+        fact_map[marker] = {"value": item["value"], "ref": item["ref"], "api": item["api"]}
+        cards.append(
+            f"{{{{FACT:{marker}}}}} = {item['value']}[{item['ref']}] | "
+            f"来源:{item['api']} | 原文:{item['snippet'][:300]}"
+        )
+    return "\n".join(cards) if cards else "（无可核验经营事实卡；不得编造经营数字）", fact_map
+
+def _render_fact_markers(md_content: str, fact_map: dict) -> str:
+    """把 LLM 输出的事实标记替换为程序绑定的“数值[N]”。"""
+    def replace(match):
+        fact = (fact_map or {}).get(match.group(1))
+        if not fact:
+            return match.group(0)
+        return f"{fact['value']}[{fact['ref']}]"
+    return _FACT_MARKER_RE.sub(replace, str(md_content or ""))
 
 
 def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
@@ -5499,6 +5631,10 @@ def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None
 
     if key_data:
         blockers.extend(_validate_numeric_source_claims(md_content, key_data))
+
+    unresolved_facts = sorted(set(_FACT_MARKER_RE.findall(str(md_content or ""))))
+    if unresolved_facts:
+        blockers.append("16.事实卡未渲染: " + ",".join(unresolved_facts[:8]))
 
     # ── 1. 生成失败文本 ──
     for marker in ["[生成失败:", "[生成失败", "生成失败"]:
@@ -6369,6 +6505,8 @@ def main():
         "peer_validated":    data.get("peer_validated") or [],  # stock_search验证的当前官方简称
         "_raw_data":         data,   # 供 _compact_mgmt 等函数提取 mgmt_discussion 等字段
     }
+    # 先从原始来源构建事实卡；生成阶段只能引用标记，最终由程序渲染数值和引用。
+    key_data["operating_fact_cards"], key_data["fact_marker_refs"] = _build_operating_fact_cards(key_data)
 
     # ── 4. 并行生成所有章节 ────────────────────────────────────────────────────
     print(f"[{time.time()-t0:.1f}s] 并行生成报告章节（LLM + 表格）...")
@@ -6505,6 +6643,7 @@ def main():
     # ── 5. 组装并写文件 ────────────────────────────────────────────────────────
     print(f"[{time.time()-t0:.1f}s] 组装报告...")
     md_content = assemble_report(meta, sections, ref_map)
+    md_content = _render_fact_markers(md_content, key_data.get("fact_marker_refs", {}))
 
     # v1.2.10: 风险 fallback 必须在死引用清理前运行，确保新引用对应的参考资料被保留。
     md_content = _enforce_a_share_risk_section(md_content, key_data)
