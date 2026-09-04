@@ -2064,6 +2064,15 @@ def _extract_qa_candidates(qa_blocks: list) -> list:
         normalized = _re.sub(r'\*\*([AQ])([:：])', r'\1\2', normalized)
         # Q1、→ Q1：归一化（格力电器2024年格式）
         normalized = _re.sub(r'(?:^|\n)\s*Q(\d+)[、]\s*', r'\nQ\1：', normalized, flags=_re.MULTILINE)
+        # Detail payloads can concatenate numbered pairs as Q1…A1…Q2…A2.
+        # Put each numbered marker on its own line before pairing, so later
+        # questions cannot be absorbed into the preceding answer.
+        normalized = _re.sub(
+            r'(?<!\n)(?=(?:Q|问|A|答)\s*\d+\s*[:：])',
+            '\n',
+            normalized,
+            flags=_re.IGNORECASE,
+        )
 
         # 尝试按 Q：/A：拆分成单独的 QA 对
         qa_segments = _re.split(r'(?:^|\n)\s*(?:Q|问)(?:\d*)\s*[:：]\s*', normalized, flags=_re.MULTILINE | _re.IGNORECASE)
@@ -2079,7 +2088,7 @@ def _extract_qa_candidates(qa_blocks: list) -> list:
                     a_remainder = a_parts[1].strip()
                     # 同行内可能还有后续 Q/A 对：递归提取
                     while a_remainder:
-                        next_q = _re.split(r'(?:Q|问)\s*[:：]\s*', a_remainder, maxsplit=1, flags=_re.IGNORECASE)
+                        next_q = _re.split(r'(?:Q|问)\s*\d*\s*[:：]\s*', a_remainder, maxsplit=1, flags=_re.IGNORECASE)
                         if len(next_q) >= 2:
                             a = next_q[0].strip()
                             if q and a:
@@ -2210,8 +2219,10 @@ def _format_qa_markdown(selected: list, ref_tags: list) -> str:
         # 引用：优先用 item 自带 ref，无则用全局 fallback
         item_ref = item.get("ref", "")
         ref = item_ref if item_ref else global_ref
-        # 避免重复：末尾已含 [N] 则不再追加
-        if ref and not _re.search(r'\[\d+\]', a[-30:]):
+        # Every rendered Q&A closes with the source bound to that pair. A
+        # trailing citation embedded in a raw answer must not be reused.
+        if ref:
+            a = _re.sub(r'(?:\s*\[\d+\])+\s*$', '', a).rstrip()
             a = a + ref
         lines.append(f"**Q：** {q}")
         lines.append(f"**A：** {a}")
@@ -2744,10 +2755,16 @@ def _scenario_target_price_errors(section: str, key_data: dict) -> list:
         section,
         re.I,
     ))
+    has_per_share_price = bool(re.search(
+        r"(?:\u6bcf\u80a1(?:\u4ef7\u503c|\u4ef7\u683c)?|\u80a1\u4ef7|\u4ef7\u683c)\s*(?:\u4e3a|\u662f|\u7ea6|\uff1a|:|=|\u4e0a\u8c03\u81f3|\u4e0b\u8c03\u81f3)?\s*"
+        r"(?:\u4eba\u6c11\u5e01|RMB|\uffe5)?\s*\d+(?:\.\d+)?\s*\u5143(?:/\u80a1)?",
+        section,
+        re.I,
+    ))
     errors = []
 
     if not ctx["target_price_allowed"]:
-        if formulas or has_target_language:
+        if formulas or has_target_language or has_per_share_price:
             reason = "；".join(ctx["disable_reasons"]) or "缺少当前定价锚"
             errors.append(f"传统PE目标价法不可用({reason})，却输出了目标价")
         if "传统PE法失效" not in section and "缺少当前定价锚" not in section:
@@ -5725,42 +5742,96 @@ def _validate_numeric_source_claims(md_content: str, key_data: dict) -> list:
                 # 术语/数值分别出现于不同来源也不能证明同一事实，维持 fail-closed。
                 issues.append(f"16.经营数字来源组合不完整: 行{line_no} 引用[{joined}]无法由单一来源完整支撑")
     return issues
-def _drop_unverifiable_numeric_lines(md_content: str, key_data: dict, max_rounds: int = 3) -> tuple:
-    """交付前 fail-closed：删除无法由原始来源支撑的整行事实。
+def _issue_reference_numbers(issue: str) -> set:
+    """Extract cited source numbers from one provenance issue."""
+    refs = set()
+    for match in re.finditer(r"\[([\d,\s]+)\]", str(issue or "")):
+        refs.update(int(value) for value in re.findall(r"\d+", match.group(1)))
+    return refs
 
-    生成模型偶尔会绕过 FACT 标记手写数字。此前只报错中止，导致用户不得不
-    人工排查；这里宁可删除整条叙述/事件行，也不把无法审计的数字交付出去。
+
+def _strip_unverifiable_claims(line: str, invalid_refs: set) -> str:
+    """Remove only bad cited clauses, preserving independently sourced content.
+
+    A source mismatch must never survive delivery, but deleting a full mixed-fact
+    sentence or a whole table row also discards valid research and makes the report
+    materially thinner than v1.2.13. Claims are split at natural Chinese sentence
+    boundaries (and at Markdown table cells) before fail-closing.
+    """
+    if not invalid_refs:
+        return line
+
+    fact_terms = "|".join(re.escape(term) for term in _OPERATIONAL_NUMERIC_TERMS)
+    risk_pattern = re.compile(rf"(?:{fact_terms}|\bROE\b|毛利率)", re.I)
+
+    def clean_fragment(fragment: str) -> str:
+        refs = {int(value) for value in re.findall(r"\[(\d+)\]", fragment)}
+        has_measure = bool(_QUANTITATIVE_TOKEN_RE.search(fragment))
+        if refs & invalid_refs and has_measure and risk_pattern.search(fragment):
+            return ""
+        return fragment
+
+    def clean_text(value: str) -> str:
+        parts = re.split(r"(?<=[。；;！？])", value)
+        return "".join(clean_fragment(part) for part in parts).strip()
+
+    stripped = line.strip()
+    if stripped.startswith("|") and stripped.count("|") >= 2:
+        cells = line.split("|")
+        for index in range(1, len(cells) - 1):
+            cells[index] = clean_text(cells[index])
+        return "|".join(cells)
+    return clean_text(line)
+
+
+def _drop_unverifiable_numeric_lines(md_content: str, key_data: dict, max_rounds: int = 3) -> tuple:
+    """Fail-close unsupported numeric claims without discarding valid peer content.
+
+    The validator remains strict: an unsupported number is always removed. v1.2.23
+    narrows the removal unit from a whole line to the cited fact clause/table cell,
+    so a single bad data point cannot erase separately sourced analysis on that line.
     """
     text = str(md_content or "")
     removed = []
     for _ in range(max_rounds):
         issues = _validate_numeric_source_claims(text, key_data)
-        line_numbers = set()
+        invalid_refs_by_line = {}
         for issue in issues:
             match = re.search(r'行(\d+)', issue)
             if match:
-                line_numbers.add(int(match.group(1)))
-        if not line_numbers:
+                line_no = int(match.group(1))
+                invalid_refs_by_line.setdefault(line_no, set()).update(_issue_reference_numbers(issue))
+        if not invalid_refs_by_line:
             break
         lines = text.splitlines()
         changed = False
-        for line_no in sorted(line_numbers, reverse=True):
+        for line_no in sorted(invalid_refs_by_line, reverse=True):
             index = line_no - 1
             if index < 0 or index >= len(lines):
                 continue
             line = lines[index]
-            # 不删除章节标题或表头；这类情况交给最终门禁阻断，以免结构被静默破坏。
+            # Do not mutate headings or table separators; the final gate must handle
+            # those structural failures explicitly.
             if re.match(r'^#{1,3}\s|^\|\s*:?-{3,}', line.strip()):
                 continue
-            if line.strip():
-                removed.append(f"行{line_no}:{line.strip()[:90]}")
+            replacement = _strip_unverifiable_claims(line, invalid_refs_by_line[line_no])
+            if replacement != line:
+                removed.append(f"行{line_no}:移除不可核验事实，保留其余已验证内容")
+                if replacement.strip():
+                    lines[index] = replacement
+                else:
+                    del lines[index]
+                changed = True
+            elif line.strip() and invalid_refs_by_line[line_no]:
+                # The issue has a citation but cannot be isolated safely. Preserve
+                # fail-closed behavior for this single-fact line instead of delivery.
+                removed.append(f"行{line_no}:无法安全拆分的不可核验事实")
                 del lines[index]
                 changed = True
         if not changed:
             break
         text = "\n".join(lines)
     return text, removed
-
 def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None) -> list:
     """v1.2.3 报告生成完成前自检，返回阻断问题列表。为空则通过。
 

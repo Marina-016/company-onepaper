@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.24
+
+### P0: Inline numbered Q&A provenance closure
+
+- Split concatenated institution-survey payloads such as `Q1…A1…Q2…A2` before candidate extraction, preventing later questions from being absorbed into the preceding answer.
+- Bind the source reference to every rendered answer, rather than relying on a citation that happens to appear at the end of a raw multi-question block.
+- Add a regression that requires every rendered Q&A pair to carry its source within the quality-gate window.
+## v1.2.23
+
+### P0: Fact-level provenance cleanup and valuation bypass guard
+
+- Keep the v1.2.19 fail-closed provenance gate, but narrow cleanup from a whole line to an unsupported fact clause or table cell so independently cited content survives.
+- Reject per-share price wording when traditional PE target-price methods are disabled, preventing a bypass of the existing target-price and EPS×PE checks.
+- Add regressions for disguised per-share prices, mixed-fact retention, and gross-margin field isolation.
 ## v1.2.22
 
 ### P0: Derived main-comp residual exclusion

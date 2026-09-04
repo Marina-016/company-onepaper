@@ -112,5 +112,65 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertEqual((title, ref_no), ("测试研报", 3))
         self.assertIn("[3]", writer._build_a_share_chain_fallback(key_data, "3"))
 
+    def test_high_valuation_rejects_disguised_per_share_price(self):
+        key_data = {
+            "valuation": {"items": {
+                "\u5e02\u76c8\u7387PE": {"val": -1},
+                "\u5e02\u51c0\u7387PB": {"val": 56.6, "avg": 8.0},
+            }},
+            "consensus_forecasts": [],
+        }
+        section = "\u4e2d\u6027\u60c5\u666f\u6bcf\u80a1\u4ef7\u503c\u4e3a18.90\u5143\u3002\u4f20\u7edfPE\u6cd5\u5931\u6548\u3002"
+        self.assertTrue(writer._scenario_target_price_errors(section, key_data))
+
+    def test_provenance_cleanup_keeps_valid_clause_on_same_line(self):
+        key_data = {
+            "_raw_data": {"financial": {"data": {"dataRow": []}}},
+            "reports": [{"id": "r1", "text": "\u6e20\u9053\u6548\u7387\u6539\u5584\u6709\u52a9\u4e8e\u76c8\u5229\u3002"}],
+            "ref_map": {
+                "fdmtNew": {"n": 1, "type": "\u7ed3\u6784\u5316\u6570\u636e", "api_name": "fdmtNew"},
+                "report_r1": {"n": 2, "type": "\u7814\u62a5", "id": "r1"},
+            },
+        }
+        md = (
+            "## 2 \u6838\u5fc3\u6295\u8d44\u903b\u8f91\n\n"
+            "\u8305\u53f0\u9152\u9500\u91cf4.6\u4e07\u5428[1]\uff1b\u6e20\u9053\u6548\u7387\u6539\u5584\u6709\u52a9\u4e8e\u76c8\u5229[2]\u3002\n\n"
+            "## \u53c2\u8003\u8d44\u6599\n"
+            "[1]Datayes\u7ed3\u6784\u5316\u63a5\u53e3 | API\uff1afdmtNew\n"
+            "[2]Datayes\u7814\u62a5 | ID\uff1ar1\n"
+        )
+        result, removed = writer._drop_unverifiable_numeric_lines(md, key_data)
+        self.assertNotIn("\u9500\u91cf4.6\u4e07\u5428", result)
+        self.assertIn("\u6e20\u9053\u6548\u7387\u6539\u5584\u6709\u52a9\u4e8e\u76c8\u5229[2]", result)
+        self.assertEqual(len(removed), 1)
+
+    def test_financial_mapping_uses_gross_margin_not_operating_margin(self):
+        data = {"financial": {"data": {
+            "titleBar": [{"year": 2025, "reportPeriodType": "A"}],
+            "dataRow": [
+                {"code": "grossMARgin", "data": [91.18]},
+                {"code": "operateProfitRatio", "data": [66.73]},
+            ],
+        }}}
+        result = writer.extract_financial(data)
+        self.assertEqual(result[2025]["grossMargin"], 91.18)
+    def test_inline_numbered_qa_is_split_and_each_answer_gets_its_own_ref(self):
+        block = (
+            "【2026-07-28 电话会议（机构调研）】[11]\n"
+            "Q1：第一问的详细背景是什么？A1：第一答包含足够的经营信息和背景说明。"
+            "Q2：第二问的详细背景是什么？A2：第二答包含足够的经营信息和背景说明。"
+            "Q3：第三问的详细背景是什么？A3：第三答包含足够的经营信息和背景说明。"
+        )
+        candidates = writer._extract_qa_candidates([block])
+        self.assertEqual(
+            [item["q"] for item in candidates],
+            ["第一问的详细背景是什么？", "第二问的详细背景是什么？", "第三问的详细背景是什么？"],
+        )
+        rendered = writer._format_qa_markdown(candidates, [])
+        self.assertEqual(rendered.count("**Q：**"), 3)
+        self.assertEqual(rendered.count("[11]"), 3)
+        for match in __import__("re").finditer(r"\*\*Q：\*\*", rendered):
+            self.assertRegex(rendered[match.start():match.start() + 500], r"\[11\]")
+
 if __name__ == "__main__":
     unittest.main()
