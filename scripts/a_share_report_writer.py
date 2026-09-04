@@ -487,7 +487,10 @@ def extract_maincomp(data: dict) -> dict:
                 margins[key]  = [None] * n
                 order.append(key)
             rev = row.get("revenue")
-            mgn = row.get("grossMargin") or row.get("grossMarginStd")
+            # 仅在主字段缺失时回退；合法的 0% 不能被 falsy-or 覆盖。
+            mgn = row.get("grossMargin")
+            if mgn is None:
+                mgn = row.get("grossMarginStd")
             segments[key][i] = rev / 1e8 if rev is not None else None
             margins[key][i]  = mgn if mgn is not None else None
 
@@ -2526,9 +2529,15 @@ def gen_section6_health(client, key_data: dict) -> str:
     equity = d.get("totalEquity")
     roe = d.get("ROE")
 
-    asset_turn = revenue / total_assets if (revenue and total_assets) else None
-    eq_mult = total_assets / equity if (total_assets and equity) else None
-    dupont = f"净利率{_pct(net_margin)} × 资产周转率{asset_turn:.3f}次 × 权益乘数{eq_mult:.2f} = ROE约{(net_margin/100 * asset_turn * eq_mult * 100):.2f}%" if (net_margin and asset_turn and eq_mult) else "（数据不足）"
+    asset_turn = revenue / total_assets if revenue is not None and total_assets not in (None, 0) else None
+    eq_mult = total_assets / equity if total_assets is not None and equity not in (None, 0) else None
+    dupont_roe = (net_margin / 100 * asset_turn * eq_mult * 100) if net_margin is not None and asset_turn is not None and eq_mult is not None else None
+    # 加权 ROE 与期末口径杜邦值不可直接混称；差异过大时不输出误导性公式。
+    dupont = (
+        f"净利率{_pct(net_margin)} × 资产周转率{asset_turn:.3f}次 × 权益乘数{eq_mult:.2f} = ROE约{dupont_roe:.2f}%"
+        if dupont_roe is not None and (roe is None or abs(dupont_roe - roe) <= 1.0)
+        else "（杜邦口径与加权ROE差异较大，暂不展开）"
+    )
 
     fin_table_ctx = key_data.get("financial_table_ctx", "")
     fin_table_section = (
@@ -3230,7 +3239,7 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
 def _validate_a_share_risk_body(body: str) -> tuple:
     issues = []
     lines = [line.strip() for line in str(body or "").splitlines() if _A_SHARE_RISK_BULLET_RE.match(line)]
-    if not 3 <= len(lines) <= 5:
+    if not 3 <= len(lines) <= 4:
         issues.append(f"risk_bullet_count:{len(lines)}")
     if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
         issues.append("generic_risk_template")
@@ -3285,7 +3294,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
     issues = []
     valid_nums = _valid_ref_numbers(ref_map)
     risks = payload.get("risks") if isinstance(payload, dict) else None
-    if not isinstance(risks, list) or not (3 <= len(risks) <= 5):
+    if not isinstance(risks, list) or not (3 <= len(risks) <= 4):
         return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = []
     for i, risk in enumerate(risks):
@@ -3738,7 +3747,7 @@ def _ensure_self_row_first(table_md: str, name: str, ticker: str, profile: dict,
     # 构建标准本公司基准行
     self_row_std = (
         f"| —（基准） | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} "
-        f"| {profile.get('recent_progress', '见研究报告正文')}{ref} "
+        f"| {profile.get('recent_progress', '见研究报告正文')}{ref} | — "
         f"| {profile['model']} | {profile['customers']} | {profile['products']} |"
     )
     if self_row is None:
@@ -6443,7 +6452,8 @@ def _gen_catalyst_table(key_data: dict) -> str:
     table = "## 3 催化事件时间表\n\n" + result if "|" in result else ""
     if _valid_catalyst_table(table, min_rows=3):
         return table
-    return _fallback_catalyst_table(key_data)
+    # 无法从真实材料提取合格事件时，禁止写入泛化季度占位事件。
+    return ""
 
 
 def _gen_scenario_table(key_data: dict) -> str:
