@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.2.25
+
+### P1: Minimal cross-field consistency guards
+
+- 修复主营构成毛利率字段在零值场景下的错误回退，杜邦计算增加空值、除零和与加权 ROE 差异保护。
+- 收紧风险提示最终条数为 3–4 条，修复 A 股同业 fallback 基准行缺少“市值”列的问题。
+- 无法从真实材料提取合格催化事件时不再写入泛化季度占位事件，保持 fail-closed。
+
+### Remaining known limitations
+
+- 业务事实卡仍主要是数值级绑定，直销与 i 茅台占比、不同收入口径的跨章节统一仍需后续字段级事实注册表治理。
+- PEG 增长口径、peer-specific 证据和跨章节一致性尚未完全自动化校验。
+
 ## v1.2.24
 
 ### P0: Inline numbered Q&A provenance closure
