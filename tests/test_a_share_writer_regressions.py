@@ -89,6 +89,18 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("## 8 行业分析", result)
         self.assertIn("## 10 风险提示", result)
 
+    def test_maincomp_omits_calculated_residual_lines(self):
+        data = {
+            "main_comp": {"data": [
+                {"endDate": "2025-12-31", "itemID": 0, "revenue": 10000000000},
+                {"endDate": "2025-12-31", "itemID": 1, "itemIDSuperior": 0,
+                 "itemName": "\u8305\u53f0\u9152", "revenue": 8500000000},
+                {"endDate": "2025-12-31", "itemID": 2, "itemIDSuperior": 0,
+                 "itemName": "\u5176\u4ed6\u5dee\u989d\u9879\u76ee(\u8ba1\u7b97)", "revenue": 1500000000},
+            ]}
+        }
+        result = writer.extract_maincomp(data)
+        self.assertEqual(list(result["segments"]), ["\u8305\u53f0\u9152"])
     def test_fallback_resolves_current_reference_after_renumbering(self):
         key_data = {
             "reports": [{"id": "r1", "title": "测试研报"}],

@@ -1,4 +1,10 @@
 # Changelog
+
+## v1.2.22
+
+### P0: Derived main-comp residual exclusion
+- Exclude residual/calculated main-comp labels at extraction time, including top-level, child and later-period rows. These residual calculations cannot be represented as disclosed business lines in any report section.
+- Add a regression test covering the shared extraction path, so the restriction applies to narrative, prompts, tables and fallback blocks consistently.
 ## v1.2.21
 
 ### P0: 空章节、风险与高估值情景门禁

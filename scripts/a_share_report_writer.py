@@ -420,6 +420,11 @@ def extract_maincomp(data: dict) -> dict:
     # 用最新一期数据确定层级顺序与 key 映射
     first_recs = [r for r in records if r.get("endDate") == annual_dates[0]]
 
+    def _is_derived_maincomp_item(name: object) -> bool:
+        """Exclude residual/calculated rows; they are not disclosed business lines."""
+        text = str(name or "")
+        return "\u5dee\u989d" in text or "\u8ba1\u7b97" in text
+
     # itemID -> 原始 itemName
     id_to_name = {r["itemID"]: r.get("itemName", "")
                   for r in first_recs if r.get("itemID", 0) != 0}
@@ -437,7 +442,7 @@ def extract_maincomp(data: dict) -> dict:
     def _add_children(parent_id: int, prefix: str):
         for child_id in children_of.get(parent_id, []):
             child_name = id_to_name.get(child_id, "")
-            if child_name:
+            if child_name and not _is_derived_maincomp_item(child_name):
                 key = prefix + child_name
                 order.append(key)
                 id_to_key[child_id] = key
@@ -448,7 +453,7 @@ def extract_maincomp(data: dict) -> dict:
         if iid == 0 or sup != 0:   # 跳过合计行和非一级项目
             continue
         name = r.get("itemName", "")
-        if not name:
+        if not name or _is_derived_maincomp_item(name):
             continue
         order.append(name)                           # 一级项目（原名）
         id_to_key[iid] = name
@@ -473,7 +478,7 @@ def extract_maincomp(data: dict) -> dict:
             iid  = row.get("itemID", 0)
             sup  = row.get("itemIDSuperior")
             name = row.get("itemName", "")
-            if iid == 0 or not name:
+            if iid == 0 or not name or _is_derived_maincomp_item(name):
                 continue
             # 使用 order 构建阶段确定的带层级前缀的 key
             key = id_to_key.get(iid, name)
