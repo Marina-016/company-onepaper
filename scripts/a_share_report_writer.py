@@ -2732,7 +2732,13 @@ def _scenario_target_price_errors(section: str, key_data: dict) -> list:
         section,
         re.IGNORECASE,
     ))
-    has_target_language = bool(re.search(r"(?:目标价|对应股价|EPS\s*[＝=].*?PE\s*[＝=])", section, re.S))
+    # “传统PE法失效，不输出目标价”属于否定说明，不是实际目标价。
+    # 仅拦截可执行的 PE 公式，或“目标价/对应股价 + 数值”的正向陈述。
+    has_target_language = bool(re.search(
+        r"(?:目标价|对应股价)\s*(?:为|是|约|：|:|=|上调至|下调至)?\s*(?:人民币|RMB|￥)?\s*\d",
+        section,
+        re.I,
+    ))
     errors = []
 
     if not ctx["target_price_allowed"]:
@@ -2953,6 +2959,19 @@ X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多�
     return call_claude(client, prompt, max_tokens=1200)
 
 
+def _normalize_section9_llm_fragment(fragment: str) -> str:
+    """Accept only a substantive §9 fragment; never let a model inject a second H2."""
+    text = str(fragment or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r'(?m)^##\s*9(?:\s|[\.、：:]).*\n?', '', text).strip()
+    # A standalone H2/H3 is an empty shell, not usable section content.
+    meaningful = "\n".join(
+        line for line in text.splitlines()
+        if line.strip() and not re.match(r'^#{1,3}\s+', line.strip())
+    ).strip()
+    return text if len(re.sub(r'[|:\-\s]', '', meaningful)) >= 12 else ""
+
 def gen_section9_valuation(client, key_data: dict) -> str:
     """9.3/9.4 估值分析 + 情景推演（v1.2.11：按数据可用性分别处理）
 
@@ -2963,14 +2982,14 @@ def gen_section9_valuation(client, key_data: dict) -> str:
     parts = []
 
     if _has_valuation_data(key_data.get("valuation", {})):
-        s93 = _gen_section93(client, key_data)
-        if s93 and len(s93.strip()) > 15:
-            parts.append(s93.strip())
+        s93 = _normalize_section9_llm_fragment(_gen_section93(client, key_data))
+        if s93:
+            parts.append(s93)
 
     if _has_scenario_input(key_data):
-        s94 = _gen_section94(client, key_data)
-        if s94 and len(s94.strip()) > 15:
-            parts.append(s94.strip())
+        s94 = _normalize_section9_llm_fragment(_gen_section94(client, key_data))
+        if s94:
+            parts.append(s94)
 
     if not parts:
         return ""
@@ -3016,25 +3035,40 @@ def _risk_sentences(text: str) -> list:
     ]
 
 
+def _explicit_risk_titles(sentence: str) -> list:
+    """Split a source's explicit risk list into individually citable risk titles."""
+    match = re.search(r'(?:风险提示|主要下行风险|下行风险)\s*[：:]\s*(.+)', str(sentence or ""))
+    if not match:
+        return []
+    titles = []
+    for item in re.split(r'[、，,；;]|以及', match.group(1)):
+        title = re.sub(r'等$', '', item.strip(" \t\r\n。．·•*-：:（）()")).strip()
+        title = re.sub(r'^(?:主要|相关|等)$', '', title).strip()
+        if 4 <= len(title) <= 20:
+            titles.append(title)
+    return titles
+
+
 def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
-    """Collect source-backed, target-company risk evidence for §10."""
+    """Collect source-backed risk evidence, prioritising explicit risk disclosures."""
     ref_map = key_data.get("ref_map", {}) or {}
-    evidence = []
-    seen = set()
+    explicit, general, seen = [], [], set()
 
     def add(text: str, ref_no: int, source: str) -> None:
         if ref_no <= 0:
             return
         for sentence in _risk_sentences(text):
-            if not _A_SHARE_RISK_SIGNAL_RE.search(sentence):
-                continue
             normalized = re.sub(r'\W+', '', sentence)
             if not normalized or normalized in seen:
                 continue
             seen.add(normalized)
-            evidence.append({"text": sentence, "ref": ref_no, "source": source})
-            if len(evidence) >= max_items:
-                return
+            titles = _explicit_risk_titles(sentence)
+            if titles:
+                for title in titles:
+                    explicit.append({"text": sentence, "risk_title": title, "ref": ref_no, "source": source})
+                continue
+            if re.search(r'风险|不及预期|承压|下滑|下降|减值|回款|库存|延期|延迟|诉讼|合规|竞争加剧|不确定', sentence):
+                general.append({"text": sentence, "ref": ref_no, "source": source})
 
     for report in (key_data.get("reports", []) or [])[:8]:
         report_ref = _risk_ref_no(ref_map, "report_" + str(report.get("id", "")))
@@ -3043,8 +3077,6 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
             for field in ("title", "detail_text", "abstract", "text")
         )
         add(report_text, report_ref, "研报")
-        if len(evidence) >= max_items:
-            return evidence
 
     for meeting in (key_data.get("meetings", []) or [])[:4]:
         meeting_key = "meeting_" + str(meeting.get("date", "")) + "_" + str(meeting.get("title", ""))[:20]
@@ -3054,17 +3086,12 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
             for field in ("title", "overview", "qa", "text")
         )
         add(meeting_text, meeting_ref, "纪要")
-        if len(evidence) >= max_items:
-            return evidence
 
     for survey in (key_data.get("surveys", []) or [])[:4]:
         survey_ref = _risk_ref_no(ref_map, "survey_" + str(survey.get("event_id", "")))
         add(str(survey.get("content") or ""), survey_ref, "调研")
-        if len(evidence) >= max_items:
-            return evidence
 
-    return evidence
-
+    return (explicit + general)[:max_items]
 
 def _build_a_share_event_context(key_data: dict, max_items: int = 5) -> str:
     """Build source-backed recent-event context without relying on a parallel section result."""
@@ -3143,29 +3170,40 @@ def _derive_a_share_risk_title(sentence: str, company_name: str = "") -> str:
     return candidate[:20].rstrip("的") or "公司特有风险"
 
 
+def _is_valid_a_share_risk_title(title: str) -> bool:
+    title = str(title or "").strip()
+    if not 4 <= len(title) <= 20:
+        return False
+    if re.fullmatch(r'(?:因此|同时|具体来看|此外|其中|一是|二是|三是|首先|其次|最后|\d{4}年.*)', title):
+        return False
+    return bool(re.search(r'风险|不及预期|下滑|下降|受阻|削减|放缓|竞争|波动|库存|减值|回款|价格|批价|需求|政策|税|替代|延期|延迟', title))
+
+
 def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
-    """Build a cited fallback only from real report/meeting/survey risk evidence."""
+    """Build a cited fallback only from real and explicitly risk-related evidence."""
     name = str(key_data.get("short_name") or key_data.get("name") or "")
     lines = []
     titles = set()
-    for item in _collect_a_share_risk_evidence(key_data, max_items=12):
-        title = _derive_a_share_risk_title(item["text"], name)
-        if title in titles:
+    for item in _collect_a_share_risk_evidence(key_data, max_items=16):
+        title = str(item.get("risk_title") or _derive_a_share_risk_title(item["text"], name)).strip()
+        if not _is_valid_a_share_risk_title(title) or title in titles:
             continue
-        titles.add(title)
-        body = re.sub(r'\[\d+\]|\s+', ' ', item["text"]).strip()
-        # 标题来自同一句的风险主语；正文必须去掉这段前缀，避免标题与正文重复，
-        # 并始终由本函数闭合加粗标记。
-        body = re.sub(r'^' + re.escape(title) + r'[，,；;：:\-\s]*', '', body, count=1).strip()
+        if item.get("risk_title"):
+            body = "该事项被原始材料明确列为风险提示，需跟踪其对经营与估值预期的影响。"
+        else:
+            body = re.sub(r'\[\d+\]|\s+', ' ', item["text"]).strip()
+            body = re.sub(r'^' + re.escape(title) + r'[，,；;：:\-\s]*', '', body, count=1).strip()
         if len(body) < 8:
             continue
         if len(body) > 42:
             body = body[:42].rstrip("，,；;：:") + "…"
+        titles.add(title)
         lines.append(f"• **{title}**：{body}[{item['ref']}]")
         if len(lines) >= max_items:
             break
-    return "\n".join(lines) if len(lines) >= 3 else ""
-
+    rendered = "\n".join(lines)
+    valid, _ = _validate_a_share_risk_body(rendered)
+    return rendered if valid else ""
 
 def _validate_a_share_risk_body(body: str) -> tuple:
     issues = []
@@ -4580,6 +4618,81 @@ def _normalize_markdown_tables(md_text: str) -> str:
     return '\n'.join(out)
 
 
+def _replace_empty_h2_body(md_content: str, number: int, replacement: str) -> str:
+    """Replace an empty H2 body using the next H2 as the only boundary.
+
+    Post-processing intentionally removes visual `---` separators, so recovery must
+    never depend on them.
+    """
+    pattern = rf'(?ms)^(##\s+{number}\s+[^\n]+)\n*(.*?)(?=^##\s+\d+\s+|\Z)'
+    match = re.search(pattern, md_content)
+    if not match or match.group(2).strip():
+        return md_content
+    return md_content[:match.start()] + match.group(1) + "\n\n" + replacement.strip() + "\n\n" + md_content[match.end():]
+
+
+def _replace_empty_h3_body(md_content: str, number: str, replacement: str) -> str:
+    """Replace an empty H3 body without relying on removable separators."""
+    pattern = rf'(?ms)^(###\s+{re.escape(number)}\s+[^\n]+)\n*(.*?)(?=^###\s+\d+\.\d+\s+|^##\s+\d+\s+|\Z)'
+    match = re.search(pattern, md_content)
+    if not match or match.group(2).strip():
+        return md_content
+    return md_content[:match.start()] + match.group(1) + "\n\n" + replacement.strip() + "\n\n" + md_content[match.end():]
+
+
+def _first_report_citation(key_data: dict, md_content: str = ""):
+    """Resolve a report's current citation after post-processing re-numbering."""
+    ref_map = key_data.get("ref_map", {}) or {}
+    for report in key_data.get("reports", []) or []:
+        title = re.sub(r'\s+', ' ', str(report.get("title") or "")).strip()
+        if md_content and title:
+            match = re.search(r'^\[(\d+)\].*' + re.escape(title), md_content, re.MULTILINE)
+            if match:
+                return title, int(match.group(1))
+        ref_no = _risk_ref_no(ref_map, "report_" + str(report.get("id", "")))
+        if ref_no and title:
+            return title, ref_no
+    return "", 0
+
+
+def _build_a_share_chain_fallback(key_data: dict, current_main_ref: str = "") -> str:
+    """Minimal source-backed §5 fallback; it contains no fabricated supply-chain facts."""
+    ref_no = str(current_main_ref or "").strip("[]")
+    if not ref_no:
+        ref_no = str(_risk_ref_no(key_data.get("ref_map", {}) or {}, "maincomp") or "")
+    segments = [str(x) for x in (key_data.get("mc", {}) or {}).get("segments", {}).keys() if "差额" not in str(x) and "计算" not in str(x)][:3]
+    if not ref_no or not segments:
+        return ""
+    names = "、".join(str(x) for x in segments)
+    return (
+        f"• **主营业务锚点**：公司主营构成披露的主要业务包括{names}[{ref_no}]。\n"
+        "• **链条跟踪重点**：后续应结合公司披露，持续核验上游关键投入、产能与交付节奏、下游需求及渠道库存的变化。"
+    )
+
+
+def _build_a_share_questions_fallback(key_data: dict, md_content: str = "") -> str:
+    """Ground §7 questions in a real report title instead of a static template."""
+    title, ref_no = _first_report_citation(key_data, md_content)
+    if not ref_no:
+        return ""
+    return (
+        f"1. **经营验证**：围绕《{title}》提及的核心经营变化，最新订单、收入确认与回款节奏如何？[{ref_no}]\n"
+        "2. **盈利质量**：产品结构、毛利率和费用率的边际变化能否持续？\n"
+        "3. **竞争跟踪**：行业供需、价格与竞争格局变化将如何影响公司兑现节奏？\n"
+        "4. **风险边界**：管理层将以哪些可量化指标跟踪库存、现金流和资本开支？"
+    )
+
+
+def _build_a_share_industry_fallback(key_data: dict, md_content: str = "") -> str:
+    """Keep §8 non-empty with a cited research anchor when the peer table is unavailable."""
+    title, ref_no = _first_report_citation(key_data, md_content)
+    if not ref_no:
+        return ""
+    return (
+        f"• **行业跟踪材料**：《{title}》提供了本公司所处产业的研究锚点[{ref_no}]。\n"
+        "• **跟踪重点**：后续应基于可核验材料持续观察行业景气、竞争格局与估值传导；同业数据不足时不虚构可比公司表。"
+    )
+
 def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict) -> str:
     """Final deterministic guard for A-share RC output blocks."""
     name = key_data.get("name", "")
@@ -4660,18 +4773,21 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
         r'(### 4\.3 业务深度分析\n\n)(.*?)(?=\n### 4\.4 |\n### 4\.5 |\n---\n\n## 5 )',
         rf'\1{profile["deep"]}{main_ref}。\n'
     )
-    _fill_empty(
-        r'(## 5 产销链分析\n\n)(.*?)(?=\n---\n\n## 6 )',
-        rf'\1{profile["chain"]}{main_ref}。\n'
+    # `_postprocess_v123` has already removed `---`, so section recovery is based
+    # on heading boundaries only.  Fall back only to cited/source-derived text.
+    _chain_fallback = _build_a_share_chain_fallback(key_data, main_ref_no)
+    if _chain_fallback:
+        md_content = _replace_empty_h2_body(md_content, 5, _chain_fallback)
+    md_content = _replace_empty_h3_body(
+        md_content, "6.2",
+        "公司财务健康度需重点跟踪收入增速、净利率、经营现金流和资本开支匹配度；若高端产品占比提升与现金流同步改善，盈利质量更具持续性。"
     )
-    _fill_empty(
-        r'(### 6\.2 财务健康评估\n\n)(.*?)(?=\n---\n\n## 7 )',
-        r'\1公司财务健康度需重点跟踪收入增速、净利率、经营现金流和资本开支匹配度；若高端产品占比提升与现金流同步改善，盈利质量更具持续性。\n'
-    )
-    _fill_empty(
-        r'(## 7 公司调研大纲\n\n)(.*?)(?=\n---\n\n## 8 )',
-        rf'\1{profile["questions"]}\n'
-    )
+    _questions_fallback = _build_a_share_questions_fallback(key_data, md_content)
+    if _questions_fallback:
+        md_content = _replace_empty_h2_body(md_content, 7, _questions_fallback)
+    _industry_fallback = _build_a_share_industry_fallback(key_data, md_content)
+    if _industry_fallback:
+        md_content = _replace_empty_h2_body(md_content, 8, _industry_fallback)
 
     # Historical fallback wording must avoid fuzzy "约".
     md_content = re.sub(r'(营业收入)约([\d.]+)', r'\1\2', md_content)
@@ -4903,6 +5019,14 @@ def _sparse_cleanup(md_content: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # v1.2.3 生成完成前自检（阻断级别）
 # ─────────────────────────────────────────────────────────────────────────────
+
+def _drop_empty_optional_section9(md_text: str) -> str:
+    """Remove only an empty optional §9 after all table/LLM cleanup has completed."""
+    pattern = r'(?ms)^##\s+9\s+[^\n]+\n*(.*?)(?=^##\s+\d+\s+|\Z)'
+    match = re.search(pattern, str(md_text or ""))
+    if not match or match.group(1).strip():
+        return md_text
+    return md_text[:match.start()] + md_text[match.end():].lstrip("\n")
 
 def _section9_bounds(md_text: str):
     """Return the exact ## 9 range; scenario cleanup must never escape it."""
@@ -6704,6 +6828,7 @@ def main():
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
     md_content = _clean_empty_bold_tags(md_content)
     md_content = _normalize_final_markdown_format(md_content)
+    md_content = _drop_empty_optional_section9(md_content)
     md_content = _renumber_a_share_subsections(md_content)
 
     # ── v1.2.5-R3: 图表标题还原（cleaner 修了残缺 !(url) 但丢掉了原标题）────────
