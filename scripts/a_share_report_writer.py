@@ -4904,71 +4904,54 @@ def _sparse_cleanup(md_content: str) -> str:
 # v1.2.3 生成完成前自检（阻断级别）
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _section9_bounds(md_text: str):
+    """Return the exact ## 9 range; scenario cleanup must never escape it."""
+    h2s = list(re.finditer(r'^##\s+(\d+)\s+.+$', str(md_text or ""), re.MULTILINE))
+    for index, match in enumerate(h2s):
+        if match.group(1) == "9":
+            end = h2s[index + 1].start() if index + 1 < len(h2s) else len(md_text)
+            return match.start(), end
+    return None
+
+
 def _fix_scenario_table_columns(md_text: str) -> str:
-    """修复情景推演表格式，确保输出为标准4列表格（情景|核心假设|经营含义|估值含义）。
-
-    处理以下常见问题：
-    1. LLM 输出 2 列表格，用 " / • " 分隔三段内容 → 拆为 4 列
-    2. 列数 >4 → 合并多余列到最后一列
-    3. 列数正好是 4 但分隔行格式错误 → 修正分隔行
-    4. 情景行内容换行（被 _normalize 展开后仍有问题）→ 清理
-    """
-    if '情景推演表' not in md_text:
+    """Repair scenario tables only inside ## 9; never touch bare tables elsewhere."""
+    bounds = _section9_bounds(md_text)
+    if not bounds:
         return md_text
-    # 找到情景推演表区域
-    sce_idx = md_text.index('情景推演表')
-    end_idx = len(md_text)
-    for end_marker in ['\n## ', '\n---']:
-        pos = md_text.find(end_marker, sce_idx)
-        if 0 < pos < end_idx:
-            end_idx = pos
-    prefix = md_text[:sce_idx]
-    suffix = md_text[end_idx:]
-    sce_block = md_text[sce_idx:end_idx]
-
-    lines = sce_block.split('\n')
+    section_start, section_end = bounds
+    section9 = md_text[section_start:section_end]
+    marker_offset = section9.find('情景推演表')
+    if marker_offset < 0:
+        return md_text
+    sce_idx = section_start + marker_offset
+    prefix, suffix = md_text[:sce_idx], md_text[section_end:]
+    lines = md_text[sce_idx:section_end].split('\n')
     out = []
     for line in lines:
         stripped = line.rstrip()
         if not stripped.startswith('|'):
             out.append(line)
             continue
-
-        # 解析单元格
-        parts = stripped.split('|')
-        inner = [p.strip() for p in parts[1:-1]]  # 去掉首尾空
-
+        inner = [p.strip() for p in stripped.split('|')[1:-1]]
         n = len(inner)
-
         if n == 0:
             out.append(line)
-            continue
-
-        # ── 分隔行：统一输出标准4列分隔 ──
-        if all(re.match(r'^[: \-]+$', c) for c in inner):
+        elif all(re.match(r'^[: \-]+$', cell) for cell in inner):
             out.append('|:-----|:---------|:----------|:----------|')
-            continue
-
-        # ── 表头行 ──
-        if re.match(r'^情景', inner[0]):
+        elif re.match(r'^情景', inner[0]):
             out.append('| 情景 | 核心假设 | 经营含义 | 估值含义 |')
-            continue
-
-        # ── 数据行：统一处理为4列 ──
-        if n == 4:
-            # 已经是4列，直接输出；保留 <br> 供 Markdown/DOCX 做单元格内换行
-            cleaned = [c.replace('\n', ' ').replace('<br/>', '<br>').replace('<br />', '<br>') for c in inner]
+        elif n == 4:
+            cleaned = [cell.replace('\n', ' ').replace('<br/>', '<br>').replace('<br />', '<br>') for cell in inner]
             out.append('| ' + ' | '.join(cleaned) + ' |')
         elif n == 2:
-            # 2列：col2 按 " / • " 拆分为3段
-            col1, col2 = inner[0], inner[1]
-            segs = [s.strip() for s in re.split(r'\s*/\s*•\s*|\s*;\s*(?=[^；])', col2)]
+            col1, col2 = inner
+            segs = [seg.strip() for seg in re.split(r'\s*/\s*•\s*|\s*;\s*(?=[^；])', col2)]
             if len(segs) >= 3:
                 out.append(f'| {col1} | {segs[0]} | {segs[1]} | {segs[2]} |')
             elif len(segs) == 2:
                 out.append(f'| {col1} | {segs[0]} | {segs[1]} | — |')
             else:
-                # 只有1段，尝试按关键词切分
                 m1 = re.search(r'(收入|利润|营收|EPS|毛利|净利)', col2)
                 m2 = re.search(r'(目标价|估值|元.*×|×.*元|EPS.*×)', col2)
                 if m2:
@@ -4978,16 +4961,12 @@ def _fix_scenario_table_columns(md_text: str) -> str:
                 else:
                     out.append(f'| {col1} | {col2} | — | — |')
         elif n == 3:
-            # 3列：补第4列为"—"
             out.append('| ' + ' | '.join(inner) + ' | — |')
         elif n > 4:
-            # >4列：合并最后若干列到第4列
             out.append('| ' + ' | '.join(inner[:3]) + ' | ' + ' '.join(inner[3:]) + ' |')
         else:
             out.append(line)
-
     return prefix + '\n'.join(out) + suffix
-
 
 def _format_scenario_cell_breaks(text: str) -> str:
     """Use <br> for scenario-table sub-points without breaking Markdown tables."""
@@ -5027,42 +5006,38 @@ def _clean_scenario_disclosure_text(text: str) -> str:
 
 
 def _format_scenario_analysis(md_text: str) -> str:
-    """Normalize A-share 9.4 scenario wording and table cell line breaks."""
-    has_scenario_table_only = bool(re.search(r'^\|\s*(?:乐观|中性|悲观)', md_text or '', re.M))
-    if '情景推演' not in md_text and not has_scenario_table_only:
+    """Normalize scenario wording only in ## 9; ignore all bare tables outside it."""
+    bounds = _section9_bounds(md_text)
+    if not bounds:
         return md_text
-
-    start_match = re.search(r'###\s*9\.4\s*情景推演', md_text)
+    section_start, section_end = bounds
+    section9 = md_text[section_start:section_end]
+    start_match = re.search(r'###\s*9\.4\s*情景推演', section9)
     if start_match:
-        start = start_match.start()
+        start = section_start + start_match.start()
     else:
-        marker = md_text.find('情景推演')
-        if marker >= 0:
-            start = marker
-        elif has_scenario_table_only:
-            start = 0
-        else:
+        marker = section9.find('情景推演')
+        if marker < 0:
             return md_text
+        start = section_start + marker
 
-    end = len(md_text)
-    for marker in ('\n## 10 ', '\n## 风险提示', '\n### 9.5 ', '\n---'):
-        pos = md_text.find(marker, start + 1)
-        if 0 < pos < end:
-            end = pos
-
+    end = section_end
+    for marker in ('\n### 9.5 ', '\n---'):
+        pos = md_text.find(marker, start + 1, section_end)
+        if pos >= 0:
+            end = min(end, pos)
     block = _clean_scenario_disclosure_text(md_text[start:end])
     lines = []
     for line in block.split('\n'):
         stripped = line.strip()
         if stripped.startswith('|') and not re.match(r'^\|\s*:?-+', stripped):
-            cells = [c.strip() for c in stripped.strip('|').split('|')]
+            cells = [cell.strip() for cell in stripped.strip('|').split('|')]
             if cells and re.match(r'^(乐观|中性|悲观)', cells[0]):
-                cells = [_clean_scenario_disclosure_text(c) for c in cells]
-                cells[1:] = [_format_scenario_cell_breaks(c) for c in cells[1:]]
+                cells = [_clean_scenario_disclosure_text(cell) for cell in cells]
+                cells[1:] = [_format_scenario_cell_breaks(cell) for cell in cells[1:]]
                 line = '| ' + ' | '.join(cells) + ' |'
         lines.append(line)
     return md_text[:start] + '\n'.join(lines) + md_text[end:]
-
 
 CHART_CAPTIONS = {
     "revenue":   "营业收入及同比趋势",
