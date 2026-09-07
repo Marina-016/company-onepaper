@@ -109,6 +109,13 @@ SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析�
 - `fdmtNew` 只可引用标准财务摘要字段（营收、利润、现金流、资产负债、EPS、ROE、毛利率等）；严禁以它为来源写销量、产量、吨价、单价、渠道/直销占比、市占率、产能、客户数等经营分项。
 - 基酒/产品产量、销量、吨价、渠道占比和产品增速，必须引用含该术语与数值的研报全文、纪要、调研或对应业务明细接口；无法逐项证明则不写。
 - 不得把 `operateProfitRatio` 称为毛利率；毛利率只使用 `grossMARgin` / 主营构成接口的 `grossMargin` 字段。
+
+## 财务指标名称与口径（强制执行）
+- 报告正文、表格、图注中不得单独简写“营收”“净利”“ROE”“现金流”；首次出现必须使用完整指标名称和期间，如“2025年营业总收入”“归属于母公司股东的净利润”“净资产收益率-加权平均”“经营活动产生的现金流量净额”。
+- `fdmtNew` 中 `tRevenue` 为营业总收入，`revenue` 为营业收入；两者并存或口径不同，必须分别写明，禁止都简称为“营收”或相互替换。
+- `NPAttrP` 必须写为归属于母公司股东的净利润；`grossMARgin` 为毛利率；`npMARgin` 为销售净利率；`operateProfitRatio` 为营业利润率；`ROE` 为摊薄净资产收益率，`ROEW` 为净资产收益率-加权平均。
+- 若原始来源未明确指标口径、合并范围、期间或币种，不得补充推断；改写为带来源的中性表述或删除。
+
 - 每个经营事实短语应在其末尾紧跟对应 `[N]`；同一句含多个来源时，按事实短语用分号拆开并各自标注，禁止把多个来源集中堆在段末。
 - 经营事实中的同比、占比、涨跌幅等百分比，只有原始来源明确出现该百分比时才能直接写；若确需派生计算，必须在同一短语写出可复核公式及两项基础数值，并紧跟基础来源，否则删除该百分比。
 ## 派生测算
@@ -958,12 +965,12 @@ def gen_financial_table(fin: dict, q1_text: str = "", company_name: str = "") ->
         row(f"营业总收入（{rev_unit_label}）", "tRevenue", unit=rev_unit),
         row(f"归母净利润（{rev_unit_label}）", "NPAttrP",  unit=rev_unit),
         row("毛利率（%）*", "grossMargin", is_pct=True, unit=1),
-        row("净利率（%）", "netMargin", is_pct=True, unit=1),
-        row("ROE-加权（%）", "ROEW", is_pct=True, unit=1),
-        row(f"经营现金流净额（{rev_unit_label}）", "operCashFlow", unit=rev_unit),
+        row("销售净利率（%）", "netMargin", is_pct=True, unit=1),
+        row("净资产收益率-加权平均（%）", "ROEW", is_pct=True, unit=1),
+        row(f"经营活动产生的现金流量净额（{rev_unit_label}）", "operCashFlow", unit=rev_unit),
         row(f"总资产（{rev_unit_label}）",          "totalAssets",  unit=rev_unit),
         row("资产负债率（%）", "liabRatio", is_pct=True, unit=1),
-        row("基本EPS（元）", "basicEPS", unit=1, decimals=2),
+        row("基本每股收益（元）", "basicEPS", unit=1, decimals=2),
     ]
     if q1_text:
         lines.append(f"\n> 注：{q1_text}*")
@@ -2228,7 +2235,8 @@ def _format_qa_markdown(selected: list, ref_tags: list) -> str:
             a = _re.sub(r'(?:\s*\[\d+\])+\s*$', '', a).rstrip()
             a = a + ref
         lines.append(f"**Q：** {q}")
-        lines.append(f"**A：** {a}")
+        # Q&A may be a broker meeting note rather than company guidance.
+        lines.append(f"**A（调研纪要观点，非公司指引）：** {a}")
     return "\n\n".join(lines)
 
 
@@ -2534,7 +2542,7 @@ def gen_section6_health(client, key_data: dict) -> str:
     dupont_roe = (net_margin / 100 * asset_turn * eq_mult * 100) if net_margin is not None and asset_turn is not None and eq_mult is not None else None
     # 加权 ROE 与期末口径杜邦值不可直接混称；差异过大时不输出误导性公式。
     dupont = (
-        f"净利率{_pct(net_margin)} × 资产周转率{asset_turn:.3f}次 × 权益乘数{eq_mult:.2f} = ROE约{dupont_roe:.2f}%"
+        f"期末口径近似ROE：销售净利率{_pct(net_margin)} × 资产周转率{asset_turn:.3f}次 × 权益乘数{eq_mult:.2f} = {dupont_roe:.2f}%"
         if dupont_roe is not None and (roe is None or abs(dupont_roe - roe) <= 1.0)
         else "（杜邦口径与加权ROE差异较大，暂不展开）"
     )
@@ -2552,12 +2560,17 @@ def gen_section6_health(client, key_data: dict) -> str:
 
 【杜邦数据（{y0}A）】
 {dupont}
-报告ROE: {_pct(roe)}（加权ROE: {_pct(d.get('ROEW'))}）
+摊薄ROE: {_pct(roe)}；加权平均ROE: {_pct(d.get('ROEW'))}
 
 【引用映射】
 fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 
 【格式要求】**每条不超过100字**，输出以下四条，每条单独一行，紧凑精炼，**每条必须以加粗的小标题开头**（如 **盈利能力**：）：
+
+【财务口径规则（强制执行）】
+- 不得单独简写“营收”“净利”“ROE”“现金流”；必须写完整指标名称及口径。
+- `tRevenue` 为营业总收入；`NPAttrP` 为归属于母公司股东的净利润；`netMargin` 为销售净利率；`ROEW` 为净资产收益率-加权平均；`operCashFlow` 为经营活动产生的现金流量净额。
+- 若同时涉及“营业收入”与“营业总收入”，必须明确区分，禁止笼统称为“营收”。
 
 ⚠️ **因果归因规则（强制执行）**：
 - fdmtNew结构化接口仅提供数字变化，**不提供因果解释**
@@ -2568,7 +2581,7 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
 - **盈利能力**：净利率/ROE趋势，精确数字，标注引用。若需说明原因，必须引用MD&A/研报文字，否则只陈述变化幅度
 - **偿债能力**：资产负债率/净资本充足性/偿债压力，标注引用
 - **现金流质量**：经营现金流净额与净利润的比值（精确计算后直接写出数字），标注引用。若需说明原因，引用MD&A/研报
-- **ROE杜邦分析（{y0}A）**：直接使用上方已提供的杜邦公式数据，格式"净利率X% × 资产周转率X次 × 权益乘数X = ROE约X%"，标注引用
+- **ROE杜邦分析（{y0}A）**：直接使用上方已提供的杜邦公式数据，明确写为“期末口径近似ROE”；仅可与“摊薄ROE”比较，必须说明“加权平均ROE采用不同期间口径，不直接比较”，标注引用
 """
     return call_claude(client, prompt, max_tokens=800)
 
@@ -5751,6 +5764,38 @@ def _validate_numeric_source_claims(md_content: str, key_data: dict) -> list:
                 # 术语/数值分别出现于不同来源也不能证明同一事实，维持 fail-closed。
                 issues.append(f"16.经营数字来源组合不完整: 行{line_no} 引用[{joined}]无法由单一来源完整支撑")
     return issues
+
+
+def _meeting_subject_source_issues(md_content: str, key_data: dict) -> list:
+    """Reject numeric claims from meetings that are not target-company material."""
+    target = str((key_data or {}).get("name") or "").strip()
+    if not target:
+        return []
+    aliases = {target}
+    for suffix in ("股份有限公司", "集团股份有限公司", "有限公司", "集团"):
+        aliases.add(target.replace(suffix, "").strip())
+    aliases.discard("")
+    evidence = _build_reference_evidence(key_data, md_content)
+    issues = []
+    for line_no, line in enumerate(str(md_content or "").splitlines(), start=1):
+        if line.startswith("## 参考资料"):
+            break
+        if not _QUANTITATIVE_TOKEN_RE.search(line):
+            continue
+        for _, refs in _citation_claim_groups(line):
+            for ref_no in refs:
+                source = evidence.get(ref_no) or {}
+                if source.get("api") != "getMeetingSummaryDetail":
+                    continue
+                source_text = f"{source.get('title', '')}\n{source.get('text', '')}"
+                target_subject = any(alias in str(source.get("title", "")) for alias in aliases)
+                if not target_subject:
+                    target_subject = any(source_text.count(alias) >= 2 for alias in aliases if len(alias) >= 2)
+                if not target_subject:
+                    issues.append(f"16.纪要主体不匹配: 行{line_no} 引用[{ref_no}]不是目标公司主体材料")
+    return issues
+
+
 def _issue_reference_numbers(issue: str) -> set:
     """Extract cited source numbers from one provenance issue."""
     refs = set()
@@ -5841,6 +5886,16 @@ def _drop_unverifiable_numeric_lines(md_content: str, key_data: dict, max_rounds
             break
         text = "\n".join(lines)
     return text, removed
+def _markdown_structure_errors(md_content: str) -> list:
+    """Detect headings injected into Markdown table cells before delivery."""
+    issues = []
+    for line_no, raw_line in enumerate(str(md_content or "").splitlines(), start=1):
+        line = raw_line.strip()
+        if line.startswith("|") and re.search(r"(?<!\w)#{2,6}\s+", line):
+            issues.append(f"17.表格单元格内包含标题: 行{line_no}")
+    return issues
+
+
 def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None) -> list:
     """v1.2.3 报告生成完成前自检，返回阻断问题列表。为空则通过。
 
@@ -5864,8 +5919,10 @@ def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None
     import re
     blockers = []
 
+    blockers.extend(_markdown_structure_errors(md_content))
     if key_data:
         blockers.extend(_validate_numeric_source_claims(md_content, key_data))
+        blockers.extend(_meeting_subject_source_issues(md_content, key_data))
 
     unresolved_facts = sorted(set(_FACT_MARKER_RE.findall(str(md_content or ""))))
     if unresolved_facts:
@@ -6320,30 +6377,6 @@ def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
             md_content = body + ref_header + "\n" + "\n".join(new_refs)
             repair_log.append(f"二次死引用清理: 移除{removed}条, 保留{len(active)}条有效引用")
     return md_content, repair_log
-
-
-def _run_v124_quality_gate(md_path: str, market: str = "A") -> dict:
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    checker_script = os.path.join(script_dir, "check_report_quality_v124.py")
-    if not os.path.exists(checker_script):
-        return {}
-    try:
-        proc = subprocess.run(
-            [sys.executable, "-X", "utf8", checker_script, md_path, "--market", market, "--json"],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=180,
-        )
-    except Exception as exc:
-        return {"P0": 1, "P1": 0, "error": f"quality gate failed: {exc}"}
-    try:
-        payload = json.loads(proc.stdout.strip() or "{}")
-    except Exception:
-        payload = {"P0": 1, "P1": 0, "error": (proc.stderr or proc.stdout or "quality gate parse failed")[:500]}
-    payload.setdefault("returncode", proc.returncode)
-    return payload
 
 
 def _extract_section(md: str, marker: str, end_markers: list) -> str:
@@ -6945,11 +6978,6 @@ def main():
             check=True
         )
         print(f"[{time.time()-t0:.1f}s] ✅ Word 文件已保存：{args.docx}")
-
-    _quality_gate = _run_v124_quality_gate(args.output, market="A")
-    if _quality_gate and (int(_quality_gate.get("P0", 0)) > 0 or int(_quality_gate.get("P1", 0)) > 0):
-        print(f"❌ v1.2.5 quality gate blocking: P0={_quality_gate.get('P0', 0)} P1={_quality_gate.get('P1', 0)}")
-        sys.exit(3)
 
     total = time.time() - t0
     print(f"\n🎉 报告生成完成！总耗时：{total:.1f}秒（{total/60:.1f}分钟）")

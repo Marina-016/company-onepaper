@@ -172,5 +172,25 @@ class AShareWriterRegressionTests(unittest.TestCase):
         for match in __import__("re").finditer(r"\*\*Q：\*\*", rendered):
             self.assertRegex(rendered[match.start():match.start() + 500], r"\[11\]")
 
+    def test_qa_labels_meeting_note_as_non_guidance(self):
+        rendered = writer._format_qa_markdown([{"q": "question", "a": "answer"}], [])
+        self.assertIn("\u8c03\u7814\u7eaa\u8981\u89c2\u70b9\uff0c\u975e\u516c\u53f8\u6307\u5f15", rendered)
+
+    def test_structure_gate_rejects_heading_inside_table_cell(self):
+        errors = writer._markdown_structure_errors("| metric | ## 2 malformed heading |\n|:--|:--|")
+        self.assertTrue(any("\u8868\u683c\u5355\u5143\u683c\u5185\u5305\u542b\u6807\u9898" in error for error in errors))
+
+    def test_financial_table_uses_full_metric_names(self):
+        financial = {"years": [2025, 2024, 2023], 2025: {"tRevenue": 100, "NPAttrP": 20, "grossMargin": 40,
+                            "netMargin": 20, "ROEW": 15, "operCashFlow": 12,
+                            "totalAssets": 200, "liabRatio": 30, "basicEPS": 1.2}}
+        table = writer.gen_financial_table(financial)
+        self.assertIn("\u9500\u552e\u51c0\u5229\u7387", table)
+        self.assertIn("\u51c0\u8d44\u4ea7\u6536\u76ca\u7387-\u52a0\u6743\u5e73\u5747", table)
+        self.assertIn("\u7ecf\u8425\u6d3b\u52a8\u4ea7\u751f\u7684\u73b0\u91d1\u6d41\u91cf\u51c0\u989d", table)
+    def test_global_prompt_requires_full_financial_metric_names(self):
+        self.assertIn("\u4e0d\u5f97\u5355\u72ec\u7b80\u5199\u201c\u8425\u6536\u201d", writer.SYSTEM_PROMPT)
+        self.assertIn("`tRevenue` \u4e3a\u8425\u4e1a\u603b\u6536\u5165", writer.SYSTEM_PROMPT)
+        self.assertIn("`revenue` \u4e3a\u8425\u4e1a\u6536\u5165", writer.SYSTEM_PROMPT)
 if __name__ == "__main__":
     unittest.main()

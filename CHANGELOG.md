@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.2.26
+
+### P0: Source-bound A-share quality gates
+
+- Filter multi-stock meeting summaries to target-company material before writing; final validation also blocks cited numeric claims from a non-target meeting.
+- Remove the retired `check_report_quality_v124.py` invocation and retain the quality checks in the writer's internal delivery gate.
+- Add a structural check that blocks Markdown headings injected into table cells.
+
+### P1: Financial terminology and interpretation
+
+- Require full financial metric names and explicit field definitions throughout the report, including a strict distinction between revenue and total revenue.
+- Label Q&A as meeting-note views rather than company guidance, and align DuPont output to the diluted ROE basis rather than weighted-average ROE.
+
+
 ## v1.2.25
 
 ### P1: Minimal cross-field consistency guards

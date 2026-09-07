@@ -1089,7 +1089,7 @@ def _report_priority(item):
 # 会议纪要链: meeting_search (5页) -> getMeetingSummaryDetail
 # ─────────────────────────────────────────────
 
-def fetch_meetings(meta, ticker, token, pages=5, max_detail=5):
+def fetch_meetings(meta, ticker, token, pages=5, max_detail=5, company_name=""):
     search_url = meta.get("meeting_search", {}).get("url", "")
     detail_url = meta.get("getMeetingSummaryDetail", {}).get("url", "")
     if not search_url:
@@ -1164,6 +1164,27 @@ def fetch_meetings(meta, ticker, token, pages=5, max_detail=5):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_detail) as ex:
         futs = [ex.submit(get_detail, it) for it in to_detail]
         results = [f.result() for f in concurrent.futures.as_completed(futs)]
+
+    # A ticker search tag can represent a multi-stock industry meeting. Keep a
+    # meeting only when its title names the target or its body discusses the target
+    # repeatedly; otherwise its numeric facts are unsafe for a company report.
+    target = str(company_name or "").strip()
+    if target:
+        aliases = {target}
+        for suffix in ("股份有限公司", "集团股份有限公司", "有限公司", "集团"):
+            aliases.add(target.replace(suffix, "").strip())
+        aliases.discard("")
+
+        def is_target_subject(item):
+            title = str(item.get("title") or item.get("subject") or "")
+            detail_data = ((item.get("detail") or {}).get("data") or {})
+            body = "\n".join(str(detail_data.get(key) or "") for key in
+                             ("aiOverview", "aiQa", "aiOriBody", "aiSummary"))
+            if any(alias in title for alias in aliases):
+                return True
+            return any(body.count(alias) >= 2 for alias in aliases if len(alias) >= 2)
+
+        results = [item for item in results if is_target_subject(item)]
 
     return results, None
 
@@ -1435,7 +1456,7 @@ def run(ticker_input, token, output_path):
     ex3 = concurrent.futures.ThreadPoolExecutor(max_workers=3)
     ann_fut = ex3.submit(fetch_announcements, meta, ticker, token)
     rep_fut = ex3.submit(fetch_research_reports, meta, ticker, company_name, token)
-    mtg_fut = ex3.submit(fetch_meetings, meta, ticker, token)
+    mtg_fut = ex3.submit(fetch_meetings, meta, ticker, token, company_name=company_name)
 
     anns, err = ann_fut.result()
     result["announcements"] = anns
