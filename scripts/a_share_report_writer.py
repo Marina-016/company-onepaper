@@ -755,6 +755,19 @@ def extract_surveys_detail(data: dict) -> list:
     return result
 
 
+def _peer_material_ref_key(index: int, item: dict) -> str:
+    code = re.sub(r'\D', '', str((item or {}).get('peer_code') or '')) or 'unknown'
+    return f"peer_material_{code}_{index}"
+
+
+def _peer_material_entries(data: dict):
+    for index, item in enumerate(data.get('peer_materials') or []):
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get('peer_name') or '').strip()
+        code = re.sub(r'\D', '', str(item.get('peer_code') or ''))
+        if name and re.fullmatch(r'\d{6}', code):
+            yield index, item, name, code
 def build_ref_map(data: dict) -> dict:
     """构建引用序号映射 {描述: 序号}，用于生成参考资料章节"""
     refs = {}
@@ -802,6 +815,22 @@ def build_ref_map(data: dict) -> dict:
             }
             idx += 1
 
+    # 同业定向材料：仅作为 §8.2 “相关业务进展”的来源，保留公司代码和原始索引以便审计。
+    for material_index, item, peer_name, peer_code in _peer_material_entries(data):
+        source_id = str(item.get("id") or item.get("materialId") or item.get("docId") or material_index)
+        refs[_peer_material_ref_key(material_index, item)] = {
+            "n": idx,
+            "type": "同业材料",
+            "id": f"{peer_code}:{source_id}",
+            "date": str(item.get("date") or item.get("publishDate") or TODAY),
+            "org": peer_name,
+            "title": str(item.get("title") or "同业定向检索材料"),
+            "api_name": "getMaterialsV2",
+            "peer_name": peer_name,
+            "peer_code": peer_code,
+            "source_index": material_index,
+        }
+        idx += 1
     # 结构化数据来源
     meta_info = data.get("__meta__", {})
     ticker = meta_info.get("ticker", data.get("ticker", ""))
@@ -864,6 +893,10 @@ def refs_to_markdown(ref_map: dict) -> str:
                 lines.append(
                     f"[{n}]Datayes结构化接口 | {ref_date} | {ref_title} | API：{api_name}"
                 )
+        elif ref_type == "同业材料":
+            lines.append(
+                f"[{n}]Materials V2研报 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：getMaterialsV2"
+            )
         elif ref_type == "研报":
             lines.append(
                 f"[{n}]Datayes研报 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：batchGetReportContent（研报全文）"
@@ -3456,134 +3489,96 @@ def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
     return '\n'.join(result_lines)
 
 
+def _peer_progress_refs(key_data: dict) -> dict:
+    """返回 {peer_code: [引用编号]}，只供同业表的“相关业务进展”列使用。"""
+    refs = key_data.get('ref_map') or {}
+    grouped = {}
+    for index, item, _name, code in _peer_material_entries(key_data.get('_raw_data') or {}):
+        ref_no = refs.get(_peer_material_ref_key(index, item), {}).get('n')
+        if ref_no:
+            grouped.setdefault(code, []).append(int(ref_no))
+    return grouped
+
+
+def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict) -> str:
+    """同业表仅允许经过采集/检索双重约束的公司；进展引用无效时只清空该单元格。"""
+    parsed = _parse_markdown_table(table_md or '')
+    if not parsed or parsed.get('col_count') != 10:
+        return ''
+    expected_header = ['竞争关系', '公司（代码）', '市场', '可比业务', '行业地位', '相关业务进展', '市值', '商业模式', '目标客户群体', '核心产品']
+    if parsed.get('header_cells') != expected_header:
+        return ''
+    rows = parsed.get('rows') or []
+    if len(rows) < 3 or ticker not in rows[0][1] or name not in rows[0][1]:
+        return ''
+    allowed = {str(item.get('code')): str(item.get('current_name')) for item in allowed_peers}
+    found, cleaned_rows = set(), [list(rows[0])]
+    for row in rows[1:]:
+        cleaned = list(row)
+        company_cell, progress_cell = cleaned[1], cleaned[5]
+        codes = re.findall(r'(?<!\d)(\d{6})(?!\d)', company_cell)
+        if len(codes) != 1 or codes[0] not in allowed or allowed[codes[0]] not in company_cell:
+            return ''
+        code = codes[0]
+        if code in found:
+            return ''
+        found.add(code)
+        required_refs = set(progress_refs.get(code) or [])
+        actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', progress_cell)}
+        if (required_refs and (not actual_refs or not actual_refs.issubset(required_refs))) or (not required_refs and (actual_refs or progress_cell.strip() not in {'—', '-'})):
+            cleaned[5] = '—'
+        cleaned_rows.append(cleaned)
+    if len(found) < 2:
+        return ''
+    separator = table_md.strip().splitlines()[1]
+    return '\n'.join([parsed['header_line'], separator] + ['| ' + ' | '.join(row) + ' |' for row in cleaned_rows])
+
 def gen_peer_table(client, key_data: dict) -> str:
-    """生成同业比较表格（优先使用getMaterialsV2素材，其次研报）"""
-    reports = key_data["reports"]
-    fin = key_data["fin"]
-    valuation = key_data["valuation"]
-    name = key_data["name"]
-    ticker = key_data.get("ticker", "")
-    peer_materials = key_data.get("peer_materials") or []
-    mc = key_data.get("mc", {})
-
-    years = fin.get("years", [])
-    y0 = years[0] if years else "?"
+    """生成来源绑定的同业表；无法取得两家代码候选时整节跳过。"""
+    name, ticker = key_data['name'], key_data.get('ticker', '')
+    peers = key_data.get('peer_validated') or []
+    if len(peers) < 2:
+        return ''
+    fin, mc = key_data['fin'], key_data.get('mc', {})
+    years = fin.get('years', [])
+    y0 = years[0] if years else '?'
     d = fin.get(y0, {}) if y0 else {}
-    rev = _fmt(d.get("tRevenue"))
-    np_ = _fmt(d.get("NPAttrP"))
-    nm = _pct(d.get("netMargin"))
+    primary_biz = '、'.join(list(mc.get('segments') or {})[:3])
+    progress_refs = _peer_progress_refs(key_data)
+    materials_by_code = {}
+    for index, item, _peer_name, peer_code in _peer_material_entries(key_data.get('_raw_data') or {}):
+        ref_no = (key_data.get('ref_map') or {}).get(_peer_material_ref_key(index, item), {}).get('n')
+        if ref_no:
+            text = ' '.join(str(item.get(k, '') or '') for k in ('title', 'text', 'content', 'summary', 'abstract'))
+            materials_by_code.setdefault(peer_code, []).append(f'[{ref_no}] {text[:1200]}')
+    peer_lines = []
+    for peer in peers:
+        code, peer_name = str(peer.get('code') or ''), str(peer.get('current_name') or '')
+        evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填“—”。'
+        peer_lines.append(f'【{peer_name}（{code}）】\n{evidence}')
+    header = '| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |'
+    sep = '|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|'
+    allowed_text = '\n'.join(f"- {p['current_name']}（{p['code']}）" for p in peers)
+    prompt = f"""为 {name} 生成来源受限的同业比较表，只输出 Markdown 表格。
 
-    # 提取主营业务段（前3个，用于告诉LLM公司所在行业）
-    mc_segs = mc.get("segments", {})
-    mc_years = mc.get("years", [])
-    primary_biz = ""
-    if mc_segs and mc_years:
-        y = mc_years[0]
-        tops = sorted(mc_segs.items(), key=lambda kv: (kv[1][0] or 0) if isinstance(kv[1], list) else 0, reverse=True)[:3]
-        primary_biz = "、".join(k for k, _ in tops) if tops else ""
+标的基准：{name}（{ticker}），{y0}年营业总收入{_fmt(d.get('tRevenue'))}亿元；主营业务：{primary_biz or '见主营构成'}。
+允许的可比公司仅限以下名单，禁止新增、替换或凭行业知识补充任何公司：
+{allowed_text}
 
-    pe_data = valuation["items"].get("市盈率PE", {})
-    pb_data = valuation["items"].get("市净率PB", {})
-    pe = f"{round(pe_data.get('val', 0), 1)}x" if pe_data.get("val") else "—"
+定向材料（只可用于“相关业务进展”列）：
+{chr(10).join(peer_lines)}
 
-    # API验证过的可比公司当前官方名称（防止曾用名污染）
-    peer_validated = key_data.get("peer_validated") or []
-    peer_validated_text = ""
-    if peer_validated:
-        lines = ["【API已验证的可比公司当前A股注册简称（必须使用以下名称，不使用历史/曾用名）】"]
-        for pv in peer_validated:
-            q = pv.get("query", "")
-            cn = pv.get("current_name", "")
-            code = pv.get("code", "")
-            note = f"（原查询词：{q}）" if q != cn else ""
-            lines.append(f"  代码 {code}：当前注册简称为「{cn}」{note}")
-        peer_validated_text = "\n".join(lines)
+{header}
+{sep}
 
-    # getMaterialsV2 素材（优先，最多5条）
-    peer_mat_text = ""
-    if peer_materials and isinstance(peer_materials, list):
-        snippets = []
-        for item in peer_materials[:5]:
-            title = item.get("title", "")
-            text = item.get("text", "")[:2000]
-            dtype = item.get("dataType", "")
-            snippets.append(f"[{dtype}] {title}\n{text}")
-        peer_mat_text = "\n\n---\n\n".join(snippets)
-
-    # 研报摘要（兜底）
-    peer_reports_text = "\n\n---\n\n".join(
-        f"[{r['id']}]{r['org']} {r['date']}\n"
-        f"研报摘要：{(r.get('detail_text') or r.get('abstract') or '')[:2000]}\n"
-        f"正文：\n{(r.get('text') or '')[:2000]}"
-        for r in reports[:4]
-    )
-
-    # v1.2.3 final: unified 10-column peer comparison template for all markets
-    # 竞争关系 | 公司(代码) | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品
-    fin_col_instruction = """全10列模板必须全部输出，数据不足的列填"—"（后续稀疏规则自动清理空列）：
-1. 竞争关系: 直接竞争/局部竞争/业务替代/生态竞争/上下游可比/全球龙头参照
-2. 公司(代码): 必须合并为一列
-3. 市场: A股/港股/美股/未上市
-4. 可比业务: 与标的公司重叠的业务领域
-5. 行业地位: 在行业中的定位与排名
-6. 相关业务进展: 最新业务动态，必须有来源引用[N]或表级来源覆盖
-7. 市值: 如有数据填数字，无数则填"—"
-8. 商业模式: 1-2句核心模式描述
-9. 目标客户群体: 主要服务客群
-10. 核心产品: 代表产品/服务"""
-    table_header = "| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |"
-    table_sep = "|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|"
-    table_example = "| — | [标的简称]（[代码]） | [市场] | [核心业务] | [行业地位] | [最新进展][N] | — | [模式描述] | [客群] | [产品] |"
-
-    prompt = f"""为 {name} 生成同业可比公司 Markdown 表格。
-
-【标的公司（{name}）已知数据】
-{y0}A 营收: {rev}亿  净利: {np_}亿  净利率: {nm}  PE(TTM): {pe}  PB: {pb_data.get('val','—')}x
-主营业务（按收入排序）：{primary_biz or "见研报"}
-
-{peer_validated_text}
-
-{"【同业对比素材（getMaterialsV2，信息密度最高）】" + chr(10) + peer_mat_text if peer_mat_text else ""}
-
-【研报内容（补充参考）】
-{peer_reports_text}
-
-⚠️ 素材过滤规则：如素材/研报中出现的公司与 {name} 主营业务差异显著（如仅有旅游景点运营、文旅综合体、非免税零售），则忽略这些素材数据，改用你对该行业直接竞争对手的知识填充表格。
-【格式要求】
-输出一个完整的 Markdown 表格（严格遵守10列格式，不输出其他文字）：
-
-{table_header}
-{table_sep}
-{table_example}
-| [竞争类型] | [可比公司]（[代码]） | [市场] | [重叠业务] | [行业地位] | [进展][N] | — | [模式] | [客群] | [产品] |
-...（含至少3家可比公司，加上本公司共≥4行；如有相关海外龙头也需列入）
-
-**可比公司选择规则（按优先级）**：
-1. ⚠️ **第一行必须是本公司 {name}（{ticker}）作为基准行，竞争关系列填"—（基准）"**
-2. 之后至少3家可比公司，合计表格≥4行（含本公司行）
-3. 优先选择与 {name} 存在**直接业务竞争关系**的上市公司（相同核心业务/客群/渠道）
-4. 次选主营中有较大重叠比例的上市公司（间接竞争或业务交叉）
-5. 如素材/研报未明确提及竞争对手，**根据行业知识**补充直接竞争对手，不得以旁观行业公司凑数
-6. 金融机构、非同业公司一律排除（除非 {name} 本身就是金融公司）
-7. **每行必须填满10列**，数据不足列填"—"，不可省略列
-8. ⚠️ **相关业务进展列每行都必须有具体描述和来源引用[N]**，不能填"—"或"见报告正文"
-9. 如果某可比公司相关信息无法获取，该列填"—"，整行仍保留
-
-{fin_col_instruction}
+规则：
+1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”。其后逐一列出上述全部可比公司。
+2. 每行严格10列；除“相关业务进展”外，其余列无需引用，但没有可靠信息一律填“—”，不得杜撰排名、财务数字或客户名单。
+3. “相关业务进展”是唯一需要引用的列：该公司有定向材料时，仅概括其材料并保留对应[N]；没有材料时必须填“—”，不得引用其他公司的来源。
+4. 不要使用目标公司研报、常识或推测为可比公司补写业务进展。
 """
-    result = call_claude(client, prompt, max_tokens=1800)
-    # 清理引用映射失败时 LLM 可能生成的占位符
-    result = re.sub(r'\[research\]', '', result)
-    if "|" not in result:
-        result = _build_a_share_peer_table(name, ticker)
-        if not result:
-            return ""
-    return _strip_all_dash_columns(result, min_peer_rows=0)  # don't strip peer cols for fallback
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 报告组装
-# ─────────────────────────────────────────────────────────────────────────────
+    result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
+    return _validate_peer_table(result, name, ticker, peers, progress_refs)
 
 def _fmt_s3_source(ref_map: dict) -> str:
     """格式化催化事件表的表级来源引用。提取研报和公告的引用编号。"""
@@ -3612,11 +3607,6 @@ _TITLE_BAD_ENDINGS = tuple("、：:的利业，,；;")
 
 def _title_zh_len(text: str) -> int:
     return len(re.findall(r'[\u4e00-\u9fff]', text or ""))
-
-
-def _fallback_title_conclusion(short_name: str, ticker: str) -> str:
-    """REMOVED in v1.2.6-R3: hardcoded fallbacks replaced by _build_deterministic_fallback_title."""
-    return ""
 
 
 def _valid_title_conclusion(text: str, short_name: str = "") -> bool:
@@ -3727,88 +3717,6 @@ def _a_share_profile(name: str = "", ticker: str = "", key_data: dict = None) ->
     }
 
 
-def _ensure_self_row_first(table_md: str, name: str, ticker: str, profile: dict, ref: str = "") -> str:
-    """确保同业比较表的第一数据行是本公司（基准行）。
-    若本公司行已存在但不在首行，移到首行；若不存在，插入首行。
-    同时确保表格至少有4行数据（含本公司）。
-    """
-    if not table_md or '|' not in table_md:
-        return table_md
-    lines = table_md.strip().split('\n')
-    table_lines = [l for l in lines if '|' in l]
-    other_lines = [l for l in lines if '|' not in l]
-
-    if len(table_lines) < 2:
-        return table_md
-
-    header = table_lines[0]
-    sep = table_lines[1] if len(table_lines) > 1 and re.match(r'^\|[-: |]+\|', table_lines[1]) else None
-    data_start = 2 if sep else 1
-    data_rows = table_lines[data_start:]
-
-    # 识别本公司行（含 ticker 或 name）
-    self_row = None
-    other_rows = []
-    for row in data_rows:
-        if ticker and ticker in row:
-            self_row = row
-        elif name and name[:4] in row:
-            self_row = row
-        else:
-            other_rows.append(row)
-
-    # 构建标准本公司基准行
-    self_row_std = (
-        f"| —（基准） | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} "
-        f"| {profile.get('recent_progress', '见研究报告正文')}{ref} | — "
-        f"| {profile['model']} | {profile['customers']} | {profile['products']} |"
-    )
-    if self_row is None:
-        self_row = self_row_std
-
-    # 重组：本公司首行 + 其他可比行
-    new_data = [self_row] + other_rows
-
-    # 若数据行不足3行（本公司+2家可比），用 profile.peers 补充
-    peers = profile.get("peers", [])
-    peer_idx = 0
-    while len(new_data) < 4 and peer_idx < len(peers):
-        p = peers[peer_idx]
-        peer_row = "| " + " | ".join(str(x) for x in p) + " |"
-        # 不重复添加
-        if not any(p[1] if len(p) > 1 else "" in r for r in new_data):
-            new_data.append(peer_row)
-        peer_idx += 1
-
-    rebuilt = [header]
-    if sep:
-        rebuilt.append(sep)
-    rebuilt.extend(new_data)
-    return '\n'.join(rebuilt)
-
-
-def _build_a_share_peer_table(name: str, ticker: str, ref: str = "", existing: str = "") -> str:
-    profile = _a_share_profile(name, ticker)
-
-    # 优先使用 LLM 生成的表格（existing），并确保本公司在首行
-    if existing and "|" in existing and ("竞争关系" in existing or "可比业务" in existing):
-        return _ensure_self_row_first(existing.strip(), name, ticker, profile, ref)
-
-    # 降级：用 profile 静态数据构建
-    if profile["peers"]:
-        rows = [
-            f"| —（基准） | {name}（{ticker}） | A股 | {profile['business']} | {profile['position']} | {profile.get('recent_progress', '见报告正文')}{ref} | {profile['model']} | {profile['customers']} | {profile['products']} |"
-        ]
-        for p in profile["peers"]:
-            rows.append("| " + " | ".join(str(x) for x in p) + " |")
-        return (
-            "| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |\n"
-            "|:---------|:-----|:-----|:---------|:---------|:-------------|:---------|:-------------|:---------|\n"
-            + "\n".join(rows)
-        )
-    return ""
-
-
 def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
     """将所有章节组装为完整 Markdown 报告"""
     name = meta.get("name", "")
@@ -3883,11 +3791,8 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 """
 
-    # ── 8.2 同业比较：v1.2.5 始终确定性输出（LLM表仅作§8.1参考，不插入§8.2）──
-    name = meta.get("name", "")
-    ticker = meta.get("ticker", "")
-    _existing_peer = sections.get("peer_table", "")
-    peer_table = _build_a_share_peer_table(name, ticker, "", _existing_peer)
+    # ── 8.2 同业比较：仅采用生成阶段已通过来源绑定校验的表，不做事后兜底重建 ──
+    peer_table = sections.get("peer_table", "")
     peer_section_block = f"""
 ### 8.2 同业比较
 
@@ -4772,19 +4677,7 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
         )
         md_content = re.sub(cat_pat, catalyst, md_content, count=1, flags=re.DOTALL)
 
-    # Ensure §8.2 peer table keeps self row and complete schema after sparse cleanup.
-    # 提取现有 8.2 表格内容，用 _build_a_share_peer_table 确保本公司首行+>=4行
-    _peer_match = re.search(r'### 8\.2 同业比较\n+(.*?)(?=\n## )', md_content, re.DOTALL)
-    _existing_peer = _peer_match.group(1).strip() if _peer_match else ""
-    peer_body = _build_a_share_peer_table(short_name, ticker, main_ref, _existing_peer)
-    if peer_body:
-        peer_table_str = f"### 8.2 同业比较\n\n{peer_body}"
-        if '### 8.2 同业比较' in md_content:
-            md_content = re.sub(r'### 8\.2 同业比较.*?(?=\n## )',
-                                peer_table_str + "\n", md_content, count=1, flags=re.DOTALL)
-        else:
-            # 8.2 整节不存在时，在 ## 9 前插入
-            md_content = re.sub(r'(?=\n## 9 )', f"\n{peer_table_str}\n", md_content, count=1)
+    # §8.2 已在生成阶段按候选公司和定向来源校验；此处禁止二次兜底重建。
 
     # v1.2.9: §2.1 短期逻辑标题强制检测（LLM 格式漂移时可能丢失）
     _s2_match = re.search(r'(## 2 核心投资逻辑\n\n)(.*?)(?=\n### 2\.2|\n## 3 )', md_content, re.DOTALL)
@@ -5615,6 +5508,12 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
             item = surveys.get(str(entry.get("id", "")), {})
             source = str(item.get("content", "") or "")
             api_name = "institution_research_detail"
+        elif source_type == "同业材料":
+            material_index = entry.get("source_index")
+            materials = raw.get("peer_materials") or []
+            item = materials[material_index] if isinstance(material_index, int) and 0 <= material_index < len(materials) else {}
+            source = " ".join(str(item.get(k, "") or "") for k in ("title", "text", "content", "summary", "abstract"))
+            api_name = "getMaterialsV2"
         return {"api": api_name, "type": source_type, "text": source}
 
     # 最终参考资料的编号优先：结构化数据以 API 匹配，非结构化数据以类型+ID 匹配。
@@ -5633,7 +5532,7 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
                 candidates = [x for x in original_entries if x.get("type") == "结构化数据" and x.get("api_name") == api_name]
             else:
                 id_match = re.search(r'ID：([^|\s]+)', rendered)
-                source_type = "研报" if "Datayes研报" in rendered else ("纪要" if "Datayes纪要" in rendered else ("调研" if "Datayes调研" in rendered else ""))
+                source_type = "同业材料" if "Materials V2" in rendered else ("研报" if "Datayes研报" in rendered else ("纪要" if "Datayes纪要" in rendered else ("调研" if "Datayes调研" in rendered else "")))
                 if id_match and source_type:
                     candidates = [x for x in original_entries if x.get("type") == source_type and str(x.get("id", "")) == id_match.group(1)]
             if len(candidates) == 1:

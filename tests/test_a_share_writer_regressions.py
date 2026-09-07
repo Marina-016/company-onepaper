@@ -192,5 +192,22 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("\u4e0d\u5f97\u5355\u72ec\u7b80\u5199\u201c\u8425\u6536\u201d", writer.SYSTEM_PROMPT)
         self.assertIn("`tRevenue` \u4e3a\u8425\u4e1a\u603b\u6536\u5165", writer.SYSTEM_PROMPT)
         self.assertIn("`revenue` \u4e3a\u8425\u4e1a\u6536\u5165", writer.SYSTEM_PROMPT)
+    def test_peer_table_allows_dash_when_peer_progress_has_no_material(self):
+        peers = [{"code": "000858", "current_name": "五粮液"}, {"code": "000568", "current_name": "泸州老窖"}]
+        table = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |
+|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|
+| —（基准） | 贵州茅台（600519） | A股 | 白酒 | — | — | — | — | — | — |
+| 直接竞争 | 五粮液（000858） | A股 | 白酒 | — | 经营进展[4] | — | — | — | — |
+| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | — | — | — | — | — | — |"""
+        self.assertEqual(writer._validate_peer_table(table, "贵州茅台", "600519", peers, {"000858": [4]}), table)
+        self.assertIn("| 直接竞争 | 五粮液（000858） | A股 | 白酒 | — | — |", writer._validate_peer_table(table.replace("[4]", "[9]"), "贵州茅台", "600519", peers, {"000858": [4]}))
+
+    def test_peer_material_reference_resolves_to_original_source(self):
+        data = {"peer_materials": [{"peer_name": "五粮液", "peer_code": "000858", "id": "m1", "title": "五粮液进展", "text": "五粮液渠道反馈"}]}
+        refs = writer.build_ref_map(data)
+        peer_ref = next(item for item in refs.values() if item["type"] == "同业材料")
+        evidence = writer._build_reference_evidence({"_raw_data": data, "ref_map": refs}, writer.refs_to_markdown(refs))
+        self.assertIn("五粮液渠道反馈", evidence[peer_ref["n"]]["text"])
+        self.assertEqual(evidence[peer_ref["n"]]["api"], "getMaterialsV2")
 if __name__ == "__main__":
     unittest.main()

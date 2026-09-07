@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.26
+version: v1.2.27
 license: MIT
 compatibility: network
 description: |
@@ -129,6 +129,12 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
+### v1.2.27 A-share peer-comparison gate
+
+- Extract peer candidates only from a report's explicit `company name (six-digit code)` pair in a comparable-company context; validate the exact code before use.
+- Retrieve `getMaterialsV2` independently for each validated peer in parallel and retain only source text mentioning that peer name or code.
+- In §8.2, only “related business progress” requires a peer-specific citation. If no qualified material exists, render that cell as `—`; never borrow another peer's source or fill it from generic industry knowledge.
+- Omit §8.2 when fewer than two validated peers are available. Do not rebuild a missing table in post-processing.
 ### 5.6 Tables, Sparse Data and Peer Comparison
 - 閸氬奔绗熷В鏃囩窛鐞涖劌绻€妞ょ粯妲稿锝呯础 Markdown 鐞涖劍鐗搁敍灞肩瑝閼宠棄褰ч悽銊у嚱閺傚洤鐡ч幓蹇氬牚鐞涘奔绗熼弽鐓庣湰閵?- 鐞涖劌銇旇箛鍛淬€忔稉顓熸瀮閵?
 **A 閼测€虫倱娑撴碍鐦潏鍐€?schema閿?0 閸掓绱濋崥?鐢倸鈧?閿涘瞼宸遍弫鐗堝祦閸欘垰鍨归敍?*閿涘本娼堟繛浣哥暰娑斿顫?`references/a-share-report-structure.md` 鎼?.2閿?  - 缁旂偘绨ら崗宕囬兇

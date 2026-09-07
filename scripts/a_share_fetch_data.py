@@ -672,132 +672,99 @@ def fetch_profit_forecast(meta, ticker, token):
 
 
 def extract_peer_names(reports, company_short_name):
-    """从研报正文"可比公司/同业/竞争对手"上下文中提取竞争对手股票简称。
-
-    策略：
-    1. 在"可比/同业/竞争"关键词附近200字范围内，提取2-6字中文公司名
-    2. 同时提取该上下文中出现的6位A股代码，验证公司名的有效性
-    3. 在摘要/评级变更/目标价段落中提取被明确提及的可比公司
-    """
-    import re
-    freq: dict = {}
-    code_ctx_names: set = set()  # 出现在股票代码附近的公司名（高可信度）
-
-    # 关键词触发的上下文模式
-    context_re = re.compile(
-        r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|对标公司|'
-        r'可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|相比(?:同行|同业|竞争))'
-        r'.{0,200}'
-    )
-    # A股股票代码模式
-    code_re = re.compile(r'\b([036]\d{5})\b')
-    # 中文公司名模式（2-6字）
-    company_re = re.compile(r'[\u4e00-\u9fa5]{2,6}')
-    stopwords = {
-        '公司', '企业', '行业', '市场', '产品', '业务', '收入', '利润', '增长', '发展',
-        '投资', '管理', '战略', '竞争', '优势', '风险', '政策', '监管', '技术', '创新',
-        '消费者', '客户', '合作', '集中度', '市占率', '龙头', '领先', '头部', '主要',
-        '报告', '研究', '分析', '预测', '估值', '评级', '目标价', '建议', '关注',
-        '我们', '认为', '预计', '以上', '以下', '其中', '因此', '同时', '目前',
-        company_short_name,
-    }
-
-    for r in reports[:8]:
-        meta_r = r.get("_meta", {}) or {}
-        abstract = meta_r.get("abstractText", "") or ""
-        # 正文
-        content_vals = list(((r.get("content", {}) or {}).get("data") or {}).values())
-        body = content_vals[0][:6000] if content_vals and isinstance(content_vals[0], str) else ""
-
-        for source in [abstract, body]:
-            if not source:
-                continue
-            # 方法1：关键词上下文提取
-            for ctx in context_re.findall(source):
-                for m in company_re.findall(ctx):
-                    if m and m not in stopwords and len(m) >= 2:
-                        freq[m] = freq.get(m, 0) + 1
-                # 同一上下文中的A股代码——间接证明名字有效
-                for code in code_re.findall(ctx):
-                    # 取代码前后20字中出现的公司名
-                    idx = source.find(code)
-                    if idx >= 0:
-                        nearby = source[max(0, idx-20):idx+20]
-                        for m in company_re.findall(nearby):
-                            if m and m not in stopwords:
-                                code_ctx_names.add(m)
-
-    # 出现在股票代码附近的名字可信度更高，额外加权
-    for m in code_ctx_names:
-        if m in freq:
-            freq[m] += 2
-
-    # 阈值1：出现>=1次即可（降低门槛），按频次排序
-    peers = [k for k, v in sorted(freq.items(), key=lambda x: -x[1]) if v >= 1]
-    return peers[:6]
+    """只从研报的同业语境中提取“公司名（6位代码）”候选。"""
+    contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|相比(?:同行|同业|竞争)).{0,300}')
+    named_code = re.compile(r'(?:^|[、，,；;：:\s])(?P<name>[\u4e00-\u9fa5]{2,12}?)(?:股份有限公司|集团)?[（(]\s*(?P<code>[036]\d{5})\s*[）)]')
+    blocked = {'公司', '行业', '可比公司', '同业公司', company_short_name or ''}
+    candidates = {}
+    for report in (reports or [])[:8]:
+        meta_r = report.get('_meta', {}) or {}
+        abstract = meta_r.get('abstractText', '') or ''
+        values = list(((report.get('content', {}) or {}).get('data') or {}).values())
+        body = values[0][:8000] if values and isinstance(values[0], str) else ''
+        report_id = str(report.get('id') or meta_r.get('reportID') or '')
+        for source in (abstract, body):
+            for context in contexts.findall(source or ''):
+                for match in named_code.finditer(context):
+                    name = re.sub(r'(股份有限公司|集团)$', '', match.group('name')).strip()
+                    code = match.group('code')
+                    if not name or name in blocked or company_short_name in name:
+                        continue
+                    entry = candidates.setdefault(code, {'query': name, 'code': code, 'source_report_id': report_id, 'count': 0})
+                    entry['count'] += 1
+    return sorted(candidates.values(), key=lambda item: (-item['count'], item['code']))[:3]
 
 
-def validate_peer_names(meta, peer_names, token):
-    """对 extract_peer_names 返回的名称列表调用 stock_search，获取当前官方A股注册简称和代码。
-    返回 list of {"query": original, "code": entity_id_6, "current_name": official_name}
-    用途：防止研报中出现的曾用名（如"格力地产"→"珠免集团"）被LLM直接使用。
-    """
-    url = meta.get("stock_search", {}).get("url", "")
-    if not url or not peer_names:
+def validate_peer_names(meta, peer_candidates, token, target_ticker=''):
+    """按候选中的显式证券代码精确核验当前证券简称，拒绝模糊搜索首条命中。"""
+    url = meta.get('stock_search', {}).get('url', '')
+    if not url or not peer_candidates:
         return []
-    validated = []
-    for name in peer_names[:8]:
-        rj, _, err = call("GET", url, token,
-                          params={"query": name, "dataType": "1", "topK": "5"})
+    validated, seen = [], set()
+    for candidate in peer_candidates[:3]:
+        expected_code = str(candidate.get('code') or '').strip()
+        if not re.match(r'^\d{6}$', expected_code) or expected_code == str(target_ticker or ''):
+            continue
+        rj, _, err = call('GET', url, token, params={'query': expected_code, 'dataType': '1', 'topK': '10'})
         if err or not rj:
             continue
-        hits = (rj.get("data") or {}).get("hits") or []
-        if not hits:
+        hits = (rj.get('data') or {}).get('hits') or []
+        exact = next((item for item in hits if str(item.get('entity_id') or '').strip() == expected_code), None)
+        if not exact:
             continue
-        best = hits[0]
-        entity_id = str(best.get("entity_id") or "").strip()
-        current_name = best.get("name") or name
-        if re.match(r'^\d{6}$', entity_id):
-            validated.append({
-                "query":        name,
-                "code":         entity_id,
-                "current_name": current_name,
-            })
+        current_name = str(exact.get('name') or '').strip()
+        if not current_name or expected_code in seen:
+            continue
+        seen.add(expected_code)
+        validated.append({'query': candidate.get('query', ''), 'code': expected_code, 'current_name': current_name, 'source_report_id': candidate.get('source_report_id', '')})
     return validated
 
 
+def _peer_material_text(item):
+    return ' '.join(str(item.get(k, '') or '') for k in ('title', 'text', 'content', 'summary', 'abstract'))
+
+
 def fetch_peer_materials(meta, company_name, peers, token):
-    """调用 getMaterialsV2，问题中带入具体可比公司名称，精准召回同业素材"""
-    url = meta.get("getMaterialsV2", {}).get("url", "")
+    """按已精确核验的每个可比公司并发检索，并只保留该公司可识别的原始材料。"""
+    url = meta.get('getMaterialsV2', {}).get('url', '')
     if not url:
-        return None, "getMaterialsV2 URL缺失"
-
-    if peers:
-        peer_str = "、".join(peers)
-        question = (
-            f"对比{company_name}、{peer_str}"
-            f"的最新营收、净利润、净利率、市值、市盈率PE、市净率PB、ROE等核心财务指标"
-        )
-    else:
-        question = (
-            f"{company_name}及其直接竞争对手（主营业务相同）"
-            f"的最新营收、净利润、净利率、市值、市盈率PE、市净率PB、ROE等核心财务指标对比"
-        )
-
-    body = {
-        "question": question,
-        "queryScope": "research,researchTable,meetingSummary",
-        "rewriteQuestion": False,
-        "size": 8,
-    }
-    rj, status, err = call("POST", url, token, body=body, timeout=30)
-    if err:
-        return None, err
-    data = safe_get_data(rj)
-    if not data:
-        return None, f"无数据(status={status})"
-    return data, None
-
+        return None, 'getMaterialsV2 URL缺失'
+    peers = [item for item in (peers or []) if item.get('current_name') and item.get('code')][:3]
+    if not peers:
+        return [], None
+    def fetch_one(peer):
+        body = {'question': f"{peer['current_name']}（{peer['code']}）最新业务进展、产品、订单、产能或业绩变化", 'queryScope': 'research,researchTable,meetingSummary', 'rewriteQuestion': False, 'size': 5}
+        rj, status, err = call('POST', url, token, body=body, timeout=30)
+        if err:
+            return [], err
+        raw_items = safe_get_data(rj) or []
+        if not isinstance(raw_items, list):
+            return [], f"无数据(status={status})"
+        name, code = peer['current_name'], peer['code']
+        matched = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            source = _peer_material_text(item)
+            if name not in source and code not in source:
+                continue
+            enriched = dict(item)
+            enriched.update({'peer_name': name, 'peer_code': code, 'peer_query': peer.get('query', '')})
+            matched.append(enriched)
+        return matched, None
+    items, errors, seen = [], [], set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=len(peers)) as executor:
+        futures = [executor.submit(fetch_one, peer) for peer in peers]
+        for future in futures:
+            matched, err = future.result()
+            if err:
+                errors.append(err)
+            for item in matched:
+                key = (item.get('peer_code'), str(item.get('id') or item.get('materialId') or item.get('title') or ''))
+                if key not in seen:
+                    seen.add(key)
+                    items.append(item)
+    return items, ('; '.join(errors) if errors and not items else None)
 
 def fetch_ann_types(meta, token):
     url = meta.get("announcement_type", {}).get("url", "")
@@ -1474,8 +1441,9 @@ def run(ticker_input, token, output_path):
 
     # 研报拿到后立即提取可比公司名，通过 stock_search 验证当前官方简称，再启动 getMaterialsV2
     peers = extract_peer_names(result.get("research_reports") or [], company_name)
-    peer_validated = validate_peer_names(meta, peers, token)
+    peer_validated = validate_peer_names(meta, peers, token, target_ticker=ticker)
     result["peer_validated"] = peer_validated
+    peer_labels = [p['current_name'] for p in peer_validated]
     if peer_validated:
         print(f"  ✓ peer_validated: {[p['current_name'] for p in peer_validated]}")
     peer_fut = ex3.submit(fetch_peer_materials, meta, company_name, peers, token)
@@ -1494,7 +1462,7 @@ def run(ticker_input, token, output_path):
         record_error("getMaterialsV2", peer_err)
         print(f"  △ peer_materials: 无数据 | {peer_err}")
     else:
-        print(f"  ✓ peer_materials: 有数据（可比公司: {', '.join(peers) if peers else '通用问题'}）")
+        print(f"  ✓ peer_materials: 有数据（可比公司: {', '.join(peer_labels) if peer_labels else '无可核验候选'}）")
 
     # ── Phase 4: 图表
     print("\n[4/5] 生成图表...")

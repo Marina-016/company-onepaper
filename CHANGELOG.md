@@ -1,5 +1,14 @@
 # Changelog
 
+## v1.2.27
+
+### P0: Source-bound peer comparison
+
+- Replace free-text peer extraction with explicit `company name (six-digit code)` candidates from comparable-company report context, then validate the exact security code before retrieval.
+- Call `getMaterialsV2` once per validated peer in parallel; keep only materials that actually name that peer and register each as an auditable reference source.
+- Restrict §8.2 to the validated peer list. Only the “related business progress” column needs a citation; without source material it is rendered as `—`, while other qualitative columns remain citation-free.
+- Remove the stacked peer-table fallback/rebuild path that could inject generic-industry peers after generation. If fewer than two validated peers exist, omit §8.2.
+- Remove the retired no-op title fallback while cleaning the same post-generation fallback layer.
 ## v1.2.26
 
 ### P0: Source-bound A-share quality gates
