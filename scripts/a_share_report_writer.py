@@ -3791,14 +3791,22 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 """
 
-    # ── 8.2 同业比较：仅采用生成阶段已通过来源绑定校验的表，不做事后兜底重建 ──
-    peer_table = sections.get("peer_table", "")
+    # ── 第八章：8.1 与 8.2 独立降级，缺少 peer 不得带走行业格局 ──
+    s8_industry = sections.get("s8_industry", "").strip()
+    peer_table = sections.get("peer_table", "").strip()
     peer_section_block = f"""
 ### 8.2 同业比较
 
 {peer_table}
 """ if peer_table else ""
-
+    _chapter_8_block = ""
+    if s8_industry or peer_section_block:
+        _chapter_8_block = (
+            "## 8 行业分析及同业对比\n\n"
+            + (f"### 8.1 行业格局\n\n{s8_industry}\n\n" if s8_industry else "")
+            + peer_section_block
+            + "\n"
+        )
     # ── 第九章整章条件拼接（v1.2.11：任一小节无数据则单独跳过，全空则整章不出现）──
     _ch9_parts = []
     if section_9_1:
@@ -3882,14 +3890,7 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 
 {sections['s7']}
 
-## 8 行业分析及同业对比
-
-### 8.1 行业格局
-
-{sections['s8_industry']}
-{peer_section_block}
-
-{_chapter_9_block}## 10 风险提示
+{_chapter_8_block}{_chapter_9_block}## 10 风险提示
 
 {sections['s10']}
 
@@ -4965,147 +4966,56 @@ def _drop_empty_optional_section9(md_text: str) -> str:
         return md_text
     return md_text[:match.start()] + md_text[match.end():].lstrip("\n")
 
-def _section9_bounds(md_text: str):
-    """Return the exact ## 9 range; scenario cleanup must never escape it."""
-    h2s = list(re.finditer(r'^##\s+(\d+)\s+.+$', str(md_text or ""), re.MULTILINE))
-    for index, match in enumerate(h2s):
-        if match.group(1) == "9":
-            end = h2s[index + 1].start() if index + 1 < len(h2s) else len(md_text)
-            return match.start(), end
-    return None
+def _drop_incomplete_optional_scenarios(md_text: str) -> str:
+    """Fail closed on incomplete §9.4 and scenario rows that escaped §9.
 
+    Scenario analysis is optional. A partial table is worse than an omitted section:
+    it can be rendered with a data row as the DOCX header or become attached to the
+    preceding chapter after a cleanup pass. Keep §9.1–§9.3 intact and remove only
+    an invalid §9.4 fragment or an orphaned scenario table.
+    """
+    text = str(md_text or "")
+    section9 = None
+    h2_matches = list(re.finditer(r'^##\s+(\d+)\s+.+$', text, re.MULTILINE))
+    for index, heading in enumerate(h2_matches):
+        if heading.group(1) == "9":
+            section9 = (heading.start(), h2_matches[index + 1].start() if index + 1 < len(h2_matches) else len(text))
+            break
+    if section9:
+        start, end = section9
+        block = text[start:end]
+        match = re.search(r'^###\s*9\.4\s*情景推演\s*$', block, re.MULTILINE)
+        if match:
+            fragment_start = match.start()
+            next_heading = re.search(r'^###\s+9\.\d+\s+|^##\s+', block[match.end():], re.MULTILINE)
+            fragment_end = match.end() + (next_heading.start() if next_heading else len(block) - match.end())
+            fragment = block[fragment_start:fragment_end]
+            labels = set(re.findall(r'^\|\s*(乐观|中性|悲观)', fragment, re.MULTILINE))
+            has_header = bool(re.search(r'^\|\s*情景\s*\|', fragment, re.MULTILINE))
+            if labels != {"乐观", "中性", "悲观"} or not has_header:
+                block = block[:fragment_start] + block[fragment_end:]
+                text = text[:start] + block + text[end:]
 
-def _fix_scenario_table_columns(md_text: str) -> str:
-    """Repair scenario tables only inside ## 9; never touch bare tables elsewhere."""
-    bounds = _section9_bounds(md_text)
-    if not bounds:
-        return md_text
-    section_start, section_end = bounds
-    section9 = md_text[section_start:section_end]
-    marker_offset = section9.find('情景推演表')
-    if marker_offset < 0:
-        return md_text
-    sce_idx = section_start + marker_offset
-    prefix, suffix = md_text[:sce_idx], md_text[section_end:]
-    lines = md_text[sce_idx:section_end].split('\n')
-    out = []
-    for line in lines:
-        stripped = line.rstrip()
-        if not stripped.startswith('|'):
-            out.append(line)
+    # No scenario table is valid outside §9. Remove its contiguous table block,
+    # including a possible orphan separator row, without touching prose.
+    lines = text.splitlines()
+    output = []
+    current_h2 = ""
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        h2 = re.match(r'^##\s+(\d+)\s+', line)
+        if h2:
+            current_h2 = h2.group(1)
+        if current_h2 != "9" and line.lstrip().startswith("|") and re.search(r'\|\s*(?:乐观|中性|悲观)', line):
+            while output and (not output[-1].strip() or output[-1].lstrip().startswith("|")):
+                output.pop()
+            while index < len(lines) and (not lines[index].strip() or lines[index].lstrip().startswith("|")):
+                index += 1
             continue
-        inner = [p.strip() for p in stripped.split('|')[1:-1]]
-        n = len(inner)
-        if n == 0:
-            out.append(line)
-        elif all(re.match(r'^[: \-]+$', cell) for cell in inner):
-            out.append('|:-----|:---------|:----------|:----------|')
-        elif re.match(r'^情景', inner[0]):
-            out.append('| 情景 | 核心假设 | 经营含义 | 估值含义 |')
-        elif n == 4:
-            cleaned = [cell.replace('\n', ' ').replace('<br/>', '<br>').replace('<br />', '<br>') for cell in inner]
-            out.append('| ' + ' | '.join(cleaned) + ' |')
-        elif n == 2:
-            col1, col2 = inner
-            segs = [seg.strip() for seg in re.split(r'\s*/\s*•\s*|\s*;\s*(?=[^；])', col2)]
-            if len(segs) >= 3:
-                out.append(f'| {col1} | {segs[0]} | {segs[1]} | {segs[2]} |')
-            elif len(segs) == 2:
-                out.append(f'| {col1} | {segs[0]} | {segs[1]} | — |')
-            else:
-                m1 = re.search(r'(收入|利润|营收|EPS|毛利|净利)', col2)
-                m2 = re.search(r'(目标价|估值|元.*×|×.*元|EPS.*×)', col2)
-                if m2:
-                    split2 = m2.start()
-                    split1 = m1.start() if m1 and m1.start() < split2 else split2 // 2
-                    out.append(f'| {col1} | {col2[:split1].strip()} | {col2[split1:split2].strip()} | {col2[split2:].strip()} |')
-                else:
-                    out.append(f'| {col1} | {col2} | — | — |')
-        elif n == 3:
-            out.append('| ' + ' | '.join(inner) + ' | — |')
-        elif n > 4:
-            out.append('| ' + ' | '.join(inner[:3]) + ' | ' + ' '.join(inner[3:]) + ' |')
-        else:
-            out.append(line)
-    return prefix + '\n'.join(out) + suffix
-
-def _format_scenario_cell_breaks(text: str) -> str:
-    """Use <br> for scenario-table sub-points without breaking Markdown tables."""
-    if not text:
-        return text
-    text = re.sub(r'\s*<br\s*/?>\s*', '<br>', text)
-    text = re.sub(r'[；;]\s*', '<br>', text)
-    text = re.sub(r'\s*<br>\s*', '<br>', text)
-    return text.strip()
-
-
-def _clean_scenario_disclosure_text(text: str) -> str:
-    """Remove reader-facing process/source labels from scenario analysis."""
-    if not text:
-        return text
-    text = re.sub(r'[（(]\s*内部测算\s*概率\s*~', '（概率~', text)
-    text = re.sub(r'[（(]\s*内部测算\s+', '（', text)
-    text = re.sub(r'[（(][^）)]*(?:来源[:：]|基于\[\d+\]|内部测算|推算|测算)[^）)]*[）)]', '', text)
-    text = re.sub(r'基于\[\d+\][^。；;|]*?(?:推算|测算)', '', text)
-    text = re.sub(r'内部测算[:：]?', '', text)
-    text = re.sub(r'基于(?:\d{4}年)?\s*EPS\s*', 'EPS＝', text)
-    text = re.sub(r'×\s*给予.*?PE\s*=', '× PE=', text)
-    text = re.sub(r'×\s*PE\s*=\s*([0-9]+(?:\.[0-9]+)?)\s*倍', r'× PE=\1x', text)
-
-    def _formula(m):
-        eps, pe, target = m.group(1), m.group(2), m.group(3)
-        return f"EPS＝{eps}元 × PE={pe}x = {target}元"
-
-    text = re.sub(
-        r'EPS[＝=\s]*([0-9]+(?:\.[0-9]+)?)\s*元?\s*[×xX*]\s*PE\s*=?\s*([0-9]+(?:\.[0-9]+)?)\s*(?:x|倍)?\s*=\s*([0-9,.]+)\s*元',
-        _formula,
-        text,
-    )
-    text = re.sub(r'\s+([，。；;])', r'\1', text)
-    text = re.sub(r'[；;]\s*([。])', r'\1', text)
-    return text.strip()
-
-
-def _format_scenario_analysis(md_text: str) -> str:
-    """Normalize scenario wording only in ## 9; ignore all bare tables outside it."""
-    bounds = _section9_bounds(md_text)
-    if not bounds:
-        return md_text
-    section_start, section_end = bounds
-    section9 = md_text[section_start:section_end]
-    start_match = re.search(r'###\s*9\.4\s*情景推演', section9)
-    if start_match:
-        start = section_start + start_match.start()
-    else:
-        marker = section9.find('情景推演')
-        if marker < 0:
-            return md_text
-        start = section_start + marker
-
-    end = section_end
-    for marker in ('\n### 9.5 ', '\n---'):
-        pos = md_text.find(marker, start + 1, section_end)
-        if pos >= 0:
-            end = min(end, pos)
-    block = _clean_scenario_disclosure_text(md_text[start:end])
-    lines = []
-    for line in block.split('\n'):
-        stripped = line.strip()
-        if stripped.startswith('|') and not re.match(r'^\|\s*:?-+', stripped):
-            cells = [cell.strip() for cell in stripped.strip('|').split('|')]
-            if cells and re.match(r'^(乐观|中性|悲观)', cells[0]):
-                cells = [_clean_scenario_disclosure_text(cell) for cell in cells]
-                cells[1:] = [_format_scenario_cell_breaks(cell) for cell in cells[1:]]
-                line = '| ' + ' | '.join(cells) + ' |'
-        lines.append(line)
-    return md_text[:start] + '\n'.join(lines) + md_text[end:]
-
-CHART_CAPTIONS = {
-    "revenue":   "营业收入及同比趋势",
-    "profit":    "归母净利润及同比趋势",
-    "margin":    "分业务毛利率",
-    "structure": "营收结构占比",
-}
+        output.append(line)
+        index += 1
+    return "\n".join(output) + ("\n" if text.endswith("\n") else "")
 
 def _restore_chart_captions(md_text: str, charts: dict) -> str:
     """将 cleaner 修复后的 '![图表](url)' 恢复为原始图表标题。"""
@@ -6031,252 +5941,36 @@ def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None
     return blockers
 
 
-def _find_section_start(md_content: str, keyword: str) -> int:
-    """在 Markdown 中查找关键词所在章节的起始位置（H3 或 H4 标题前）。
-    返回标题前最近一个 `### ` 的起始位置，找不到时返回关键词本身的起始位置。
-    """
-    kw_pos = md_content.find(keyword)
-    if kw_pos < 0:
-        return -1
-    # 向前找最近的 ### 或 ## 标题
-    _prev = md_content.rfind("### ", 0, kw_pos)
-    if _prev >= 0:
-        # 确保标题和关键词之间没有其他 H2/H3 标题（即标题确实包含这个关键词）
-        _next_title = md_content.find("\n## ", _prev + 1)
-        if _next_title < 0 or _next_title > kw_pos:
-            return _prev
-    return kw_pos
-
-
-def _remove_section(md_content: str, start_pos: int, end_markers: list) -> str:
-    """删除从 start_pos 到下一个 end_marker 或下一章节之间的内容。
-    会在删除区域前后保留干净的段落边界。
-    """
-    if end_markers:
-        for marker in end_markers:
-            end_pos = md_content.find(marker, start_pos + 1)
-            if end_pos > start_pos:
-                break
-        else:
-            end_pos = -1
-    else:
-        end_pos = -1
-
-    if end_pos < 0:
-        # 找下一个 ## 或 ### 标题
-        for pat in ["\n## 10 ", "\n## 风险提示", "\n## 参考资料", "\n---"]:
-            end_pos = md_content.find(pat, start_pos + 1)
-            if end_pos > start_pos:
-                break
-    if end_pos < 0:
-        return md_content  # 安全兜底
-
-    # 删除区域：从 start_pos 到 end_pos（保留 end_pos 之后的内容）
-    # 清理尾部可能残留的连续空行
-    while start_pos > 0 and md_content[start_pos - 1] in ('\n', ' '):
-        start_pos -= 1
-    return md_content[:max(0, start_pos)] + "\n" + md_content[end_pos:]
-
-
 def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
-    """v1.2.5: 生成后校验催化事件表 & 情景推演表，不合格则自动调用 LLM 补写。
+    """Apply only deterministic, section-local post-generation repairs.
 
-    返回 (md_content, repair_log_list)。
+    §9.4 is intentionally excluded pending its dedicated redesign. Re-generating a
+    scenario table after source filtering can reintroduce unverified claims and has
+    previously detached table rows from §9. The final structural gate removes an
+    incomplete optional §9.4 instead.
     """
     repair_log = []
+    catalyst = _extract_section(md_content, "催化事件时间表", end_markers=["## 4 ", "## 公司业务拆分"])
+    if _valid_catalyst_table(catalyst, min_rows=3):
+        return md_content, repair_log
 
-    # ── 检查1: 催化事件时间表 (§3) 必须 ≥3 行 ──
-    _cat_sec = _extract_section(md_content, "催化事件时间表", end_markers=["## 4 ", "## 公司业务拆分"])
-    _cat_has_data = _valid_catalyst_table(_cat_sec, min_rows=3)
+    repaired_table = _gen_catalyst_table(key_data)
+    if not repaired_table:
+        repair_log.append("催化事件表不足3行，未生成可核验补充")
+        return md_content, repair_log
 
-    if not _cat_has_data:
-        repair_log.append("催化事件表不足3行→LLM补写")
-        _cat_fix = _gen_catalyst_table(key_data)
-        if _cat_fix:
-            _old_start = md_content.find("## 3 催化事件时间表")
-            if _old_start < 0:
-                _old_start = md_content.find("催化事件时间表")
-            if _old_start > 0:
-                _old_end = md_content.find("## 4 ", _old_start)
-                if _old_end < 0:
-                    _old_end = md_content.find("## 公司业务拆分", _old_start)
-                if _old_end > 0:
-                    md_content = md_content[:_old_start] + _cat_fix + "\n\n" + md_content[_old_end:]
-                    _new_cat_sec = _extract_section(md_content, "催化事件时间表", end_markers=["## 4 ", "## 公司业务拆分"])
-                    repair_log[-1] += " ✅" if _valid_catalyst_table(_new_cat_sec, min_rows=3) else " ❌(需≥3条有效事件)"
-                else:
-                    repair_log[-1] += " ❌(未找到下一章节)"
-            else:
-                repair_log[-1] += " ❌(未找到催化事件章节)"
-
-    # ── 检查2: 情景推演表 (§9.4) 必须含具体数值（非模板话术）──
-    # v1.2.11: 增加核心变量具体性校验 + 修复失败则删除空壳
-    _sce_sec = _extract_section(md_content, "情景推演", end_markers=["## 10 ", "## 风险提示"])
-    if not _sce_sec or len(_sce_sec.strip()) < 10:
-        # 情景推演章节完全不存在或为空 → 跳过检查（组装处已决定跳过）
-        pass
+    start = md_content.find("## 3 催化事件时间表")
+    if start < 0:
+        start = md_content.find("催化事件时间表")
+    end = md_content.find("## 4 ", start) if start >= 0 else -1
+    if end < 0 and start >= 0:
+        end = md_content.find("## 公司业务拆分", start)
+    if start >= 0 and end > start:
+        md_content = md_content[:start] + repaired_table.strip() + "\n\n" + md_content[end:]
+        repair_log.append("催化事件表不足3行→来源化补充")
     else:
-        _template_patterns = [
-            "基于核心变量乐观假设", "基于核心变量基准假设", "基于核心变量悲观假设",
-            "基于EPS×PE=目标价", "收入与利润上修", "收入与利润下修", "基准预期"
-        ]
-        _has_template = any(p in _sce_sec for p in _template_patterns)
-        _has_concrete_numbers = bool(re.search(r'(?:目标价|估值|EPS)[^\n]*?\d+[\.\d]*[元x×倍]', _sce_sec))
-        _has_3_scenario_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) == 3
-        _has_good_core_vars = bool(re.search(r'为何|驱动|选为|核心变量|输入侧', _sce_sec))
-        # v1.2.11: 核心变量必须包含至少一条带具体数字+引用的条目
-        _has_concrete_core_vars = bool(re.search(
-            r'•\s+\*\*[^*]+\*\*[：:]\s*.*?\d+\.?\d*.*?\[\d+\]',
-            _sce_sec
-        ))
-        _missing_rows = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M)) < 3
-        _valuation_errors = _scenario_target_price_errors(_sce_sec, key_data)
-        _sce_valid = (
-            (not _missing_rows) and
-            _has_concrete_core_vars and
-            (not _valuation_errors) and
-            ((_has_concrete_numbers and not _has_template) or
-             (_has_3_scenario_rows and _has_good_core_vars and not _has_template))
-        )
-
-        if not _sce_valid:
-            _fail_reasons = []
-            if _missing_rows:
-                _scenario_row_count = len(re.findall(r'^\|\s*(?:乐观|中性|悲观)', _sce_sec, re.M))
-                _fail_reasons.append(f"情景表仅{_scenario_row_count}行(需3行)")
-            if not _has_concrete_core_vars:
-                _fail_reasons.append("核心变量无具体数字+引用")
-            if _has_template:
-                _fail_reasons.append("含模板话术")
-            if not _has_concrete_numbers:
-                _fail_reasons.append("情景表无数值")
-            _fail_reasons.extend(_valuation_errors)
-            repair_log.append(f"情景推演不合格({', '.join(_fail_reasons)})→LLM补写")
-
-            # 提取已生成的核心变量文本注入 key_data
-            _core_vars_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)', _sce_sec, re.DOTALL)
-            if _core_vars_match:
-                key_data["_scenario_core_vars"] = _core_vars_match.group(1).strip()[:2000]
-            _sce_fix = _gen_scenario_table(key_data)
-            _fix_valuation_errors = _scenario_target_price_errors(_sce_fix, key_data) if _sce_fix else []
-            if _sce_fix and not _fix_valuation_errors:
-                # 只替换「**情景推演表**：」之后的表格，保留核心变量文本
-                _table_marker = "**情景推演表**："
-                _table_pos = md_content.find(_table_marker)
-                if _table_pos > 0:
-                    _table_end = md_content.find("## 10 ", _table_pos)
-                    if _table_end < 0:
-                        _table_end = md_content.find("## 风险提示", _table_pos)
-                    if _table_end > 0:
-                        md_content = md_content[:_table_pos + len(_table_marker)] + "\n\n" + _sce_fix + "\n\n" + md_content[_table_end:]
-                        repair_log[-1] += " ✅"
-                    else:
-                        repair_log[-1] += " ❌→删除空壳"
-                        # 修复失败且无法定位结束位置 → 删除 9.4 整节
-                        _sce_start = _find_section_start(md_content, "情景推演")
-                        if _sce_start >= 0:
-                            md_content = _remove_section(md_content, _sce_start, [])
-                            repair_log[-1] += " ✅"
-                else:
-                    # 找不到情景推演表标记 → 整体替换 9.4 区域
-                    _old_start = _find_section_start(md_content, "情景推演")
-                    if _old_start >= 0:
-                        _old_end = md_content.find("## 10 ", _old_start)
-                        if _old_end < 0:
-                            _old_end = md_content.find("## 风险提示", _old_start)
-                        if _old_end > 0:
-                            md_content = md_content[:_old_start] + "情景推演\n\n" + _sce_fix + "\n\n" + md_content[_old_end:]
-                            repair_log[-1] += " ✅"
-                        else:
-                            repair_log[-1] += " ❌→删除空壳"
-                            md_content = _remove_section(md_content, _old_start, [])
-                            repair_log[-1] += " ✅"
-                    else:
-                        repair_log[-1] += " ❌(未找到情景推演章节)"
-            else:
-                # v1.2.11: LLM 修复返回空 → fail-closed，删除 9.4 空壳
-                repair_log[-1] += " ❌→删除空壳"
-                _sce_start = _find_section_start(md_content, "情景推演")
-                if _sce_start >= 0:
-                    md_content = _remove_section(md_content, _sce_start, [])
-                    repair_log[-1] += " ✅"
-                else:
-                    repair_log[-1] += " ❌(找不到章节起始)"
-
-    # ── 检查3: 注记行清除（不对读者展示内部注记）──
-    md_content = re.sub(r'^>[ \t]*注：[^\n]*\n?', '', md_content, flags=re.MULTILINE)
-
-    # ── 检查4: 情景推演 EPS×PE 公式兜底（无条件注入，避免checker check14 P1）──
-    # 已改为在情景表内直接写公式，不再注入 > 注 行
-
-    # ── v1.2.5 body format fixes ──
-    # 1. Strip non-numeric bracket refs like [2026-03-30电话会议] — only [N] allowed in body
-    md_content = re.sub(r'\[(?!\d+\])[^\]]+\]', '', md_content)
-    # 2. Strip **bold** from H2/H3 titles
-    md_content = re.sub(r'(^#{2,3}\s+\d[\d.]*\s+)\*\*([^*]+)\*\*', r'\1\2', md_content, flags=re.M)
-    # 3. Deduplicate table header rows (identical or separator-merged)
-    _lines = md_content.split('\n')
-    _deduped = []; _prev = ""; _prev_sep = ""
-    _hdr_patterns = ['| 业务板块', '| 业务', '| 时间 | 事件 | 影响 |', '| 竞争关系', '| 指标 | 机构']
-    for _line in _lines:
-        _s = _line.strip()
-        # Skip if identical to previous header row
-        if _s.startswith('|') and (_s == _prev or _s == _prev_sep):
-            continue
-        # Skip duplicate header rows matching known patterns
-        if any(_s.startswith(p) for p in _hdr_patterns):
-            if _prev and any(_prev.startswith(p) for p in _hdr_patterns):
-                if _s != _prev:
-                    continue
-        _deduped.append(_line)
-        _prev = _s if any(_s.startswith(p) for p in _hdr_patterns) else ""
-        _prev_sep = ""
-    if len(_deduped) != len(_lines):
-        md_content = '\n'.join(_deduped)
-        repair_log.append(f"表头去重: 移除 {len(_lines) - len(_deduped)} 行重复/合并")
-
-    # ── 二次死引用清理：LLM 补写可能引入新引用但未同步参考资料 ──
-    ref_header = "## 参考资料"
-    if ref_header in md_content:
-        parts = md_content.split(ref_header, 1)
-        body = parts[0]
-        cited = set(int(m) for m in re.findall(r'\[(\d+)\]', body))
-        # Strip orphan refs: cited in body but not in reference section
-        ref_nums = set()
-        for line in parts[1].strip().strip("```").strip().split("\n"):
-            m = re.match(r'^\[(\d+)\](.*)', line.strip())
-            if m: ref_nums.add(int(m.group(1)))
-        orphan = cited - ref_nums
-        if orphan:
-            for n in sorted(orphan, reverse=True):
-                body = body.replace(f'[{n}]', '')
-            cited -= orphan
-            repair_log.append(f"孤儿引用清理: 移除{len(orphan)}个: {sorted(orphan)}")
-        ref_entries = []
-        for line in parts[1].strip().strip("```").strip().split("\n"):
-            m = re.match(r'^\[(\d+)\](.*)', line.strip())
-            if m:
-                ref_entries.append((int(m.group(1)), m.group(2)))
-        active = [(n, t) for n, t in ref_entries if n in cited]
-        removed = len(ref_entries) - len(active)
-        if removed > 0:
-            # Renumber: first-appearance order
-            order = {}
-            for n in cited:
-                if n not in order:
-                    order[n] = len(order) + 1
-            ordered = sorted(active, key=lambda x: order.get(x[0], 9999))
-            old2new = {old: i+1 for i, (old, _) in enumerate(ordered)}
-            # Replace in body
-            for old in sorted(old2new, reverse=True):
-                body = re.sub(r'\[' + str(old) + r'\]', f'__RFIX_{old}__', body)
-            for old, new in old2new.items():
-                body = body.replace(f'__RFIX_{old}__', f'[{new}]')
-            new_refs = [f"[{old2new[old]}]{txt}" for old, txt in ordered]
-            md_content = body + ref_header + "\n" + "\n".join(new_refs)
-            repair_log.append(f"二次死引用清理: 移除{removed}条, 保留{len(active)}条有效引用")
+        repair_log.append("催化事件表不足3行，未找到安全替换边界")
     return md_content, repair_log
-
 
 def _extract_section(md: str, marker: str, end_markers: list) -> str:
     """从 MD 中截取从 marker 到下一个 end_marker 之间的内容。"""
@@ -6388,70 +6082,6 @@ def _gen_catalyst_table(key_data: dict) -> str:
     return ""
 
 
-def _gen_scenario_table(key_data: dict) -> str:
-    """调用 LLM 补写情景推演表（基于已生成的核心变量文本）。"""
-    name = key_data.get("name", "")
-    ticker = key_data.get("ticker", "")
-    fin = key_data.get("fin", {})
-    forecasts = key_data.get("consensus_forecasts", [])
-    valuation = key_data.get("valuation", {})
-    # 从 key_data 中提取已生成的核心变量文本（由调用方注入）
-    core_vars_text = key_data.get("_scenario_core_vars", "")
-
-    valuation_ctx = _scenario_valuation_context(key_data)
-    if valuation_ctx["target_price_allowed"]:
-        _anchor = valuation_ctx["anchor_price"]
-        _base_eps = valuation_ctx["baseline_eps"]
-        _base_pe = valuation_ctx["baseline_pe"]
-        repair_valuation_instruction = (
-            f"当前定价锚=一致预期EPS {_base_eps:.4g}元×当前隐含PE {_base_pe:.2f}x={_anchor:.2f}元；"
-            f"每档目标价必须在{_anchor * 0.25:.2f}–{_anchor * 4:.2f}元内，禁止凭空使用固定PE。"
-        )
-        repair_valuation_cell_instruction = "只写EPS×PE=目标价的可复核公式（EPS＝X.XX元 × PE=Yx = Z.ZZ元）"
-        repair_valuation_cell_example = "EPS＝X.XX元 × PE=Yx = Z.ZZ元"
-    else:
-        _reason = "；".join(valuation_ctx["disable_reasons"]) or "缺少当前定价锚"
-        repair_valuation_instruction = f"传统PE目标价法禁用：{_reason}。"
-        repair_valuation_cell_instruction = "明确写“当前处于主题/预期定价阶段，传统PE法失效”，不得出现目标价、EPS×PE或固定PE"
-        repair_valuation_cell_example = "当前处于主题/预期定价阶段，传统PE法失效；说明估值敏感性"
-
-    core_vars_block = (
-        f"\n【已生成的核心变量（必须基于这些变量写情景假设，不得写模板话术）】\n{core_vars_text}\n"
-        if core_vars_text else ""
-    )
-    prompt = (
-        f"为{name}（{ticker}）生成情景推演**表格**部分（仅表格，不重复核心变量文字）。\n\n"
-        f"{core_vars_block}"
-        f"{repair_valuation_instruction}\n\n"
-        "要求：\n"
-        "1. 三档情景（乐观/中性/悲观），每档必须写出核心变量的**具体数值**（如「800G出货量X万件」「毛利率X%」），不得写「基于核心变量乐观假设」等模板话术\n"
-        "2. 经营含义：对应收入/利润具体结果（如「营收预计Xxx亿、利润Xxx亿」）\n"
-        f"3. 估值含义：{repair_valuation_cell_instruction}\n"
-        "4. 三档概率之和=100%，概率只写在情景名中，不标注'内部测算'\n"
-        "5. 有引用编号[N]即可，不要写括号来源、'基于[N]推算'或'内部测算'\n"
-        "6. 每个单元格内若有多个小点，必须使用 <br> 换行\n"
-        "7. 只输出 Markdown 表格，不输出其他文字\n\n"
-        "输出格式：\n"
-        "| 情景 | 核心假设 | 经营含义 | 估值含义 |\n"
-        "|:-----|:---------|:---------|:---------|\n"
-        f"| 乐观（概率~XX%） | 1）变量1=乐观值[N]<br>2）变量2=乐观值[N] | 1）营收~XX亿<br>2）净利~XX亿 | {repair_valuation_cell_example} |\n"
-        f"| 中性（概率~XX%） | 1）变量1=基准值[N]<br>2）变量2=基准值[N] | 1）营收~XX亿<br>2）净利~XX亿 | {repair_valuation_cell_example} |\n"
-        f"| 悲观（概率~XX%） | 1）变量1=悲观值[N]<br>2）变量2=悲观值[N] | 1）营收~XX亿<br>2）净利~XX亿 | {repair_valuation_cell_example} |\n"
-    )
-
-    result = call_claude(None, prompt, max_tokens=1500).strip()
-    result = re.sub(r'<br\s*/?>', '\n', result)
-    # 去掉 LLM 可能加的标题
-    result = re.sub(r'^###\s*9\.4\s*情景推演\s*\n*', '', result).strip()
-    result = re.sub(r'^\*\*情景推演表\*\*[：:]\s*\n*', '', result).strip()
-    if "情景" in result and "|" in result:
-        return _format_scenario_analysis(result)
-    return ""
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 主入口
-# ─────────────────────────────────────────────────────────────────────────────
 def main():
     parser = argparse.ArgumentParser(description="公司一页纸报告生成器")
     parser.add_argument("--data",     required=True, help="a_share_fetch_data.py 输出的 JSON 文件路径")
@@ -6813,39 +6443,27 @@ def main():
     md_content = assemble_report(meta, sections, ref_map)
     md_content = _render_fact_markers(md_content, key_data.get("fact_marker_refs", {}))
 
-    # v1.2.10: 风险 fallback 必须在死引用清理前运行，确保新引用对应的参考资料被保留。
-    md_content = _enforce_a_share_risk_section(md_content, key_data)
-
-    # ── v1.2.3 后处理: 移除死引用并重新编号 ──────────────────────────────────────
-    md_content = _postprocess_v123(md_content, ref_map)
-
-    # ── v1.2.5 生成后检验→自动补写（催化事件表 & 情景推演表）──────────────────
+    # 只保留确定性催化表修复；情景推演不再由后处理二次调用 LLM 重写。
     md_content, _repair_log = _v124_post_repair(md_content, key_data)
     if _repair_log:
-        print(f"[{time.time()-t0:.1f}s] v1.2.5 自动修复: {_repair_log}")
-    md_content = _normalize_markdown_tables(md_content)
-    md_content = _enforce_v124_a_share_blocks(md_content, key_data, ref_map)
-    md_content = _normalize_markdown_tables(md_content)
-    md_content = _fix_orphan_refs(md_content)
-    md_content = _postprocess_v123(md_content, ref_map)
+        print(f"[{time.time()-t0:.1f}s] 自动修复: {_repair_log}")
     md_content = _enforce_v124_a_share_blocks(md_content, key_data, ref_map)
     md_content = _normalize_markdown_tables(md_content)
     md_content = _fix_orphan_refs(md_content)
 
-    # ── v1.2.5-R3: 情景推演表列修复（在 normalize 之后执行）──────────────────────
-    md_content = _fix_scenario_table_columns(md_content)
-    md_content = _format_scenario_analysis(md_content)
-
-    # ── v1.2.18：无法审计的经营数字绝不进入交付物 ────────────────────────────
+    # 无法审计的经营数字绝不进入交付物。
     md_content, _provenance_drops = _drop_unverifiable_numeric_lines(md_content, key_data)
     if _provenance_drops:
         print(f"[{time.time()-t0:.1f}s] 溯源清洗：删除{len(_provenance_drops)}条无法核验的生成行")
+
+    # 终检只执行一次：死引用清理、编号重排和表格标准化均在此之后。
     md_content = _postprocess_v123(md_content, ref_map)
     md_content = _normalize_markdown_tables(md_content)
-
+    md_content = _drop_incomplete_optional_scenarios(md_content)
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
     md_content = _clean_empty_bold_tags(md_content)
     md_content = _normalize_final_markdown_format(md_content)
+    md_content = _drop_incomplete_optional_scenarios(md_content)
     md_content = _drop_empty_optional_section9(md_content)
     md_content = _renumber_a_share_subsections(md_content)
 

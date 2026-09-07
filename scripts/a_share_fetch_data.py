@@ -914,6 +914,15 @@ def fetch_announcements(meta, ticker, token, max_detail=3):
 
 
 # ─────────────────────────────────────────────
+def _bound_report_content(report_id, content_by_report):
+    """Return the report-specific batch body, or ``None`` when it is unavailable."""
+    body = (content_by_report or {}).get(str(report_id))
+    if body is None:
+        body = (content_by_report or {}).get(report_id)
+    if not str(body or "").strip():
+        return None
+    return {"data": {str(report_id): body}}
+
 # 研报链: research_search -> getReportDetail -> batchGetReportContentDomestic/Foreign + report_graph
 # ─────────────────────────────────────────────
 
@@ -1044,22 +1053,13 @@ def fetch_research_reports(meta, ticker, company_name, token,
             _merge(f2_for.result())
             _merge(f2_dom.result())
 
-    if merged_data:
-        batch_content = {"data": merged_data}
-    elif dom_result:
-        batch_content = dom_result
-    elif for_result:
-        batch_content = for_result
-    else:
-        batch_content = None
-
     def get_graph(item):
         rid = item["_id"]
         graph = None
         if graph_url and rid:
             rj, _, err = call("GET", graph_url, token, params={"reportId": rid})
             graph = rj if not err else None
-        return {**item, "detail": None, "content": batch_content, "graph": graph}
+        return {**item, "detail": None, "content": _bound_report_content(rid, merged_data), "graph": graph}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as ex:
         futs = [ex.submit(get_graph, it) for it in priority]

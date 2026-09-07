@@ -1,4 +1,12 @@
 # Changelog
+## v1.2.29
+
+### P0: Report-specific source binding and structural fail-close
+
+- Bind each `research_reports` item to only its own `reportId` body returned by the batch-content API. Missing report bodies remain unavailable; the writer no longer sees another report's full text under a different citation.
+- Decouple §8.1 from §8.2: a lack of two validated peers suppresses only the peer table, not an independently sourced industry discussion.
+- Retire the post-processing LLM scenario-table rewrite and duplicate citation-cleanup passes. Final cleanup now runs once after provenance filtering.
+- Add a final optional-scenario gate: incomplete §9.4 fragments are removed, and scenario rows outside §9 are stripped before MD/DOCX delivery.
 
 ## v1.2.28
 

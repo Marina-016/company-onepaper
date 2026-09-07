@@ -26,35 +26,6 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertEqual(writer._scenario_target_price_errors(valid, key_data), [])
         self.assertTrue(writer._scenario_target_price_errors(invalid, key_data))
 
-    def test_scenario_cleanup_stays_inside_section_nine(self):
-        md = """## 4 公司业务拆分
-
-| 情景 | 核心变量 | 估值含义 |
-|:--|:--|:--|
-| 乐观 | A | B |
-
-## 5 产销链分析
-
-保留内容
-
-## 9 一致预期、盈利预测与估值
-
-### 9.4 情景推演
-
-情景推演表
-| 情景 | 核心变量 | 估值含义 |
-|:--|:--|:--|
-| 乐观 | X | Y |
-
-## 10 风险提示
-
-保留内容
-"""
-        result = writer._format_scenario_analysis(writer._fix_scenario_table_columns(md))
-        self.assertIn("## 5 产销链分析\n\n保留内容", result)
-        self.assertIn("## 10 风险提示\n\n保留内容", result)
-        self.assertEqual(result.count("## "), md.count("## "))
-
     def test_empty_section_recovery_uses_heading_not_separator(self):
         md = "## 5 产销链分析\n\n## 6 公司财务数据分析\n\n正文\n"
         result = writer._replace_empty_h2_body(md, 5, "来源化 fallback[3]。")
@@ -255,6 +226,11 @@ class AShareWriterRegressionTests(unittest.TestCase):
             fetch.call = original
         self.assertEqual(rejected, [])
 
+    def test_research_report_content_is_bound_to_its_own_report_id(self):
+        contents = {"r1": "正文一", "r2": "正文二"}
+        self.assertEqual(fetch._bound_report_content("r1", contents), {"data": {"r1": "正文一"}})
+        self.assertEqual(fetch._bound_report_content("r2", contents), {"data": {"r2": "正文二"}})
+        self.assertIsNone(fetch._bound_report_content("r3", contents))
     def test_fetch_peer_materials_keeps_only_materials_naming_the_peer(self):
         def fake_call(method, url, token, params=None, body=None, timeout=None):
             question = (body or {}).get("question", "")
@@ -273,5 +249,51 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertEqual([item["id"] for item in materials], ["m1"])
         self.assertEqual(materials[0]["peer_code"], "000858")
 
+    def test_incomplete_scenario_subsection_is_removed_without_losing_other_section_nine_content(self):
+        md = """## 9 一致预期、盈利预测与估值
+
+### 9.1 市场一致预期
+
+有效的一致预期表格[1]。
+
+### 9.4 情景推演
+
+**核心变量**
+
+| 情景 | 核心假设 | 经营含义 | 估值含义 |
+|:--|:--|:--|:--|
+| 中性 | A | B | C |
+| 悲观 | A | B | C |
+
+## 10 风险提示
+
+正文
+"""
+        result = writer._drop_incomplete_optional_scenarios(md)
+        self.assertIn("### 9.1 市场一致预期", result)
+        self.assertNotIn("### 9.4 情景推演", result)
+        self.assertNotIn("| 中性", result)
+        self.assertIn("## 10 风险提示", result)
+
+    def test_orphan_scenario_rows_outside_section_nine_are_removed(self):
+        md = """## 7 公司调研大纲
+
+### 7.3 跟踪问题
+
+保留的问题正文。
+
+| 中性 | A | B | C |
+|:--|:--|:--|:--|
+| 悲观 | A | B | C |
+
+## 10 风险提示
+
+正文
+"""
+        result = writer._drop_incomplete_optional_scenarios(md)
+        self.assertIn("保留的问题正文。", result)
+        self.assertNotIn("| 中性", result)
+        self.assertNotIn("| 悲观", result)
+        self.assertIn("## 10 风险提示", result)
 if __name__ == "__main__":
     unittest.main()

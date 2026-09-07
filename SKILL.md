@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.28
+version: v1.2.29
 license: MIT
 compatibility: network
 description: |
@@ -29,7 +29,7 @@ description: |
 - 閹垫儳鍩?Token 閸氬函绱濋崥搴ｇ敾閹碘偓閺?API 鐠嬪啰鏁ら柈鎴掑▏閻?`Authorization: Bearer {DATAYES_TOKEN}`閵?- 閹碘偓閺堝鍓奸張顒冪殶閻劑鍏樻担璺ㄦ暏 `python3 -X utf8`閿涘奔绗夌憰浣规暭閻?`python` 閹?`py`閵?
 ### 1.1 閼惧嘲褰囨稉搴ㄥ帳缂?Datayes Token
 
-鐠佸潡妫?https://ai.datayes.com 閼惧嘲褰囬崣顖涙寵闁库偓閻?API token閵?
+鐠佸潡妫?https://r.datayes.com/auth/token/login 閼惧嘲褰囬崣顖涙寵闁库偓閻?API token閵?
 macOS / Linux閿?
 ```bash
 export DATAYES_TOKEN='your-token'
@@ -47,7 +47,13 @@ $env:DATAYES_TOKEN = "your-token"
 
 ### 1.2 閹笛嗩攽鏉堝湱鏅稉搴ゆ硶楠炲啿褰寸痪锔芥将
 
-- **缁備焦顒涚€电鐦芥笟褏缍夋い鍨偝缁?*閿涙矮瀵屽ù浣衡柤娑撳秳濞囬悽?WebSearch/WebFetch閿涙稑鍙曞鈧純鎴︺€夌悰銉ュ帠閸欘亣鍏橀柅姘崇箖瀹告煡鍘ょ純顔炬畱閺佺増宓侀柌鍥肠閹恒儱褰涙潻娑樺弳 materials/source trace 閸氬簼濞囬悽銊ｂ偓?- **閸戝繐鐨幒銏㈠偍**閿涙矮绱崗鍫滃▏閻?`references/` 娑擃厼鍑￠惌銉﹀复閸欙絼绗岄崗鍐т繆閹垳缍夐崗绛圭礉娑撳秹鍣告径宥囧濞村甯撮崣?URL 閹存牕寮弫鑸偓?- **閺勫海鈥樻潏鍦櫕**閿涙矮绗夋径鍕倞闂堢偘绗傜敮鍌欏瘜娴ｆ挶鈧線娼柌鎴ｇ€洪弻銉嚄閿涙稓娲伴弽鍥у彆閸欏憡鍨ㄧ敮鍌氭簚娑撳秵妲戠涵顔芥閸忓牏鈥樼拋銈忕幢閸欘垶鐛欑拠浣界槈閹诡喕绗夌搾铏 fail closed閵?- **UTF-8**閿涙碍澧嶉張澶婇挬閸欐壆绮烘稉鈧担璺ㄦ暏 `python3 -X utf8`閿涙矅indows 缂佸牏顏懟銉ょ矝閸戣櫣骞?GBK 娑旇京鐖滈敍灞藉帥鐏忓棛绮撶粩顖氬瀼閹诡澀璐?UTF-8閵?- **鐠侯垰绶?*閿涙俺绶崙楦跨熅瀵板嫮鏁辩拫鍐暏閺傞€涚炊閸忋儻绱濋懘姘拱娴ｈ法鏁?`pathlib` / `os.path`閿涘奔绗夊妤冣€栫紓鏍垳楠炲啿褰寸捄顖氱窞閸掑棝娈х粭锔衡偓?- **鐎涙ぞ缍?*閿涙OCX 娑擃厽鏋冪€涙ぞ缍嬫笟婵婄瀵邦喛钂嬮梿鍛寸拨閿涘矁瀚抽弬鍥х摟娴ｆ挷绶风挧?Calibri閿涙稖绻嶇悰宀€骞嗘晶鍐繁鐏忔垵鐡ф担鎾存閸忎浇顔忕€涙ぞ缍嬮弴澶稿敩閿涘奔绲炬稉宥呯繁閺€鐟板綁閺佺増宓侀崘鍛啇閵?## 2. Market Routing
+- **缁備焦顒涚€电鐦芥笟褏缍夋い鍨偝缁?*閿涙矮瀵屽ù浣衡柤娑撳秳濞囬悽?WebSearch/WebFetch閿涙稑鍙曞鈧純鎴︺€夌悰銉ュ帠閸欘亣鍏橀柅姘崇箖瀹告煡鍘ょ純顔炬畱閺佺増宓侀柌鍥肠閹恒儱褰涙潻娑樺弳 materials/source trace 閸氬簼濞囬悽銊ｂ偓?- **閸戝繐鐨幒銏㈠偍**閿涙矮绱崗鍫滃▏閻?`references/` 娑擃厼鍑￠惌銉﹀复閸欙絼绗岄崗鍐т繆閹垳缍夐崗绛圭礉娑撳秹鍣告径宥囧濞村甯撮崣?URL 閹存牕寮弫鑸偓?- **閺勫海鈥樻潏鍦櫕**閿涙矮绗夋径鍕倞闂堢偘绗傜敮鍌欏瘜娴ｆ挶鈧線娼柌鎴ｇ€洪弻銉嚄閿涙稓娲伴弽鍥у彆閸欏憡鍨ㄧ敮鍌氭簚娑撳秵妲戠涵顔芥閸忓牏鈥樼拋銈忕幢閸欘垶鐛欑拠浣界槈閹诡喕绗夌搾铏 fail closed閵?- **UTF-8**閿涙碍澧嶉張澶婇挬閸欐壆绮烘稉鈧担璺ㄦ暏 `python3 -X utf8`閿涙矅indows 缂佸牏顏懟銉ょ矝閸戣櫣骞?GBK 娑旇京鐖滈敍灞藉帥鐏忓棛绮撶粩顖氬瀼閹诡澀璐?UTF-8閵?- **鐠侯垰绶?*閿涙俺绶崙楦跨熅瀵板嫮鏁辩拫鍐暏閺傞€涚炊閸忋儻绱濋懘姘拱娴ｈ法鏁?`pathlib` / `os.path`閿涘奔绗夊妤冣€栫紓鏍垳楠炲啿褰寸捄顖氱窞閸掑棝娈х粭锔衡偓?- **鐎涙ぞ缍?*閿涙OCX 娑擃厽鏋冪€涙ぞ缍嬫笟婵婄瀵邦喛钂嬮梿鍛寸拨閿涘矁瀚抽弬鍥х摟娴ｆ挷绶风挧?Calibri閿涙稖绻嶇悰宀€骞嗘晶鍐繁鐏忔垵鐡ф担鎾存閸忎浇顔忕€涙ぞ缍嬮弴澶稿敩閿涘奔绲炬稉宥呯繁閺€鐟板綁閺佺増宓侀崘鍛啇閵?## Execution Constraints
+
+- Do not use WebSearch or WebFetch for report facts. Use the Datayes interfaces declared in this skill and the collected source payloads only.
+- Resolve API specifications through `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api`; do not hardcode downstream business URLs.
+- Reuse the collected JSON in the writer. Do not repeat collection requests merely to fill a missing optional section.
+- Do not generate a report for non-financial requests or substitute non-Datayes sources for an unavailable Datayes source.
+## 2. Market Routing
 - 閸忓牊瀵滄潏鎾冲弳閻楃懓绶涢崚銈嗘焽鐢倸婧€閿涘苯鍟€鏉╂稑鍙嗙€电懓绨茬€涙劖绁︾粙瀣ㄢ偓?- A 閼猜ょ槕閸掝偓绱?  - 6 娴ｅ秶鍑介弫鏉跨摟娴狅絿鐖?  - `stock_search` 鏉╂柨娲栭惃?A 閼诧紕绮ㄩ弸?  - 娑擃厽鏋冮崗顒€寰冮崥宥囩病 `stock_search` 鐟欙絾鐎介崥搴ゆ儰閸?A 閼?- 濞擃垵鍋傜拠鍡楀焼閿?  - 鐢?`.HK` / `.hk` 閸氬海绱戦惃鍕敩閻?  - 4-5 娴ｅ秶鍑介弫鏉跨摟濞擃垵鍋傛禒锝囩垳閿涘矁瀚㈢€涙ê婀褌绠熻箛鍛淬€忛崗鍫⑩€樼拋?  - 娑擃厽鏋冮幋鏍閺傚洤鍙曢崣绋挎倳缂?`stock_search` 鐟欙絾鐎介崥搴ゆ儰閸掔増鑵愰懖?- 缂囧氦鍋傜拠鍡楀焼閿?  - 缁绢垵瀚抽弬?ticker
   - 鐢?`.O` / `.N` / `.US` 閸氬海绱戦惃鍕敩閻?  - 娑擃厽鏋冮幋鏍閺傚洤鍙曢崣绋挎倳缂?`stock_search` 鐟欙絾鐎介崥搴ゆ儰閸掓壆绶ㄩ懖?- `stock_search` 閸欘亞鏁ゆ禍搴″彆閸欑鎮曢敍灞肩瑝閻劋绨禒锝囩垳閹兼粎鍌ㄩ妴?- `entity_id` 閺勵垰鎮楃紒顓犵波閺嬪嫬瀵查幒銉ュ經閻ㄥ嫬鏁稉鈧崗銉ュ棘娴狅絿鐖滈敍?  - A 閼测€插▏閻?6 娴ｅ秶鍑介弫鏉跨摟 `entity_id`
   - 濞擃垵鍋傞崪宀€绶ㄩ懖鈥插▏閻劌绔堕崷鍝勵嚠鎼存梻娈?`entity_id` / ticker 瑜般垹绱?- 婵″倹鐏夌敮鍌氭簚娴犲秶鍔уΟ锛勭ˇ閿涘苯鍘涢梻顔炬暏閹撮鈥樼拋銈嗘Ц A 閼猜扳偓浣硅厫閼猜ょ箷閺勵垳绶ㄩ懖鈽呯礉閸愬秶鎴风紒顓溾偓?
@@ -129,6 +135,12 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
+### v1.2.29 Source binding and optional-section integrity
+
+- Bind each research report citation to its own `reportId` body only. A missing body is not substituted with another report's body and cannot support a generated claim.
+- Keep §8.1 independent from §8.2. Fewer than two validated peers omits only the peer table; an independently supported industry section remains eligible for delivery.
+- Treat §9.4 as optional and fail closed. Do not regenerate its table after provenance filtering. If its header, table header, or three scenario rows are incomplete, remove only §9.4 and retain valid §9.1–§9.3.
+- Run citation cleanup and Markdown-table normalization once at the end of the A-share pipeline. No scenario table may appear outside `## 9`; a structural violation blocks or removes the optional fragment before DOCX conversion.
 ### v1.2.28 Peer-candidate relaxation with exact-name verification
 
 - In a comparable-company context, plain company-name phrases (e.g. after 如/包括/对标 lead-ins) are also collected as peer candidates in addition to `company name (six-digit code)` pairs; a candidate without a code must still pass an exact `stock_search` name match after suffix normalization, otherwise it is dropped before §8.2.
