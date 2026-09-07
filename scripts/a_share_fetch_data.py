@@ -55,7 +55,8 @@ import traceback
 from urllib.parse import urlencode
 
 # Windows 控制台 GBK 编码兼容：强制 stdout/stderr 输出 UTF-8
-if sys.platform == "win32":
+# 仅在作为主脚本运行时重包装标准流；被 import 时不得劫持解释器 stdout/stderr
+if sys.platform == "win32" and __name__ == "__main__":
     import io
     if hasattr(sys.stdout, "buffer"):
         sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
@@ -671,52 +672,101 @@ def fetch_profit_forecast(meta, ticker, token):
     return rj, None
 
 
+_PEER_NOISE_SUFFIXES = (
+    '公司', '行业', '产业', '格局', '优势', '壁垒', '市场', '领域', '层面', '方面',
+    '来看', '而言', '地位', '空间', '趋势', '发展', '水平', '数量', '赛道', '龙头',
+    '集中度', '增速', '占比', '估值', '股价', '竞争力', '护城河', '同行', '同业',
+    '稳定', '加剧', '激烈', '充分', '持续', '保持', '给予', '提升', '下降', '恶化',
+)
+
+
+def _normalize_security_name(name):
+    """归一化证券名称：去空白并剥离尾部公司后缀，供“名称完全一致”核验。"""
+    s = re.sub(r'\s+', '', str(name or ''))
+    return re.sub(r'(股份有限公司|有限责任公司|集团有限公司|集团公司|有限公司|公司)$', '', s)
+
+
 def extract_peer_names(reports, company_short_name):
-    """只从研报的同业语境中提取“公司名（6位代码）”候选。"""
+    """从研报同业语境提取可比公司候选：优先“公司名（6位代码）”，其次同业列举中的名称短语（无码，须再经名称一致核验）。"""
     contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|相比(?:同行|同业|竞争)).{0,300}')
     named_code = re.compile(r'(?:^|[、，,；;：:\s])(?P<name>[\u4e00-\u9fa5]{2,12}?)(?:股份有限公司|集团)?[（(]\s*(?P<code>[036]\d{5})\s*[）)]')
-    blocked = {'公司', '行业', '可比公司', '同业公司', company_short_name or ''}
+    enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*([\u4e00-\u9fa5]{2,8}(?:[、，,][\u4e00-\u9fa5]{2,8}){1,8})')
+    phrase = re.compile(r'[\u4e00-\u9fa5]{2,8}')
+    blocked = {'公司', '行业', '可比公司', '同业公司', '同类公司', '竞争对手', '主要竞争对手', '竞争公司', '对标公司', '可比上市', '同类上市', company_short_name or ''}
     candidates = {}
     for report in (reports or [])[:8]:
         meta_r = report.get('_meta', {}) or {}
         abstract = meta_r.get('abstractText', '') or ''
-        values = list(((report.get('content', {}) or {}).get('data') or {}).values())
-        body = values[0][:8000] if values and isinstance(values[0], str) else ''
+        values = [v for v in (((report.get('content', {}) or {}).get('data') or {}).values()) if isinstance(v, str)]
+        body = ' '.join(values)[:20000]
         report_id = str(report.get('id') or meta_r.get('reportID') or '')
         for source in (abstract, body):
             for context in contexts.findall(source or ''):
                 for match in named_code.finditer(context):
-                    name = re.sub(r'(股份有限公司|集团)$', '', match.group('name')).strip()
+                    name = re.sub(r'^(?:可比公司|同类公司|同业公司|竞争对手|竞争公司|对标公司|主要竞争|包括|如|例如|主要有|涉及|涵盖|分别是)+', '', match.group('name')).strip()
+                    name = re.sub(r'(股份有限公司|集团)$', '', name)
                     code = match.group('code')
                     if not name or name in blocked or company_short_name in name:
                         continue
-                    entry = candidates.setdefault(code, {'query': name, 'code': code, 'source_report_id': report_id, 'count': 0})
+                    entry = candidates.setdefault('c:' + code, {'query': name, 'code': code, 'source_report_id': report_id, 'count': 0})
                     entry['count'] += 1
-    return sorted(candidates.values(), key=lambda item: (-item['count'], item['code']))[:3]
+                # 放宽：同业列举中的纯名称短语（无代码），后续须经 stock_search 名称一致核验才有效
+                for enum_text in enum.findall(context):
+                    for name in phrase.findall(enum_text):
+                        name = re.sub(r'[等]$', '', name)
+                        if len(name) < 2 or name in blocked or company_short_name in name:
+                            continue
+                        if name.endswith(_PEER_NOISE_SUFFIXES):
+                            continue
+                        entry = candidates.setdefault('n:' + name, {'query': name, 'code': '', 'source_report_id': report_id, 'count': 0})
+                        entry['count'] += 1
+    return sorted(candidates.values(), key=lambda item: (-item['count'], item['code']))[:8]
 
 
 def validate_peer_names(meta, peer_candidates, token, target_ticker=''):
-    """按候选中的显式证券代码精确核验当前证券简称，拒绝模糊搜索首条命中。"""
+    """核验可比公司候选：有代码按证券代码精确匹配；无代码按名称短语检索，证券名称归一化后完全一致才接受。"""
     url = meta.get('stock_search', {}).get('url', '')
     if not url or not peer_candidates:
         return []
     validated, seen = [], set()
-    for candidate in peer_candidates[:3]:
-        expected_code = str(candidate.get('code') or '').strip()
-        if not re.match(r'^\d{6}$', expected_code) or expected_code == str(target_ticker or ''):
-            continue
-        rj, _, err = call('GET', url, token, params={'query': expected_code, 'dataType': '1', 'topK': '10'})
-        if err or not rj:
-            continue
-        hits = (rj.get('data') or {}).get('hits') or []
-        exact = next((item for item in hits if str(item.get('entity_id') or '').strip() == expected_code), None)
-        if not exact:
-            continue
-        current_name = str(exact.get('name') or '').strip()
-        if not current_name or expected_code in seen:
-            continue
-        seen.add(expected_code)
-        validated.append({'query': candidate.get('query', ''), 'code': expected_code, 'current_name': current_name, 'source_report_id': candidate.get('source_report_id', '')})
+    for candidate in peer_candidates[:10]:
+        code = str(candidate.get('code') or '').strip()
+        if re.match(r'^\d{6}$', code):
+            if code == str(target_ticker or ''):
+                continue
+            rj, _, err = call('GET', url, token, params={'query': code, 'dataType': '1', 'topK': '10'})
+            if err or not rj:
+                continue
+            hits = (rj.get('data') or {}).get('hits') or []
+            exact = next((item for item in hits if str(item.get('entity_id') or '').strip() == code), None)
+            if not exact:
+                continue
+            current_name = str(exact.get('name') or '').strip()
+            if not current_name or code in seen:
+                continue
+            seen.add(code)
+        else:
+            phrase = str(candidate.get('query') or '').strip()
+            if len(phrase) < 2:
+                continue
+            rj, _, err = call('GET', url, token, params={'query': phrase, 'dataType': '1', 'topK': '10'})
+            if err or not rj:
+                continue
+            hits = (rj.get('data') or {}).get('hits') or []
+            exact = next((item for item in hits if _normalize_security_name(str(item.get('name') or '')) == _normalize_security_name(phrase)), None)
+            if not exact:
+                continue
+            code = str(exact.get('entity_id') or '').strip()
+            if not re.match(r'^\d{6}$', code) or code == str(target_ticker or '') or code in seen:
+                continue
+            seen.add(code)
+            current_name = str(exact.get('name') or '').strip()
+        validated.append({
+            'query': candidate.get('query', ''), 'code': code, 'current_name': current_name,
+            'source_report_id': candidate.get('source_report_id', ''),
+        })
+        if len(validated) >= 3:
+            break
     return validated
 
 
@@ -1446,7 +1496,7 @@ def run(ticker_input, token, output_path):
     peer_labels = [p['current_name'] for p in peer_validated]
     if peer_validated:
         print(f"  ✓ peer_validated: {[p['current_name'] for p in peer_validated]}")
-    peer_fut = ex3.submit(fetch_peer_materials, meta, company_name, peers, token)
+    peer_fut = ex3.submit(fetch_peer_materials, meta, company_name, peer_validated, token)
 
     meetings, err = mtg_fut.result()
     result["meetings"] = meetings

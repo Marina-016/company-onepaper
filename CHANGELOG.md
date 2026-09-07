@@ -1,5 +1,13 @@
 # Changelog
 
+## v1.2.28
+
+### P1: Relaxed peer candidates with exact-name verification
+
+- Accept plain company-name phrases in a comparable-company context (after lead-ins such as 如/包括/对标) as peer candidates in addition to `name (code)` pairs; every candidate without a code must still pass an exact `stock_search` name match after suffix normalization, preserving the fail-closed gate.
+- Fix fetch→writer wiring so peer materials are fetched from the validated peer list (previously the unvalidated candidate list was passed, yielding empty `peer_materials`).
+- Guard Windows stdio re-wrapping under `__main__` so the fetch module can be imported safely by unit tests.
+
 ## v1.2.27
 
 ### P0: Source-bound peer comparison

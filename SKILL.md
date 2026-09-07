@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.27
+version: v1.2.28
 license: MIT
 compatibility: network
 description: |
@@ -129,6 +129,12 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
+### v1.2.28 Peer-candidate relaxation with exact-name verification
+
+- In a comparable-company context, plain company-name phrases (e.g. after 如/包括/对标 lead-ins) are also collected as peer candidates in addition to `company name (six-digit code)` pairs; a candidate without a code must still pass an exact `stock_search` name match after suffix normalization, otherwise it is dropped before §8.2.
+- Fetch peer materials from the validated peer list only; passing raw unvalidated candidates yields no materials and must not produce unbound progress citations.
+- Keep the fail-closed rule: fewer than two validated peers → omit §8.2; a peer without qualified progress material keeps that cell `—`.
+
 ### v1.2.27 A-share peer-comparison gate
 
 - Extract peer candidates only from a report's explicit `company name (six-digit code)` pair in a comparable-company context; validate the exact code before use.

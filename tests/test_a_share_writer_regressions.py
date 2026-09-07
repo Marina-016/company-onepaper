@@ -7,6 +7,10 @@ SPEC = importlib.util.spec_from_file_location("writer", ROOT / "scripts" / "a_sh
 writer = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(writer)
 
+FETCH_SPEC = importlib.util.spec_from_file_location("fetch", ROOT / "scripts" / "a_share_fetch_data.py")
+fetch = importlib.util.module_from_spec(FETCH_SPEC)
+FETCH_SPEC.loader.exec_module(fetch)
+
 
 class AShareWriterRegressionTests(unittest.TestCase):
     def test_high_valuation_allows_no_target_price_statement(self):
@@ -209,5 +213,65 @@ class AShareWriterRegressionTests(unittest.TestCase):
         evidence = writer._build_reference_evidence({"_raw_data": data, "ref_map": refs}, writer.refs_to_markdown(refs))
         self.assertIn("五粮液渠道反馈", evidence[peer_ref["n"]]["text"])
         self.assertEqual(evidence[peer_ref["n"]]["api"], "getMaterialsV2")
+    def test_peer_candidates_extract_plain_name_phrases_with_leadin(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "同业公司如五粮液、泸州老窖、山西汾酒等，竞争格局稳定。"}}]
+        candidates = fetch.extract_peer_names(reports, "贵州茅台")
+        phrases = {item["query"] for item in candidates if not item["code"]}
+        self.assertTrue({"五粮液", "泸州老窖", "山西汾酒"} <= phrases)
+
+    def test_peer_candidates_reject_generic_peer_sentences(self):
+        reports = [{"id": "r2", "_meta": {"abstractText": "参考可比公司2026年底部区间为12-24倍PE，我们给予25倍PE。"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "贵州茅台"), [])
+
+    def test_validate_peer_names_accepts_exact_name_without_code(self):
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            query = (params or {}).get("query")
+            hits = []
+            if query == "五粮液":
+                hits = [{"entity_id": "000858", "name": "五粮液股份有限公司"}]
+            elif query == "泸州老窖":
+                hits = [{"entity_id": "000568", "name": "泸州老窖"}]
+            return {"code": 1, "data": {"hits": hits}}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            validated = fetch.validate_peer_names({"stock_search": {"url": "u"}}, [
+                {"query": "五粮液", "code": ""},
+                {"query": "泸州老窖", "code": ""},
+            ], "tok")
+        finally:
+            fetch.call = original
+        self.assertEqual([v["code"] for v in validated], ["000858", "000568"])
+        self.assertEqual(validated[0]["current_name"], "五粮液股份有限公司")
+
+    def test_validate_peer_names_rejects_name_mismatch(self):
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            return {"code": 1, "data": {"hits": [{"entity_id": "000858", "name": "五粮液"}]}}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            rejected = fetch.validate_peer_names({"stock_search": {"url": "u"}}, [{"query": "五粮液酒", "code": ""}], "tok")
+        finally:
+            fetch.call = original
+        self.assertEqual(rejected, [])
+
+    def test_fetch_peer_materials_keeps_only_materials_naming_the_peer(self):
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            question = (body or {}).get("question", "")
+            items = [{"id": "m1", "title": "五粮液渠道反馈", "text": "五粮液最新动销"},
+                     {"id": "m2", "title": "行业月度数据", "text": "白酒行业整体平稳"}] if "五粮液" in question else []
+            return {"code": 1, "data": items}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            materials, err = fetch.fetch_peer_materials(
+                {"getMaterialsV2": {"url": "u"}}, "贵州茅台",
+                [{"code": "000858", "current_name": "五粮液", "query": "五粮液"}], "tok")
+        finally:
+            fetch.call = original
+        self.assertIsNone(err)
+        self.assertEqual([item["id"] for item in materials], ["m1"])
+        self.assertEqual(materials[0]["peer_code"], "000858")
+
 if __name__ == "__main__":
     unittest.main()
