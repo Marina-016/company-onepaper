@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.29
+version: v1.2.30
 license: MIT
 compatibility: network
 description: |
@@ -141,6 +141,11 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - Keep §8.1 independent from §8.2. Fewer than two validated peers omits only the peer table; an independently supported industry section remains eligible for delivery.
 - Treat §9.4 as optional and fail closed. Do not regenerate its table after provenance filtering. If its header, table header, or three scenario rows are incomplete, remove only §9.4 and retain valid §9.1–§9.3.
 - Run citation cleanup and Markdown-table normalization once at the end of the A-share pipeline. No scenario table may appear outside `## 9`; a structural violation blocks or removes the optional fragment before DOCX conversion.
+### v1.2.30 Competition-context peer extraction
+
+- Besides explicit comparable-company lists, allow a two-or-more-company enumeration introduced by a strong displacement or substitution verb. Do not accept an isolated company mention or compliance disclosure as a peer candidate.
+- Preserve the existing gate: each extracted name must still resolve through exact normalized `stock_search` name matching before material retrieval or §8.2 use.
+
 ### v1.2.28 Peer-candidate relaxation with exact-name verification
 
 - In a comparable-company context, plain company-name phrases (e.g. after 如/包括/对标 lead-ins) are also collected as peer candidates in addition to `company name (six-digit code)` pairs; a candidate without a code must still pass an exact `stock_search` name match after suffix normalization, otherwise it is dropped before §8.2.

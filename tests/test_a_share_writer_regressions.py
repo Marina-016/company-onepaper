@@ -190,6 +190,19 @@ class AShareWriterRegressionTests(unittest.TestCase):
         phrases = {item["query"] for item in candidates if not item["code"]}
         self.assertTrue({"五粮液", "泸州老窖", "山西汾酒"} <= phrases)
 
+    def test_peer_candidates_extract_competitive_brand_enumeration(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "\u98de\u5929\u8305\u53f0\u7684\u9500\u91cf\u589e\u957f\u5c06\u65e5\u76ca\u6324\u5360\u4e94\u7cae\u6db2\u3001\u6cf8\u5dde\u8001\u7a96\u7b49\u5176\u4ed6\u9ad8\u7aef\u54c1\u724c\u7684\u5e02\u573a\u9700\u6c42\u3002"}}]
+        candidates = fetch.extract_peer_names(reports, "\u8d35\u5dde\u8305\u53f0")
+        phrases = {item["query"] for item in candidates if not item["code"]}
+        self.assertTrue({"\u4e94\u7cae\u6db2", "\u6cf8\u5dde\u8001\u7a96"} <= phrases)
+
+    def test_peer_candidates_reject_noncompetitive_company_mentions(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "\u5408\u89c4\u62ab\u9732\uff1a\u5b89\u5fbd\u53e4\u4e95\u8d21\u9152\u80a1\u4efd\u6709\u9650\u516c\u53f8\u4e3a\u62a5\u544a\u8986\u76d6\u516c\u53f8\u3002"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "\u8d35\u5dde\u8305\u53f0"), [])
+    def test_peer_candidates_reject_nonpeer_phrases_after_competition_word(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "\u67d0\u9879\u63aa\u65bd\u53ef\u80fd\u51b2\u51fb\u5e02\u573a\u7a33\u5b9a\u6027\u3002\u5206\u9f84\u8fd0\u8425\u7834\u5c40\u5e74\u8f7b\u5316\uff0c\u5e02\u503c\u7ba1\u7406\u63a5\u529b\u63a8\u8fdb\u3002"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "\u8d35\u5dde\u8305\u53f0"), [])
+
     def test_peer_candidates_reject_generic_peer_sentences(self):
         reports = [{"id": "r2", "_meta": {"abstractText": "参考可比公司2026年底部区间为12-24倍PE，我们给予25倍PE。"}}]
         self.assertEqual(fetch.extract_peer_names(reports, "贵州茅台"), [])

@@ -687,10 +687,16 @@ def _normalize_security_name(name):
 
 
 def extract_peer_names(reports, company_short_name):
-    """从研报同业语境提取可比公司候选：优先“公司名（6位代码）”，其次同业列举中的名称短语（无码，须再经名称一致核验）。"""
+    """从研报明确的同业或竞争语境提取候选；无代码名称仍须经精确证券名称核验。"""
     contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|相比(?:同行|同业|竞争)).{0,300}')
     named_code = re.compile(r'(?:^|[、，,；;：:\s])(?P<name>[\u4e00-\u9fa5]{2,12}?)(?:股份有限公司|集团)?[（(]\s*(?P<code>[036]\d{5})\s*[）)]')
     enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*([\u4e00-\u9fa5]{2,8}(?:[、，,][\u4e00-\u9fa5]{2,8}){1,8})')
+    # Match explicit competition verbs plus an enumeration of two or more names only.
+    competitive_enum = re.compile(
+        '(?:\u6324\u5360|\u5206\u6d41|\u62a2\u5360|\u66ff\u4ee3|\u51b2\u51fb|\u4e89\u593a).{0,80}?'
+        '(?P<names>[\u4e00-\u9fa5]{2,8}(?:[\u3001\uff0c,][\u4e00-\u9fa5]{2,8}){1,8})'
+        '(?=\u7b49(?:\u5176\u4ed6)?(?:\u9ad8\u7aef)?(?:\u54c1\u724c|\u516c\u53f8|\u5382\u5546|\u9152\u4f01|\u540c\u884c|\u7ade\u4e89\u8005))'
+    )
     phrase = re.compile(r'[\u4e00-\u9fa5]{2,8}')
     blocked = {'公司', '行业', '可比公司', '同业公司', '同类公司', '竞争对手', '主要竞争对手', '竞争公司', '对标公司', '可比上市', '同类上市', company_short_name or ''}
     candidates = {}
@@ -701,7 +707,9 @@ def extract_peer_names(reports, company_short_name):
         body = ' '.join(values)[:20000]
         report_id = str(report.get('id') or meta_r.get('reportID') or '')
         for source in (abstract, body):
-            for context in contexts.findall(source or ''):
+            source_contexts = contexts.findall(source or '') or ['']
+            competitive_names = [match.group('names') for match in competitive_enum.finditer(source or '')]
+            for context in source_contexts:
                 for match in named_code.finditer(context):
                     name = re.sub(r'^(?:可比公司|同类公司|同业公司|竞争对手|竞争公司|对标公司|主要竞争|包括|如|例如|主要有|涉及|涵盖|分别是)+', '', match.group('name')).strip()
                     name = re.sub(r'(股份有限公司|集团)$', '', name)
@@ -711,7 +719,10 @@ def extract_peer_names(reports, company_short_name):
                     entry = candidates.setdefault('c:' + code, {'query': name, 'code': code, 'source_report_id': report_id, 'count': 0})
                     entry['count'] += 1
                 # 放宽：同业列举中的纯名称短语（无代码），后续须经 stock_search 名称一致核验才有效
-                for enum_text in enum.findall(context):
+                enum_texts = enum.findall(context)
+                enum_texts.extend(competitive_names)
+                competitive_names = []
+                for enum_text in enum_texts:
                     for name in phrase.findall(enum_text):
                         name = re.sub(r'[等]$', '', name)
                         if len(name) < 2 or name in blocked or company_short_name in name:

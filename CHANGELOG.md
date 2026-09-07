@@ -1,4 +1,11 @@
 # Changelog
+## v1.2.30
+
+### P1: Competition-context peer extraction
+
+- Extend A-share peer candidate extraction to recognize an enumerated set of two or more companies when a direct competition verb introduces it, such as “挤占五粮液、泸州老窖等其他高端品牌”.
+- Preserve fail-closed safeguards: isolated mentions and compliance disclosures remain ineligible; every name without a ticker must still pass exact normalized `stock_search` matching before `getMaterialsV2` retrieval or §8.2 use.
+
 ## v1.2.29
 
 ### P0: Report-specific source binding and structural fail-close
