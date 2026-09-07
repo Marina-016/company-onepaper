@@ -1,0 +1,28 @@
+# Local credentials and machine-specific configuration
+.env
+.env.*
+token.txt
+.datayes_token
+
+# Generated report data and delivery artifacts
+outputs/
+*.docx
+*.pdf
+*_data.json
+*_materials.json
+source_trace.json
+id_audit.json
+generation_status.json
+forecast_samples.json
+consensus_forecast.json
+llm_diagnostics.json
+
+# Python and OS caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.DS_Store
+
+# Local archives and logs
+*.zip
+*.log
