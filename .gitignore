@@ -6,6 +6,8 @@ token.txt
 
 # Generated report data and delivery artifacts
 outputs/
+*_[0-9][0-9][0-9][0-9][0-9][0-9]/
+*_[0-9][0-9][0-9][0-9][0-9]/
 *.docx
 *.pdf
 *_data.json
