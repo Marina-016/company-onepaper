@@ -1,11 +1,15 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.32
+version: v1.2.33
 license: MIT
 compatibility: network
 description: |
-  閻㈢喐鍨?A閼猜扳偓浣硅厫閼测€虫嫲缂囧氦鍋傞崗顒€寰冮惃鍕嫳閺傜顫嬬憴鎺戝彆閸欓晲绔存い鐢电剨閹躲儱鎲￠妴?  娑撴槒鐭惧鍕贩鐠?DATAYES_TOKEN閵嗕垢ython3閵嗕笍atayes 閺佺増宓侀柌鍥肠閼存碍婀伴崪宀冨殰閸斻劌瀵?writer 閻㈢喐鍨?MD + DOCX閵?  瑜版挸澧犻悧鍫熸拱瀵缚鐨熼惇鐔风杽閺佺増宓侀妴浣哥穿閻劑妫撮悳顖樷偓浣烘窗閺嶅洤鍙曢崣闀愮閼峰瓨鈧佲偓浣虹波閺嬪嫬瀵茬拹銊╁櫤闂傘劎顩﹂崪宀冨殰閸斻劋鎱ㄦ径宥冣偓?  瑜版挾鏁ら幋鐤洣濮瑰倻鏁撻幋鎰ㄢ偓婵呯妞ょ數鐒婇垾婵冣偓婵嗗彆閸欓晲绔存い鐢电剨閳ユ績鈧繆鍋傜粊銊х埡缁岃埖濮ら崨濞锯偓婵冣偓婵嗗彆閸欏摜鐖虹粚鑸靛Г閸涘ň鈧繃鍨ㄦ潏鎾冲弳娑撳﹤绔堕崗顒€寰冮崥宥囆?娴狅絿鐖滅憰浣圭湴閸掑棙鐎介弮鎯靶曢崣鎴欌偓?  娑撳秴顦╅悶鍡涙姜娑撳﹤绔舵稉璁崇秼閵嗕線娼柌鎴ｇ€洪惍鏃傗敀娴犺濮熼幋鏍ㄦ￥濞夋洖褰囧妤€褰叉宀冪槈閺夈儲绨惃鍕彆閸欑鍨庨弸鎰剁礉娑撳秴婀拠浣瑰祦娑撳秷鍐婚弮鍓佺椽闁姵濮ら崨濞库偓?metadata:
-  short-description: 閻㈢喐鍨欰閼?濞擃垵鍋?缂囧氦鍋傞崗顒€寰冩稉鈧い鐢电剨閿涘澊1.2.31閿?  openclaw:
+  生成 A 股、港股和美股公司的买方视角公司一页纸报告（Markdown + DOCX）。
+  当用户要求“公司一页纸”“股票研究报告”“公司研究报告”，或给出上市公司名称/代码要求分析时使用。
+  使用 DATAYES_TOKEN、Datayes 数据采集脚本和 writer 生成带引用的报告；没有可验证证据时不得编造。
+metadata:
+  short-description: 生成上市公司一页纸投研报告
+  openclaw:
     requires:
       env: [DATAYES_TOKEN]
       bins: [python3]
@@ -18,221 +22,108 @@ description: |
         - llm-proxy.datayes.com
 ---
 
-# 閸忣剙寰冩稉鈧い鐢电剨濞ｅ崬瀹抽惍鏃傗敀閹躲儱鎲?
-## 0. Core Principles
-- 閻喎鐤勯弫鐗堝祦娴兼ê鍘涢敍宀€顩﹀銏㈢椽闁姰鈧焦瀚鹃幒銉﹀灗閼峰棙绁撮弫鏉库偓绗衡偓?- 閹躲儱鎲￠弬鍥︽閺勵垰鏁稉鈧禍銈勭帛閻椻晪绱濋懕濠傘亯缁愭褰涢崣顏嗘暏娴滃氦绻樻惔锔衡偓浣界熅瀵板嫬鎷伴梼缁樻焽閸樼喎娲滈妴?- 娑撳秷绶崙鍝勫窗娴ｅ秶顑侀妴浣鼓侀弶鍨紦閵嗕礁鍞撮柈銊ヤ紣缁嬪鐦介張顖樷偓?瀹告煡娈ｉ挊蹇撳斧閸?閹存牕浜ｉ柅姘崇箖缂佹捁顔戦妴?- 娑撱儵鍣哥拹銊╁櫤闂傤噣顣借箛鍛淬€忛崷?writer 閸愬懍鎱ㄦ径宥冣偓涔玜il closed 閹存牗妲戠涵顔款唶瑜版洟妾风痪褍甯崶鐙呯礉娑撳秷鍏橀崑鍥偓姘崇箖閵?- 娴犺缍嶅锝嗘瀮娴滃鐤勯妴浣规殶閸婄鈧胶绮ㄧ拋鎭掆偓浣圭槷鏉堝啨鈧焦甯瑰鏃堝厴韫囧懘銆忛懗钘夋礀濠ь垰鍩岄惇鐔风杽閺夈儲绨妴?- 閸氬奔绔寸憴鍕灟閸欘亙绻氶悾娆庣婢跺嫭娼堟繛浣稿晸濞夋洏鈧?- 娑撳秹妾锋担搴＄秼閸撳秷宸濋柌蹇旂垼閸戝棴绱濇稉宥呮礈娑撳搫宕熸稉鈧弶銉︾爱缂傚搫銇戠亸杈儲鏉╁洦鐗宠箛鍐，缁備降鈧?
-## 1. Trigger & Input
-- 鐟欙箑褰傞弶鈥叉閿涙氨鏁ら幋鐤洣濮瑰倻鏁撻幋鎰ㄢ偓婊€绔存い鐢电剨閳ユ績鈧粌鍙曢崣闀愮妞ょ數鐒婇垾婵冣偓婊嗗亗缁併劎鐖虹粚鑸靛Г閸涘ň鈧績鈧粌鍙曢崣鍝ョ埡缁岃埖濮ら崨濞锯偓婵囧灗鏉堟挸鍙嗛懖锛勩偍閸氬秶袨/娴狅絿鐖?閸忣剙寰冮崥宥囆炵憰浣圭湴閸掑棙鐎介妴?- 韫囧懎锝炴潏鎾冲弳閿涙氨娲伴弽鍥у彆閸欏憡鍨ㄩ懖锛勩偍娴狅絿鐖滈妴浣哥閸﹁櫣鍤庣槐顫偓涓廰tayes Token閵?- 閸欘垶鈧绶崗銉窗閻劍鍩涢悧鐟板焼閸忚櫕鏁為惃鍕瑹閸旓紕鍤庨妴浣风皑娴犺翰鈧焦妞傞梻瀵哥崶閸欙絻鈧焦鐦潏鍐嚠鐠灺扳偓?- Token 閼惧嘲褰囨い鍝勭碍閿?  - `DATAYES_TOKEN` 閻滎垰顣ㄩ崣姗€鍣?  - `~/token.txt`
-  - 閼存碍婀伴崥宀€娲拌ぐ?`token.txt`
-  - `~/.datayes_token`
-  - Windows 娑撳娈?`%USERPROFILE%\token.txt`
-- 閹垫儳鍩?Token 閸氬函绱濋崥搴ｇ敾閹碘偓閺?API 鐠嬪啰鏁ら柈鎴掑▏閻?`Authorization: Bearer {DATAYES_TOKEN}`閵?- 閹碘偓閺堝鍓奸張顒冪殶閻劑鍏樻担璺ㄦ暏 `python3 -X utf8`閿涘奔绗夌憰浣规暭閻?`python` 閹?`py`閵?
-### 1.1 閼惧嘲褰囨稉搴ㄥ帳缂?Datayes Token
+# 公司一页纸深度研究报告
 
-鐠佸潡妫?https://r.datayes.com/auth/token/login 閼惧嘲褰囬崣顖涙寵闁库偓閻?API token閵?
-macOS / Linux閿?
-```bash
-export DATAYES_TOKEN='your-token'
-```
+## 1. 核心原则
 
-Windows CMD閿?
-```cmd
-set DATAYES_TOKEN=your-token
-```
+- 真实数据与可追溯来源优先。正文事实、数字、结论、比较和推演都必须能回溯到真实来源。
+- 报告文件是唯一交付物；对话只说明进度、路径和阻塞原因。
+- 不输出占位符、模板壳、内部工程话术、虚构来源或“已通过”的假结论。
+- 缺少证据时按章节降级或 fail closed，不以编造内容补齐。
+- 所有脚本使用 `python3 -X utf8`，文件统一 UTF-8（无 BOM）。
 
-Windows PowerShell閿?
-```powershell
-$env:DATAYES_TOKEN = "your-token"
-```
+## 2. 输入与市场路由
 
-### 1.2 閹笛嗩攽鏉堝湱鏅稉搴ゆ硶楠炲啿褰寸痪锔芥将
+必填：目标公司或股票代码、市场、可用的 `DATAYES_TOKEN`。公司名或市场不明确时先确认。
 
-- **缁備焦顒涚€电鐦芥笟褏缍夋い鍨偝缁?*閿涙矮瀵屽ù浣衡柤娑撳秳濞囬悽?WebSearch/WebFetch閿涙稑鍙曞鈧純鎴︺€夌悰銉ュ帠閸欘亣鍏橀柅姘崇箖瀹告煡鍘ょ純顔炬畱閺佺増宓侀柌鍥肠閹恒儱褰涙潻娑樺弳 materials/source trace 閸氬簼濞囬悽銊ｂ偓?- **閸戝繐鐨幒銏㈠偍**閿涙矮绱崗鍫滃▏閻?`references/` 娑擃厼鍑￠惌銉﹀复閸欙絼绗岄崗鍐т繆閹垳缍夐崗绛圭礉娑撳秹鍣告径宥囧濞村甯撮崣?URL 閹存牕寮弫鑸偓?- **閺勫海鈥樻潏鍦櫕**閿涙矮绗夋径鍕倞闂堢偘绗傜敮鍌欏瘜娴ｆ挶鈧線娼柌鎴ｇ€洪弻銉嚄閿涙稓娲伴弽鍥у彆閸欏憡鍨ㄧ敮鍌氭簚娑撳秵妲戠涵顔芥閸忓牏鈥樼拋銈忕幢閸欘垶鐛欑拠浣界槈閹诡喕绗夌搾铏 fail closed閵?- **UTF-8**閿涙碍澧嶉張澶婇挬閸欐壆绮烘稉鈧担璺ㄦ暏 `python3 -X utf8`閿涙矅indows 缂佸牏顏懟銉ょ矝閸戣櫣骞?GBK 娑旇京鐖滈敍灞藉帥鐏忓棛绮撶粩顖氬瀼閹诡澀璐?UTF-8閵?- **鐠侯垰绶?*閿涙俺绶崙楦跨熅瀵板嫮鏁辩拫鍐暏閺傞€涚炊閸忋儻绱濋懘姘拱娴ｈ法鏁?`pathlib` / `os.path`閿涘奔绗夊妤冣€栫紓鏍垳楠炲啿褰寸捄顖氱窞閸掑棝娈х粭锔衡偓?- **鐎涙ぞ缍?*閿涙OCX 娑擃厽鏋冪€涙ぞ缍嬫笟婵婄瀵邦喛钂嬮梿鍛寸拨閿涘矁瀚抽弬鍥х摟娴ｆ挷绶风挧?Calibri閿涙稖绻嶇悰宀€骞嗘晶鍐繁鐏忔垵鐡ф担鎾存閸忎浇顔忕€涙ぞ缍嬮弴澶稿敩閿涘奔绲炬稉宥呯繁閺€鐟板綁閺佺増宓侀崘鍛啇閵?## Execution Constraints
+- A 股：6 位纯数字代码，走 A 股双阶段流程。
+- 港股：5 位数字或 `.HK`，走港美股 writer。
+- 美股：标准 ticker 或 `.US`，走港美股 writer。
 
-- Do not use WebSearch or WebFetch for report facts. Use the Datayes interfaces declared in this skill and the collected source payloads only.
-- Resolve API specifications through `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api`; do not hardcode downstream business URLs.
-- Reuse the collected JSON in the writer. Do not repeat collection requests merely to fill a missing optional section.
-- Do not generate a report for non-financial requests or substitute non-Datayes sources for an unavailable Datayes source.
-## 2. Market Routing
-- 閸忓牊瀵滄潏鎾冲弳閻楃懓绶涢崚銈嗘焽鐢倸婧€閿涘苯鍟€鏉╂稑鍙嗙€电懓绨茬€涙劖绁︾粙瀣ㄢ偓?- A 閼猜ょ槕閸掝偓绱?  - 6 娴ｅ秶鍑介弫鏉跨摟娴狅絿鐖?  - `stock_search` 鏉╂柨娲栭惃?A 閼诧紕绮ㄩ弸?  - 娑擃厽鏋冮崗顒€寰冮崥宥囩病 `stock_search` 鐟欙絾鐎介崥搴ゆ儰閸?A 閼?- 濞擃垵鍋傜拠鍡楀焼閿?  - 鐢?`.HK` / `.hk` 閸氬海绱戦惃鍕敩閻?  - 4-5 娴ｅ秶鍑介弫鏉跨摟濞擃垵鍋傛禒锝囩垳閿涘矁瀚㈢€涙ê婀褌绠熻箛鍛淬€忛崗鍫⑩€樼拋?  - 娑擃厽鏋冮幋鏍閺傚洤鍙曢崣绋挎倳缂?`stock_search` 鐟欙絾鐎介崥搴ゆ儰閸掔増鑵愰懖?- 缂囧氦鍋傜拠鍡楀焼閿?  - 缁绢垵瀚抽弬?ticker
-  - 鐢?`.O` / `.N` / `.US` 閸氬海绱戦惃鍕敩閻?  - 娑擃厽鏋冮幋鏍閺傚洤鍙曢崣绋挎倳缂?`stock_search` 鐟欙絾鐎介崥搴ゆ儰閸掓壆绶ㄩ懖?- `stock_search` 閸欘亞鏁ゆ禍搴″彆閸欑鎮曢敍灞肩瑝閻劋绨禒锝囩垳閹兼粎鍌ㄩ妴?- `entity_id` 閺勵垰鎮楃紒顓犵波閺嬪嫬瀵查幒銉ュ經閻ㄥ嫬鏁稉鈧崗銉ュ棘娴狅絿鐖滈敍?  - A 閼测€插▏閻?6 娴ｅ秶鍑介弫鏉跨摟 `entity_id`
-  - 濞擃垵鍋傞崪宀€绶ㄩ懖鈥插▏閻劌绔堕崷鍝勵嚠鎼存梻娈?`entity_id` / ticker 瑜般垹绱?- 婵″倹鐏夌敮鍌氭簚娴犲秶鍔уΟ锛勭ˇ閿涘苯鍘涢梻顔炬暏閹撮鈥樼拋銈嗘Ц A 閼猜扳偓浣硅厫閼猜ょ箷閺勵垳绶ㄩ懖鈽呯礉閸愬秶鎴风紒顓溾偓?
-## 3. A-Share Pipeline
+Token 查找顺序：`DATAYES_TOKEN` 环境变量、`~/token.txt`、脚本同目录 `token.txt`、`~/.datayes_token`、Windows `%USERPROFILE%\token.txt`。所有 API 请求使用 `Authorization: Bearer {DATAYES_TOKEN}`。
 
-### 3.1 Entry Rules
-- A 閼测€插瘜鐠侯垰绶為弰?`a_share_fetch_data.py` 閳?`a_share_report_writer.py`閵?- 韫囧懘銆忛崗鍫モ偓姘崇箖娑擃厼褰寸純鎴濆彠 `https://gw.datayes.com/aladdin_llm_mgmt/web/mgr/api` 閸欐垹骞?API URL 閸滃苯寮弫甯礉娑撳秴鍘戠拋姝屽殰瀹歌鲸瀚鹃幒銉ょ瑹閸?API URL閵?- 濮ｅ繋閲滄稉姘閹恒儱褰涢崣顏呭复閸欐鍘撴穱鈩冧紖閹恒儱褰涙潻鏂挎礀閻ㄥ嫯鐨熼悽?URL閿涙稑顩ч弸婊冨帗娣団剝浼呴弻銉ょ瑝閸掔増鍨ㄩ幒銉ュ經婢惰精瑙﹂敍灞芥皑鐠哄疇绻冪拠銉﹀复閸欙綇绱濇稉宥堫洣閼奉亣顢戦柌宥堢槸閺嬪嫰鈧?URL閵?- 閺佺増宓侀懢宄板絿娴兼ê鍘涚痪褍娴愮€规矮璐熼敍?  1. 缂佹挻鐎崠鏍ㄥ复閸?  2. Materials V2
-  3. 閻梹濮ら崗銊︽瀮
-  4. 閻梹濮ら崶鎹愩€冩稉搴ゃ€冮弽鑹邦嚛閺?  5. 閸忣剙鎲￠妴浣洪偗鐟曚降鈧浇鐨熼惍鏂烩偓浣稿彆閸欏憡濮棁?  6. 閸忣剙绱戠純鎴︺€夌悰銉ュ帠
-- 娑撳秴绶遍崶鐘辫礋閸撳秳绔寸痪褎鐥呴張澶嬫殶閹诡喖姘ㄩ惄瀛樺复缂佹挻娼敍灞界箑妞ゅ鈧劗楠囬梽宥囬獓閸掔増娓舵担搴濈喘閸忓牏楠囬妴?
-### 3.2 Fetch and Write
-- 閺堫剝濡崨鎴掓姢娴犲懘妾?A 閼测槄绱卞〒顖濆亗/缂囧氦鍋傛稉宥堫洣婵傛鏁ゆ潻娆撳櫡閻?`--data` / `--output` / `--docx` 閸欏倹鏆熼妴?- 鏉╂劘顢戦弫鐗堝祦闁插洭娉﹂懘姘拱閺冭绱漙entity_id` 閸欘亜鍘戠拋闀愬▏閻?6 娴ｅ秶鍑介弫鏉跨摟閿涘奔绗夐崝?`.SH` / `.SZ`閿涘奔绡冩稉宥勫▏閻劌鍙炬禒鏍ф惙鎼存柨鐡у▓鍨禌娴狅絻鈧?
+## 3. A 股流程
+
+### 3.1 采集
+
+先通过 Datayes 元信息网关发现接口 URL 与参数，不能自行拼接业务接口。执行：
+
 ```bash
 python3 -X utf8 <skill_root>/scripts/a_share_fetch_data.py \
-  --ticker "{6娴ｅ秷鍋傜粊銊ゅ敩閻簢" \
+  --ticker "{6位股票代码}" \
   --token "{DATAYES_TOKEN}" \
-  --output "{鏉堟挸鍤惄顔肩秿}/{閼诧紕銈ㄦ禒锝囩垳}_data.json"
+  --output "{输出目录}/{股票代码}_data.json"
 ```
 
-- 闁插洭娉︾€瑰本鍨氶崥搴ｆ纯閹恒儴绻橀崗?`a_share_report_writer.py`閵?
+采集优先级：结构化接口、Materials V2、研报全文、研报图表/表格、公告/纪要/调研/公司披露。单个接口失败不阻塞；`ticker_period` 返回 `data: null` 时使用年度口径，不作为失败接口。
+
+### 3.2 写作与导出
+
 ```bash
 python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
-  --data "{鏉堟挸鍤惄顔肩秿}/{閼诧紕銈ㄦ禒锝囩垳}_data.json" \
-  --output "{鏉堟挸鍤惄顔肩秿}/{閸忣剙寰冮崥宄块敍鍧介懖锛勩偍娴狅絿鐖渳閿涘鍙曢崣闀愮妞ょ數鐒?md" \
-  --docx "{鏉堟挸鍤惄顔肩秿}/{閸忣剙寰冮崥宄块敍鍧介懖锛勩偍娴狅絿鐖渳閿涘鍙曢崣闀愮妞ょ數鐒?docx"
+  --data "{输出目录}/{股票代码}_data.json" \
+  --output "{输出目录}/{公司名}（{股票代码}）公司一页纸.md" \
+  --docx "{输出目录}/{公司名}（{股票代码}）公司一页纸.docx"
 ```
 
-- `a_share_report_writer.py` 鐠愮喕鐭楅悽鐔稿灇濮濓絾鏋冮妴浣藉殰閸斻劋鎱ㄦ径宥呮嫲 DOCX 鐎电厧鍤敍娑楃瑝鐟曚焦濡哥€电鐦界粣妤€褰涜ぐ鎾村灇濮濓絾鏋冩潏鎾冲毉閸栨亽鈧?
-### 3.3 A-Share Adapters
-- 閻楄鐣╃悰灞肩瑹韫囧懘銆忔担璺ㄦ暏閸氬嫯鍤滈柅鍌炲帳閻ㄥ嫭瀵氶弽鍥︾秼缁紮绱濇稉宥堫洣瀵缚顢戞總妤冩暏闁氨鏁ゅ☉鍫ｅ瀭閸濅焦膩閺夎￥鈧?- 娣囨繈娅撻妴渚€鎽辩悰灞烩偓浣侯潠閹垛偓閵嗕礁閽╅崣鑸偓浣界カ濠ф劕鎳嗛張鐔粹偓涓稥ITs閵嗕胶鏁撻悧鈺佸鞍閼筋垳鐡戠悰灞肩瑹閻ㄥ嫭瀵氶弽鍥х安娴犮儱顕惔鏂垮棘閼板啯鏋冩禒鏈佃礋閸戝棎鈧?- 閺夋劖鏋℃稉宥堝喕閺冭泛鍘戠拋绋垮櫤鐏忔垼銆冮弽鍏兼殶闁插骏绱濇担鍡曠瑝瀵版鏁ゆ稉宥夆偓鍌滄暏閹稿洦鐖ｇ涵顒€锝為妴?
-### 3.4 A-Share Fallback
-- 閼汇儴鍤滈崝?writer 婢惰精瑙﹂敍灞惧瘻 `references/a-share-report-structure.md` 閹靛浼愮紒鍕矏閸愬懎顔愰敍灞借嫙閹?`references/a-share-quality-checklist.md` 閼奉亝顥呴妴?- 閹靛浼愰梽宥囬獓娑撳秶鐡戞禍搴㈡杹鐎硅姤鐖ｉ崙鍡礉閹碘偓閺堝宸濋柌蹇涙，缁備椒绮涢悞鑸垫箒閺佸牄鈧?
-### 3.5 A-Share Risk Guard
-- 鎼?0 妞嬪酣娅撻幓鎰仛閸ュ搫鐣炬潏鎾冲毉 3-4 閺夆槄绱濆В蹇旀蒋娴ｈ法鏁?`閳?**閸忣剙寰冮悧瑙勬箒妞嬪酣娅撻弽鍥暯**閿涙俺袝閸欐垶娼禒?瑜板崬鎼穂N]`閿涘苯绻€妞ょ粯婀侀惇鐔风杽鐞涘苯鍞村鏇犳暏閵?- 妞嬪酣娅撴稉濠佺瑓閺傚洣绮犻惄顔界垼閸忣剙寰冮惍鏃€濮ら惃?`title/detail_text/abstract/text`閵嗕椒绱扮拋顔鹃偗鐟曚降鈧焦婧€閺嬪嫯鐨熼惍鏂垮挤閺堚偓閺?`fdmtNew` 鐠愩垹濮熼弫鐗堝祦閺嬪嫬缂撻敍娑楃瑝瀵版顕伴崣鏍︾瑝鐎涙ê婀惃?`content/summary` 鐎涙顔岄敍灞肩瘍娑撳秴绶辨笟婵婄楠炴儼顢戠粩鐘哄Ν鐏忔碍婀悽鐔稿灇閻?`catalyst_table_ctx`閵?- 閸氬骸顦╅悶鍡欑埠娑撯偓鐠囧棗鍩?`閳ヮ晢閵嗕梗-`閵嗕梗*` 娑撳顫掓い鍦窗缁楋箑褰块敍娑樻値鐟欏嫮娈?`閳ヮ晢 鏉堟挸鍤稉宥呯繁閸愬秷顫︾拠顖氬灲娑?0 閺壜扳偓?- LLM 鏉堟挸鍤稉宥呮値閺嶅吋妞傞敍灞藉涧閸忎浇顔忔禒搴＄敨瀵洜鏁ら惃鍕窗閺嶅洤鍙曢崣鎼侇棑闂勨晞鐦夐幑顕€鍣稿鐚寸幢缁備焦顒涙担璺ㄦ暏閳ユ粍鏆熼幑顔惧繁婢堕亶顥撻梽鈹锯偓婵冣偓婊勀侀崹瀣╃瑝绾喖鐣鹃幀褔顥撻梽鈹锯偓婵冣偓婊€绗夐弸鍕灇閹舵洝绁楦款唴閳ユ繄鐡戦棃娆愨偓浣鼓侀弶鍨櫨閺佽埇鈧?- 闁插秴缂撻崥搴濈矝娑撳秷鍐?3 閺壜扳偓浣哥摠閸︺劍妫ゅ鏇犳暏閺夛紕娲伴幋鏍ф嚒娑擃參鈧氨鏁ゅΟ鈩冩緲閺冭绱濋張鈧紒鍫ｅ殰濡偓韫囧懘銆?fail closed閿涘奔绗夋潏鎾冲毉閸欘垰褰傜敮鍐╁Г閸涘鈧?
-## 4. HK/US Pipeline
+writer 负责正文生成、来源绑定、结构修复、质量门禁和 DOCX 导出。不要将聊天窗口作为报告正文输出。
 
-### 4.1 Entry Rules
-- 濞擃垳绶ㄩ懖鈥插瘜鐠侯垰绶為弰顖滄纯閹恒儴绻嶇悰?`hk_us_report_writer.py`閿涙硤riter 閸愬懘鍎存导姘崇殶閻?`fetch_materials.py` 闁插洭娉﹂弶鎰灐閵嗕焦鐎鐑樺嚱濠ф劕鑻熺€电厧鍤幎銉ユ啞閵?- 濮濓絽鐖堕悽鐔稿灇閸欘亣鍏樻担璺ㄦ暏娑撳娼版潻娆庣缁夊秴鎳℃禒銈呰埌閹緤绱濇稉宥堫洣婢跺秴鍩?A 閼?writer 閻?`--data` / `--output` / `--docx` 閸欏倹鏆熼敍?
+### 3.3 A 股同业比较
+
+同业表只使用经股票检索精确验证的直接可比上市公司；客户、供应商、合作方、投资方和未上市主体不能作为 peer。
+
+固定 schema 为 9 列：`竞争关系 / 公司（代码） / 市场 / 可比业务 / 行业地位 / 相关业务进展 / 商业模式 / 目标客户群体 / 核心产品`。不得出现“市值”列。
+
+- 标的公司必须是第一行且只出现一次；至少需要两家有效 peer，否则省略 §8.2。
+- 除“相关业务进展”外，允许写简洁定性画像，无需逐格引用；不能编造精确财务数字、排名或客户名单。
+- “相关业务进展”是唯一要求引用的列：标的行使用标的自身材料，peer 行使用其自身 `getMaterialsV2` 定向材料。
+- 每格只保留一条最新经营事件，约 80 个汉字以内；优先新品、产品结构、渠道、价格、产能、组织改革和市占率。财务数据仅可作背景，不得成为主要内容。
+- 标的行没有可审计进展时，整体删除“相关业务进展”列，保留其他研究维度。
+
+### 3.4 A 股估值与情景推演
+
+§9.3 由 writer 基于一致预期 EPS × 对应 PE 的统一价格锚确定性生成；估值排名接口仅用于同口径横向比较。接口口径与统一锚偏离明显时，不能将其视为当前定价或情景目标价依据。
+
+§9.4 只使用来源绑定的经营事实卡：
+
+- 至少两项不同经营维度的当前基准值，必须带真实 `[N]` 引用。
+- 营收、净利润、EPS 和券商预测不是核心变量；不得编造销量、价格、收入、利润、EPS、PE 或股价数字。
+- 三档只描述相对当前基准的经营方向及收入、利润、现金流传导；估值含义只写相对统一锚的敏感性，并明确“不提供目标价”。
+- 模型输出出现结构或来源问题时，writer 用同一批事实卡确定性重建；仍不满足两项来源变量时才省略 §9.4。
+
+## 4. 港股和美股流程
+
+港美股由单一 writer 负责采集、来源索引、写作和导出：
+
 ```bash
 python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
   --ticker "{ticker}" \
   --market "{HK|US}" \
-  --company-name "{閸忣剙寰冮崥宄? \
-  --output-dir "{鏉堟挸鍤惄顔肩秿}"
+  --company-name "{公司名}" \
+  --output-dir "{输出目录}"
 ```
 
-- `fetch_materials.py` 閸欘亙缍旀稉鍝勫礋閻欘剚甯撻弻銉︽綏閺傛瑩鍣伴梿鍡樻娴ｈ法鏁ら敍娑欘劀鐢摜鏁撻幋鎰瑝鐟曚礁鍘涢幍瀣З闁插洭娉﹂崥搴″晙閹跺﹥娼楅弬?JSON 娴肩姷绮?writer閵?- 閸忋儱寮懛鍐茬毌閸栧懎鎯堥敍?  - `market=HK` 閹?`market=US`
-  - 閸忣剙寰冮崥宥嗗灗 ticker
-- 濞擃垵鍋?ticker 娴?API 閺冩湹濞囬悽?5 娴ｅ秶鍑介弫鏉跨摟閿涘奔绗夌敮?`.HK`閵?- 缂囧氦鍋?ticker 娴ｈ法鏁ら弽鍥у櫙 ticker閿涘奔绶ユ俊?`NVDA`閵嗕梗AAPL`閵?- 濞擃垳绶ㄩ懖锛勭波閺嬪嫬瀵查懗钘夊娴犲秶鍔ф禒?`stock_search` 閸滃矁袙閺嬫劕鎮楅惃?`entity_id` 娑撳搫鍣妴?
-### 4.2 Materials Collection
-- 濞擃垳绶ㄩ懖鈩冩綏閺傛瑩鍣伴梿鍡欐暠 `hk_us_report_writer.py` 閼奉亜濮╃憴锕€褰傞敍灞肩喘閸忓牅濞囬悽銊ㄥ壖閺堫剝鍤滈崝銊ㄥ箯閸?`DATAYES_TOKEN`閿涘奔绗夌憰渚€顤傛径鏍洣濮瑰倻鏁ら幋閿嬪閸斻劋绱?token 閸欏倹鏆熼妴?- 鏉堟挸鍤惄顔肩秿鎼存柧璐熼崣顖氬晸鐠侯垰绶為敍宀勪缉閸忓秴鍟撻崚鏉款啇閺勬捁顫?sandbox 閹凤附鍩呴惃鍕秴缂冾喓鈧?- writer 娴兼艾婀潏鎾冲毉閻╊喖缍嶉崘娆忓弳 `{ticker}_materials.json`閵嗕梗source_trace.json`閵嗕梗id_audit.json`閵嗕梗generation_status.json`閵嗕梗report.md` 閸滃本娓剁紒?DOCX閵?- 閼汇儵娓剁憰浣瑰笓閺屻儵鍣伴梿鍡涙６妫版﹫绱濋幍宥呭礋閻欘剝绻嶇悰?`fetch_materials.py`閿涙稒甯撻弻銉ョ暚閹存劕鎮楁禒宥呮礀閸?鎼?.1 閻?writer 閸楁洖鍙嗛崣锝呮嚒娴犮倝鍣搁弬鎵晸閹存劑鈧?
-### 4.3 Source Trace and Citation
-- 閸愭瑦濮ら崨濠傚韫囧懘銆忛崗鍫滅矤 materials JSON 瀵よ櫣鐝?`source_id -> {title, organization, publishTime, type, url, text}` 閻ㄥ嫮鍌ㄥ鏇樷偓?- 濮濓絾鏋冮柌宀€娈戝В蹇庨嚋 `[N]` 閸欘亣鍏橀弶銉ㄥ殰鏉╂瑤閲滅槐銏犵穿閹存牜绮ㄩ弸鍕閹恒儱褰涢弰鐘茬殸閿涘奔绗夐崗浣筋啅閼奉亜顤冮妴浣哄濞村鍨ㄦ径宥囨暏娑撳秴鐡ㄩ崷銊ф畱缂傛牕褰块妴?- 閸忣剙鎲￠妴浣虹埡閹躲儯鈧胶閭憰浣告嫲閸忣剙绱戠純鎴︺€夐柈钘夌箑妞ゆ槒绻橀崗?`materials JSON` 閹存牕鍙?`external_sources`閿涘瞼鍔ч崥搴㈠閼冲€燁潶瀵洜鏁ら妴?- 閸欏倽鈧啳绁弬娆忓帗閺佺増宓佽箛鍛淬€忛柅鎰摟婢跺秴鍩楅敍灞肩瑝閼宠姤鍩呴弬顓熺垼妫版﹫绱濇稉宥堝厴閸掔姴澧犻崥搴ｇ磻閿涘奔绗夐懗鑺ュΩ閺夈儲绨猾璇茬€烽幑銏″灇閸掝偆娈戦張鐑樼€崥宥冣偓?- 濮濓絾鏋冩稉顓犳畱娴滃娆㈤妴浣瑰瘹閺嶅洤鎷扮紒鎾诡啈闁棄绻€妞ょ粯鐖ｅ▔銊ョ潣閹嶇窗`actual`閵嗕梗forecast`閵嗕梗guidance`閵嗕梗estimate`閵?- 娑撯偓閺冿箑甯弬鍥у瘶閸氼偀鈧粓顣╃拋?/ 妫板嫭婀?/ 閺堝婀?/ 鐏?/ 閻╊喗鐖?/ forecast閳ユ繄鐡戠拠顓濈疅閿涘本顒滈弬鍥х箑妞よ绻氶悾娆擃暕濞村鐫橀幀褝绱濇稉宥堝厴閸愭瑦鍨氬鎻掑絺閻㈢喍绨ㄧ€圭偑鈧?
-### 4.4 HK/US Specific Rules
-- HK 鐠愩垹濮熼弫鐗堝祦娴兼ê鍘涙担璺ㄦ暏 PIT 娑撳銆冪紒鎾寸€崠鏍ㄥ复閸欙綀藟姒绘劑鈧?- US 閹躲儱鎲¤箛鍛淬€忛弰鎯х础閸栧搫鍨庨敍?  - GAAP / non-GAAP
-  - segment actual
-  - company guidance
-  - forecast / estimate
-  - fiscal year 娑?calendar year
-  - 娴滅儤鐨敮?/ 缂囧骸鍘撶敮浣侯潚
-  - 閺咁噣鈧俺鍋?/ ADS 閸欙絽绶?- US 閼汇儳宸辩亸鎴犵波閺嬪嫬瀵叉稉澶庛€冮敍宀冪槚閺傤厽鏋冩禒璺哄涧閼冲€燁唶娑?`skipped_with_reason` 閹?`N/A`閿涘奔绗夐懗钘夊晸閹存劏鈧粍顥呴弻銉┾偓姘崇箖閳ユ繐绱遍幎銉ユ啞濮濓絾鏋冮崣顏囧厴娴犲海鐖洪幎?鐠愩垺濮ら悙纭呯槑閹惰棄褰囩拹銏犲閺佺増宓侀敍灞肩瑝閻?`N/A` 婵夘偅顒滈弬鍥モ偓?- 濞擃垳绶ㄩ懖锛勫濞堝﹨顢戞稉姘箑妞よ濞囬悽銊┾偓鍌炲帳閻ㄥ嫭瀵氶弽鍥︾秼缁紮绱濇稉宥呯繁婵傛鏁ゆ稉宥夆偓鍌滄暏閻ㄥ嫰鈧氨鏁ゅ☉鍫ｅ瀭濡剝婢橀妴?
-### 4.5 HK/US Writer
-- `hk_us_report_writer.py` 閺勵垶顩婚柅澶庡殰閸?writer閿涘矁绀嬬拹锝忕窗
-  1. 闁插洭娉﹂弶鎰灐
-  2. 閻㈢喐鍨?`source_trace.json` / `id_audit.json`
-  3. 閻㈢喐鍨氱粩鐘哄Ν濮濓絾鏋冮敍灞借嫙鐎?JSON閵嗕礁绱╅悽銊ｂ偓浣姐€冮弽鑹邦攽閺佹澘鎷扮粩鐘哄Ν鐎瑰本鏆ｉ幀褍浠涢崘鍛枂閺嶏繝鐛?  4. 閹稿娓剁紒鍫熸箒閺佸牏鐝烽懞鍌濈箾缂侇參鍣哥紓鏍у娇閿涘苯鍟撻崗?`section_number_mapping`
-  5. 閻㈢喐鍨?MD 閸氬海娲块幒銉ㄦ祮 DOCX閿涘牊鑵愮紘搴ゅ亗瀹歌尙些闂?post-repair 閸?checker 闂冪粯鏌囬敍?- 娑撳秷顩︽担璺ㄦ暏閺冄冪础 `--data` / `--output` / `--docx` 閸欏倹鏆熼敍娑滅箹娴滄稒妲?A 閼?writer 閹存牗妫悧鍫熸拱閹恒儱褰涢敍灞界秼閸撳秵鑵愮紘搴ゅ亗 writer 娑撳秵甯撮崣妞尖偓?- 閺?LLM API Key 閺冩儼鍤滈崝銊╂缁狙傝礋閺夋劖鏋￠惄鏉戝晸濡€崇础閿涘奔绮犻柌鍥肠閺夋劖鏋￠幍瀣З閹疯壈顥婇崥鍕彿閼哄倸鑻熼弽鍥ㄦ暈瀵洜鏁ら弶銉︾爱閵?- 鎼? 閹舵洝绁柅鏄忕帆閿涙氨鐓張鐔剁瑢闂€鎸庢埂楠炴儼顢戦悽鐔稿灇閿涙稐鎹㈡稉鈧笟褍銇戠拹銉︽娴ｈ法鏁ゆ稉鈧▎鈥虫値楠炲墎鐓柌宥堢槸閿涘奔绮涙稉宥呮値閺嶇厧鍨弫瀵哥彿 fail closed閵?- 鎼? 閸岊剙瀵叉禍瀣╂閿涙瓈LM 缁屽搫鎼锋惔鏂烩偓浣界Т閺冭埖鍨?schema 婢惰精瑙﹂弮璁圭礉閸忎浇顔忔禒搴ｆ窗閺嶅洤鍙曢崣鍝ョ埡閹躲儲鎲崇憰浣衡€樼€规碍鈧呮晸閹?4-7 鐞?source-backed 閸岊剙瀵茬悰顭掔幢閺冨爼妫挎潪鏉戠安閸氬本妞傜憰鍡欐磰鏉╂垶婀″鎻掑絺閻㈢喖鐛欑拠浣风皑娴犺泛鎷伴張顏呮降閸欘垵绐￠煪顏勫亾閸栨牭绱濇稉宥堝厴閹跺﹤鍩滈崯鍡氱槑缁?閻╊喗鐖ｆ禒鐤殶閺佹潙缍嬮崒顒€瀵查妴?- 鎼?.2 閸掑棔绗熼崝陇銆冮悳甯窗娴兼ê鍘涙潏鎾冲毉鏉╂垳绗侀獮鏉戝嚒鐎瑰本鍨氶獮鏉戝 actual 閸掑棔绗熼崝鈩冩暪閸?閸楃姵鐦?濮ｆ稑鍩勯悳鍥风幢濞屸剝婀侀張鈧潻鎴滅楠炲瓨鏁归崗銉﹀灗閸楃姵鐦弮璁圭礉娑撳秶鈥栭柅鐘恒€冮弽纭风礉閺€閫涜礋 `鎼?.2 娑撴艾濮熷ǎ鍗炲`閿涘瞼鏁ら崚鍡欏仯閸欐瑨鍫敍灞藉瀻閻愮懓鐨弽鍥暯閸旂姷鐭栭妴?- 鎼? 娴溠囨敘闁惧彞绗岄悽鐔糕偓渚婄窗閻╊喗鐖ｆ潏鎾冲毉閼峰啿鐨?4 鐞涘矉绱辩悰銉ュ帠鐠嬪啰鏁ら張鈧径姘乘?1 鐞涘矉绱濇稉宥堝厴閻劎鈹栫悰銉ュ帠鐟曞棛娲婃稉鏄忕殶閻劌鎮庨弽鑲╃波閺嬫粣绱遍張鈧紒?3 鐞涘苯褰叉担婊€璐?`partial_json` 鏉堟挸鍤敍灞界毌娴?3 鐞涘本鍨ㄧ拠浣瑰祦娑撳秷鍐婚崚?fail closed閿涘奔绗夐崑姘垛偓姘辨暏绾喖鐣鹃幀褑藟鐞涘被鈧?- 鎼? 鐢倸婧€閸忚櫕鏁?鐠嬪啰鐖烘径褏缈伴敍娆絊ON 鐟欙絾鐎芥径杈Е閺冭泛绻€妞?retry閿涙稒鑵愰懖陇鐨熼惍鏃囶唴妫版ê鍘戠拋鍛婂焻閺傤厺璐?3-4 娑擃亷绱濋崥鍫熺《閸氬氦绶崙鎭掆偓?- 鎼? 鐞涘奔绗熺€佃鐦敍姝€LM 鏉╂柨娲栭崥搴＄箑妞ょ粯鐗庢宀€娲伴弽鍥у彆閸欑褰ч崙铏瑰箛娑撯偓濞嗏槄绱濇稉鏃囧殾鐏忔垵瀵橀崥?3 鐎瑰爼娼惄顔界垼 peer閿涙埠eer 鐞涘苯绻€妞ょ粯婀佸鏇犳暏閿涘奔绗栧鏇犳暏鐠囦焦宓侀棁鈧崠鍛儓鐠?peer 閸忣剙寰冮崥宥嗗灗 ticker閿涙稐绗夐崘宥勫▏閻?peer context/raw snippet 閸忔粌绨抽敍宀冪槈閹诡喕绗夌搾鍐插灟 fail closed閵?- 鎼?0 鐢倸婧€閸掑棙顒犻敍姝歴ection_10_a` / `section_10_b` 楠炴儼顢戦悽鐔稿灇楠炶泛鎮庨獮?3 鐞涘矉绱遍崥鍫濊嫙婢惰精瑙﹂弮鎯拌泲娑撯偓濞?compact short retry閿涘苯鍘戠拋?2 鐞?`partial_json_short_retry`閿涙稐绗夐崘宥勫▏閻劎鈥樼€规碍鈧冨斧閺傚洦鎲宠ぐ鏇炲幑鎼存洏鈧?- 鎼?1 娴兼澘鈧棿绗屾０鍕ゴ閿涙艾銇囧▓鍏稿強閸?LLM 鐠嬪啰鏁ら崣顏勪粵 1 濞嗏€插瘜 attempt閿涙矖EMPTY_TEXT_RESPONSE` / `NETWORK_TEMPORARY` 閸欘垳鏁?`_call_llm` 鐟欙箑褰傛潪濠氬櫤 compact retry閿涙怠?1.1 閻╁牆鍩勬０鍕ゴ鐞涖劌绻€妞よ鍨归梽銈嗗閺堝鏆熼幑顔款攽閸у洣璐熺粚?閻瓨濮岄崣椋庢畱妫板嫭绁撮獮缈犲敜閸掓绱辨径杈Е閸氬孩瀵滈弮銏℃箒鐟欏嫬鍨惇浣烘殣 鎼?1 楠炲爼鍣哥紓鏍у娇閵?- 閹便垻鐝烽懞鍌濃偓妤佹閹貉冨煑閿涙碍鑵愰懖?鎼?閵嗕籍?0閵嗕籍?1 閸?鎼?1 閸撳秶鐤?target-price basis 娑撳秴浠?LLM repair 閸欑姴濮為敍娑樺礋濞?LLM 鐠嬪啰鏁ゆ担璺ㄦ暏 `HKUS_LLM_SLOW_SECTION_TIMEOUT_SECONDS` 绾剟顣╃粻妤嬬礄姒涙顓?90 缁夋帪绱濋張鈧?120 缁夋帪绱氶敍灞?0 娑撱倓閲?split part 娣囨繃瀵旈獮鎯邦攽閵嗗倽浜ら柌蹇涘櫢鐠囨洜鏁?`HKUS_LLM_LIGHT_RETRY` 閹貉冨煑閿涘矂绮拋銈呯磻閸氼垬鈧?
-### 4.6 HK Financials
-- 濞擃垵鍋?PIT 娑撳銆冪悰銉╃秷閻?`hk_financials.py` 鐠愮喕鐭楅妴?- 閸欘亙绻氶悾娆忓讲妤犲矁鐦夌€涙顔岄敍宀€宸辨径閬嶃€嶆穱婵堟殌 `None`閿涘奔绗夌憰浣衡€栭柅鐘虫殶閵?
-## 5. Quality Gates
+港股 ticker 使用 5 位纯数字，美股使用标准 ticker。美国公司必须明确区分 GAAP/non-GAAP、实际/指引/预测、财年/自然年、币种和普通股/ADS 口径。
 
-### 5.1 Blocking Levels
-- 鐠愩劍顥呴懘姘拱閿涘潏hecker閿涘鍑＄粔濠氭珟閿涘奔绗夐崘宥嗘箒 P0/P1/P2 闂冪粯鏌囬妴?- 閻㈢喐鍨?MD 閸氬海娲块幒銉ㄧ殶閻?`build_docx.py` 鏉?Word閿涘奔绗夐崑姘冲窛濡偓鏉╁洦鎶ら妴?
-### 5.2 Required Content
-- 閹碘偓閺堝绻€婵夘偆鐝烽懞鍌氱箑妞ゅ娼粚鎭掆偓?- 娑撳秷鍏樻潏鎾冲毉濡剝婢樻竟鐐解偓浣稿窗娴ｅ秶顑侀妴涔/A` 婢堆囨桨缁夘垰鍘栭弫鑸偓浣规￥閺夈儲绨粚楦裤€冮妴?
-### 5.3 Citation Closure
-- 濮濓絾鏋冩稉顓犳畱閸忔娊鏁禍瀣杽閵嗕浇鍌ㄩ崝鈩冩殶閹诡喓鈧胶绮￠拃銉﹀瘹閺嶅洭鍏樻惔鏂跨敨鐞涘苯鍞?`[N]` 瀵洜鏁ら妴?- 閸欏倽鈧啳绁弬娆庣瑢濮濓絾鏋冩穱婵囧瘮閸欏苯鎮滈梻顓犲箚閵?
-### 5.4 Reference Metadata
-- 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
-### 5.5 Actual / Forecast / Guidance / Estimate
-- `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
-### v1.2.32 Prompt-led titles and complete peer schema
+## 5. 引用与质量门禁
 
-- Title conclusion keeps structural quality checks but no longer rejects a complete investment viewpoint solely for missing a fixed judgment keyword.
-- Peer comparison preserves its ten research dimensions through Markdown normalization. Only peer-specific business progress needs a source; other columns may use concise qualitative company profiles.
-- Peer progress prompts prioritize business events and allow financial figures only as supporting context.
+- 正文 `[N]` 只能来自采集到的结构化接口或材料索引，参考资料与正文必须双向闭环。
+- 预测、指引和估算必须分别标注 `forecast`、`guidance`、`estimate`，不能写成实际事实。
+- 数字引用要与来源字段或原文相容；来源不支持时删除该事实或该单元格。
+- 空章节、空表、残缺情景表和孤儿表格行不得进入 MD 或 DOCX。
+- 风险提示只使用目标公司的真实材料，避免通用模板化风险。
 
-### v1.2.31 Unified valuation anchor and evidence-safe scenarios
+## 6. 输出要求
 
-- Build one consensus-implied price anchor from same-date forecast EPS/PE rows and use it across §9.3 and §9.4.
-- If the valuation-rank PE implies a price more than 15% away from that anchor, show it only as an interface-relative peer rank; do not treat it as current pricing, PEG input or scenario target-price basis.
-- Generate §9.3 deterministically. Generate §9.4 only from source-bound operating fact cards; without three independently sourced bull/base/bear valuation inputs, keep valuation implications qualitative and explicitly omit target prices.
-- Accept 2-5 source-backed company risks. Competition, demand and macro risks are permitted when the cited evidence explicitly links them to the company; unsupported generic boilerplate remains forbidden.
-### v1.2.29 Source binding and optional-section integrity
+最终交付必须包含 MD 和 DOCX。DOCX 采用纵向 A4、微软雅黑中文字体、Calibri 英文字体、无目录页，并保持表头、表格网格和必要的纵向合并。
 
-- Bind each research report citation to its own `reportId` body only. A missing body is not substituted with another report's body and cannot support a generated claim.
-- Keep §8.1 independent from §8.2. Fewer than two validated peers omits only the peer table; an independently supported industry section remains eligible for delivery.
-- Treat §9.4 as optional and fail closed. Do not regenerate its table after provenance filtering. If its header, table header, or three scenario rows are incomplete, remove only §9.4 and retain valid §9.1–§9.3.
-- Run citation cleanup and Markdown-table normalization once at the end of the A-share pipeline. No scenario table may appear outside `## 9`; a structural violation blocks or removes the optional fragment before DOCX conversion.
-### v1.2.30 Competition-context peer extraction
+## 7. 参考文件
 
-- Besides explicit comparable-company lists, allow a two-or-more-company enumeration introduced by a strong displacement or substitution verb. Do not accept an isolated company mention or compliance disclosure as a peer candidate.
-- Preserve the existing gate: each extracted name must still resolve through exact normalized `stock_search` name matching before material retrieval or §8.2 use.
+按需读取以下文件，不重复在本文件维护细节：
 
-### v1.2.28 Peer-candidate relaxation with exact-name verification
-
-- In a comparable-company context, plain company-name phrases (e.g. after 如/包括/对标 lead-ins) are also collected as peer candidates in addition to `company name (six-digit code)` pairs; a candidate without a code must still pass an exact `stock_search` name match after suffix normalization, otherwise it is dropped before §8.2.
-- Fetch peer materials from the validated peer list only; passing raw unvalidated candidates yields no materials and must not produce unbound progress citations.
-- Keep the fail-closed rule: fewer than two validated peers → omit §8.2; a peer without qualified progress material keeps that cell `—`.
-
-### v1.2.27 A-share peer-comparison gate
-
-- Extract peer candidates only from a report's explicit `company name (six-digit code)` pair in a comparable-company context; validate the exact code before use.
-- Retrieve `getMaterialsV2` independently for each validated peer in parallel and retain only source text mentioning that peer name or code.
-- In §8.2, only “related business progress” requires a peer-specific citation. If no qualified material exists, render that cell as `—`; never borrow another peer's source or fill it from generic industry knowledge.
-- Omit §8.2 when fewer than two validated peers are available. Do not rebuild a missing table in post-processing.
-### 5.6 Tables, Sparse Data and Peer Comparison
-- 閸氬奔绗熷В鏃囩窛鐞涖劌绻€妞ょ粯妲稿锝呯础 Markdown 鐞涖劍鐗搁敍灞肩瑝閼宠棄褰ч悽銊у嚱閺傚洤鐡ч幓蹇氬牚鐞涘奔绗熼弽鐓庣湰閵?- 鐞涖劌銇旇箛鍛淬€忔稉顓熸瀮閵?
-**A 閼测€虫倱娑撴碍鐦潏鍐€?schema閿?0 閸掓绱濋崥?鐢倸鈧?閿涘瞼宸遍弫鐗堝祦閸欘垰鍨归敍?*閿涘本娼堟繛浣哥暰娑斿顫?`references/a-share-report-structure.md` 鎼?.2閿?  - 缁旂偘绨ら崗宕囬兇
-  - 閸忣剙寰冮敍鍫滃敩閻緤绱?  - 鐢倸婧€
-  - 閸欘垱鐦稉姘
-  - 鐞涘奔绗熼崷棰佺秴
-  - 閻╃鍙ф稉姘鏉╂稑鐫?  - 鐢倸鈧》绱欑紓鐑樻殶閹诡喖褰查崚鐘插灙閿?  - 閸熷棔绗熷Ο鈥崇础
-  - 閻╊喗鐖ｇ€广垺鍩涚紘銈勭秼
-  - 閺嶇绺炬禍褍鎼?
-**濞擃垳绶ㄩ懖鈥虫倱娑撴碍鐦潏鍐€?schema閿? 閸掓绱濇稉宥呮儓"鐢倸鈧?閿?*閿?  - 缁旂偘绨ら崗宕囬兇
-  - 閸忣剙寰冮敍鍫滃敩閻緤绱?  - 鐢倸婧€
-  - 閸欘垱鐦稉姘
-  - 鐞涘奔绗熼崷棰佺秴
-  - 閻╃鍙ф稉姘鏉╂稑鐫?  - 閸熷棔绗熷Ο鈥崇础
-  - 閻╊喗鐖ｇ€广垺鍩涚紘銈勭秼
-  - 閺嶇绺炬禍褍鎼?
-- Markdown 鐞涖劌銇旇箛鍛淬€忔穱婵囧瘮閸欘垱顒滅敮鍛婅閺屾搫绱滱 閼诧紕銇氭笟瀣剁窗
-
-```markdown
-| 缁旂偘绨ら崗宕囬兇 | 閸忣剙寰冮敍鍫滃敩閻緤绱?| 鐢倸婧€ | 閸欘垱鐦稉姘 | 鐞涘奔绗熼崷棰佺秴 | 閻╃鍙ф稉姘鏉╂稑鐫?| 鐢倸鈧?| 閸熷棔绗熷Ο鈥崇础 | 閻╊喗鐖ｇ€广垺鍩涚紘銈勭秼 | 閺嶇绺炬禍褍鎼?|
-|:--|:--|:--|:--|:--|:--|:--|:--|:--|:--|
-```
-
-濞擃垳绶ㄩ懖锛勩仛娓氬绱?
-```markdown
-| 缁旂偘绨ら崗宕囬兇 | 閸忣剙寰冮敍鍫滃敩閻緤绱?| 鐢倸婧€ | 閸欘垱鐦稉姘 | 鐞涘奔绗熼崷棰佺秴 | 閻╃鍙ф稉姘鏉╂稑鐫?| 閸熷棔绗熷Ο鈥崇础 | 閻╊喗鐖ｇ€广垺鍩涚紘銈勭秼 | 閺嶇绺炬禍褍鎼?|
-|:--|:--|:--|:--|:--|:--|:--|:--|:--|
-```
-
-- 娑撳秷鍏橀崣顏嗘殌娑撳褰涚拠顓熷伎鏉╄埇鈧?- 娑撳秷鍏橀悽?`Comparable peer A/B/C`閵?- 娑撳秷鍏橀悽銊ㄥ閺傚洩銆冩径娣偓?- 娑撳秷鍏樻径褔娼扮粔顖滄暏 `閳ユ摽 / `N/A` / `閺堫亝濮棁鐬?婵夘偄鍘栭妴?- 閸氬奔绗熷В鏃囩窛閺堚偓娴ｅ氦顩﹀Ч鍌︾窗
-  1. 閻╊喗鐖ｉ崗顒€寰冭箛鍛淬€忔稉铏诡儑娑撯偓鐞涘矉绱濇稉鏂垮涧閼宠棄鍤悳棰佺濞嗏槄绱?  2. 閼峰啿鐨?3 鐎硅埖婀侀悪顒傜彌 peer-specific 閺夈儲绨惃鍕埂鐎圭偛褰插В鏂垮彆閸欓潻绱?  3. 濮ｅ繋閲滈崣顖涚槷閸忣剙寰冭箛鍛淬€忕紒蹇氱箖鐠囦礁鍩滅憴锝嗙€介妴浣风瑐鐢倻濮搁幀浣衡€樼拋銈呮嫲娑撴艾濮熼柌宥呮値妤犲矁鐦夐敍?  4. 鐎广垺鍩涢妴浣风返鎼存柨鏅㈤妴浣告値娴ｆ粍鏌熼妴浣瑰鐠у嫭鏌熼崪灞炬弓娑撳﹤绔舵稉璁崇秼娑撳秷鍏樻担婊€璐?peer閿?  5. 閻╃鍙ф稉姘鏉╂稑鐫嶈箛鍛淬€忛崗铚傜秼閸欘垶鐛欑拠渚婄礉娑撴柨绱╅悽?peer 閼奉亜绻侀惃鍕綏閺傛瑱绱卞鏇犳暏鐠囦焦宓佽箛鍛淬€忛崠鍛儓鐠?peer 閸忣剙寰冮崥宥嗗灗 ticker閿?  6. 鐞涖劍鐗歌箛鍛淬€忛懗鍊燁潶 Markdown 濮濓絽鐖跺〒鍙夌厠閿?  7. 鐞涖劌銇旇箛鍛淬€忔稉顓熸瀮閵?- 缁嬧偓閻ゅ繑鏆熼幑顔款潐閸掓瑱绱?  - 缂佹挻鐎崠鏍€冮弽鑹板閸欘亜澧?0 閹?1 娑擃亝婀侀弫鍫濃偓纭风礉閸掔娀娅庨弫纾嬵攽閵?  - 閼汇儲鏆ｉ崚妤€褰ч崜?0 閹?1 娑擃亝婀侀弫鍫濃偓纭风礉閸掔娀娅庨弫鏉戝灙閵?  - 閸掔娀娅庨崥搴ゅ娴犲秳绗夌搾鍏呬簰閺€顖涙嫼 2 娑擃亝婀侀弫鍫熷瘹閺嶅洦鍨?2 娑擃亝鐦潏鍐樊鎼达讣绱濋崚鐘绘珟閺佹潙绱剁悰銊ｂ偓?  - 娑撳秷鍏橀悽銊р敄閻у鈧梗N/A`閵嗕梗閺堫亝濮棁鐬忛妴涔?-`閵嗕梗瀵板懓藟閸忓崉 婢堆囨桨缁夘垰鍘栭弫鑸偓?
-### 5.7 Chapter 9 Data-Availability Rules
-- 缁楊兛绡€缁旂姴鎮囩亸蹇氬Ν閿?.1-9.4閿涘婀弮鐘插讲閻劍鏆熼幑顔芥韫囧懘銆?*閺佺濡捄瀹犵箖**閿涘奔绗夊妞剧箽閻ｆ瑧鈹栨竟铏垼妫版ɑ鍨ㄩ垾婵囨畯缂傝　鈧繂宕版担宥囶儊閵?- 9.1 鐢倸婧€娑撯偓閼锋挳顣╅張鐕傜窗`research_sec_coredata` 閹恒儱褰涢弮鐘虫殶閹?閳?鐠哄疇绻冮弫纾嬪Ν閵?- 9.2 閸氬嫭婧€閺嬪嫮娉╅崚鈺咁暕濞村绱癭research_sec_foredata` 閹恒儱褰涢弮鐘虫殶閹?閳?鐠哄疇绻冮弫纾嬪Ν閵?- 9.3 娴兼澘鈧厧鍨庨弸鎰剁窗`diagnosis_valuation_rank` 閹碘偓閺堝鍙婇崐鑲╂樊鎼达箑娼庨弮鐘虫櫏 閳?鐠哄疇绻冮弫纾嬪Ν閿涘牅绗夌拫鍐暏 LLM閿涘鈧?- 9.4 閹懏娅欓幒銊︾川閿涙碍妫ゆ稉鈧懛鎾暕閺?EPS/PE 娑撴梻鐖洪幎?缁绢亣顩﹂弮鐘插讲閹绘劕褰囬惃鍕瑹閸旓繝鈹嶉崝銊ュ綁闁?閳?鐠哄疇绻冮弫纾嬪Ν閿涘牅绗夌拫鍐暏 LLM閿涘鈧?- 閸ユ稑鐨懞鍌氬弿缁岀儤妞傞敍灞炬殻缁?`## 9` 娑撳秴鍤悳鑸偓?- 9.4 閹懏娅欓幒銊︾川閻㈢喐鍨氶崥搴㈢墡妤犲矉绱伴弽绋跨妇閸欐﹢鍣鸿箛鍛淬€忛崥顐㈠徔娴ｆ挻鏆熺€?`[N]` 瀵洜鏁ら敍灞惧剰閺咁垵銆冪粋浣诡剾濡剝婢樼拠婵囨钩閿涙稖瀚㈡潏鎾冲毉閻╊喗鐖ｆ禒鍑ょ礉韫囧懘銆忛悽鍗炵秼閸撳秷鍋傛禒鍑ょ礄閹存牔绔撮懛鎾暕閺?EPS 鑴?瑜版挸澧犻梾鎰儓 PE閿涘鏁嬬€规熬绱濇稉鏃€鐦″锝囨窗閺嶅洣鐜い璇差槱娴滃酣鏁嬬€规矮鐜惃?0.25閳?.00 閸婂秴鍞撮敍娑楃瑝閸氬牊鐗搁崚?LLM 鐞涖儱鍟撴稉鈧▎鈽呯礉娴犲秴銇戠拹銉ュ灟閸掔娀娅?9.4 缁屽搫锛撻敍鍧抋il-closed閿涘鈧?
-### 5.8 Scenario Analysis Content Rules
-- 閹懏娅欓幒銊︾川韫囧懘銆忛崘娆忓毉閸欘垶鐛欑拠浣稿彆瀵繈鈧礁鐔€绾偓閺佺増宓侀妴浣圭壋韫囧啫浜ｇ拋鎯ф嫲閸楁洑缍呴妴?- 娑撳秷鍏橀崣顏勫晸閳ユ繀绠扮憴?/ 娑擃厽鈧?/ 閹尪顫囬垾婵呯瑏濡楋綀鈧本鐥呴張澶婂徔娴ｆ挻鏆熼崐绗衡偓?- 濮ｅ繋閲滈幆鍛珯閼峰啿鐨紒娆忓毉 2-3 娑擃亝鐗宠箛鍐ㄥ綁闁插骏绱濊箛鍛淬€忛懗钘夘檮缁犳鍤惄顔界垼閸婂吋鍨ㄦ导鏉库偓鐓庡隘闂傛番鈧?- 閹懏娅欓幒銊︾川闁插瞼娈戦弽绋跨妇閸欐﹢鍣洪妴浣圭壋韫囧啫浜ｇ拋鎯ф嫲缂佸繗鎯€閸氼偂绠熼張?`[N]` 瀵洜鏁ら崡鍐插讲閿涘奔绗夋０婵嗩樆閸愭瑢鈧繃娼靛┃鎰剁窗閸忣剙寰冮獮鏉戝閹躲儱鎲￠垾婵冣偓婵囨降濠ф劧绱扮悰灞肩瑹娑撯偓閼锋挳顣╅張鐔测偓婵堢搼閹奉剙褰块弶銉︾爱鐠囧瓨妲戦妴?- 閹懏娅欓幒銊︾川娑撳秴绶辨潏鎾冲毉閳ユ繂鐔€娴滃督N]閹恒劎鐣婚垾婵冣偓婵嗗敶闁劍绁寸粻妞烩偓婵堢搼鏉╁洨鈻奸弽鍥╊劮閵嗗倷绮庤ぐ鎾茬炊缂?PE 濞夋洟鈧倻鏁ら弮璁圭礉娴兼澘鈧厧鎯堟稊澶嬪閸欘垰鍟?`EPS閿涙紞.XX閸?鑴?PE=Yx = Z.ZZ閸忓儬 缁犳绱￠敍灞肩瑬 PE 娑撳海娲伴弽鍥︾幆韫囧懘銆忛柨姘暰瑜版挸澧犵€规矮鐜敍姹窫(TTM)閳?閿涘本鍨?PB 鐡掑懓绻冪悰灞肩瑹閸у洤鈧?3 閸婂秵妞傞敍宀€顩﹀顫▏閻劉鈧窊PS 鑴?閸ュ搫鐣?PE閳ユ繄绮伴惄顔界垼娴犲嚖绱濇惔鏃€妲戠涵顔煎晸閳ユ粌缍嬮崜宥咁槱娴滃簼瀵屾０?妫板嫭婀＄€规矮鐜梼鑸殿唽閿涘奔绱剁紒?PE 濞夋洖銇戦弫鍫氣偓婵撶礉楠炶泛褰х紒娆忓毉娑撳骸缍嬮崜宥夋閸氼偂鍙婇崐鑲╂祲鐞涙梹甯撮惃鍕暰閹勫剰閺咁垰鎯堟稊澶堚偓?- 閹懏娅欓幒銊︾川鐞涖劌鎮撴稉鈧崡鏇炲帗閺嶇厧鍞撮惃鍕樋娑擃亜鐨悙鐟扮箑妞よ崵鏁?`<br>` 閹广垼顢戦敍灞肩瑝閼宠姤灏嬮崷銊ユ倱娑撯偓闂€鍨綖闁插被鈧?- 閼汇儰濞囬悽銊δ侀崹瀣腹鐎电》绱濆锝嗘瀮韫囧懘銆忔穱婵堟殌閹恒劌顕遍崗顒€绱￠崪?sanity check閿涘奔绲炬稉宥堢翻閸戝搫鍞撮柈銊ㄧ箖缁嬪鐖ｇ粵淇扁偓?- 閺冪姵纭剁€瑰本鏆ｆ径宥嗙壋閺冭绱濋崣顏冪箽閻ｆ瑥鐣鹃幀褍鍨介弬顓ㄧ礉娑撳秷顩﹂幎銉ュ毉娑撳秴褰叉宀冪槈閻ㄥ嫭鏆熺€涙ぜ鈧?
-### 5.9 A-Share Numeric Provenance Gate
-- A 閼?writer 韫囧懘銆忔禒?`ref_map` 閸滃苯甯慨瀣櫚闂?JSON 瀵よ櫣鐝?`瀵洜鏁ょ紓鏍у娇 閳?閸樼喎顫愰弶銉︾爱/API` 鐎孤ゎ吀缁便垹绱╅敍娑樼穿閻劎绱崣宄扮摠閸︺劋绗夌粵澶夌艾閺佹澘鐡ч惇鐔风杽閵?- 鐎靛綊鏀㈤柌蹇嬧偓浣烽獓闁插繈鈧礁鎯冩禒鏋偓浣稿礋娴犳灚鈧胶娲块柨鈧?濞撶娀浜鹃崡鐘崇槷閵嗕礁绔堕崡鐘靛芳閵嗕椒楠囬懗濮愨偓浣稿焺閻劎宸奸妴浣烽獓閸濅礁顤冮柅鐔粹偓浣哥唨闁版帊楠囬柌蹇撳挤 ROE 缁涘鐝搴ㄦ珦閺佹澘鐡ч敍宀勨偓鎰攽閺嶆悂鐛欏鏇犳暏閺夈儲绨惃?API 闁倿鍘ら幀褋鈧礁鍙ч柨顔跨槤娑撳孩鏆熼崐纭风幢娴犺绔存稉宥囶儊閸楁娊妯嗛弬顓濇唉娴犳﹫绱檉ail-closed閿涘鈧?- `fdmtNew`閵嗕梗fdmt_indi_rtn`閵嗕椒绔撮懛鎾暕閺堢喎鎷版导鏉库偓鍏煎复閸欙絼绗夊妞剧稊娑撹櫣绮￠拃銉ュ瀻妞よ鏆熼幑顔芥降濠ф劧绱盽getFdmtMoStdItem` 娑撳秴绶辨担婊€璐熼崺娲幁/娴溠冩惂娴溠囧櫤閺夈儲绨妴?- `operateProfitRatio` 閺勵垵鎯€娑撴艾鍩勫☉锔惧芳閿涘奔绗夐懗鑺ョ垼娴ｆ粍鐦洪崚鈺冨芳閿涙稒鐦洪崚鈺冨芳娴ｈ法鏁?`grossMARgin` 閹存牔瀵岄拃銉︾€幋鎰复閸欙絿娈?`grossMargin`閵?- 缁旂姾濡崚鐘绘珟閹存牔鎱ㄦ径宥呮倵閿涘本瀵滈崥?H2 閼奉亜濮╂潻鐐电敾闁插秵甯撻惄鏉戠潣 H3 缂傛牕褰块敍灞藉晙閸嬫碍娓剁紒鍫㈢椽閸欓攱鐗庢灞烩偓?### 5.9 Final Normalization
-- 濞擃垳绶ㄩ懖锛勬晸閹存劖顒滈弬鍥ф倵閹笛嗩攽閼存碍婀伴崘鍛枂閻ㄥ嫬绱╅悽銊╂４閻滎垬鈧浇銆冮弽鍏肩濞叉ぜ鈧胶鐝烽懞鍌濈箾缂侇參鍣哥紓鏍у娇閸?DOCX 鐎电厧鍤敍灞肩瑝閸愬秷绻嶇悰宀€瀚粩?post-repair/checker 闂冪粯鏌囬柧鎹愮熅閵?- A 閼测€茬矝閹?A 閼?writer 閻ㄥ嫯鍤滈崝銊ゆ叏婢跺秳绗岀拹銊╁櫤濡偓閺屻儴顫夐崚娆愬⒔鐞涘被鈧?- 濞擃垳绶ㄩ懖鈩冾梾閺屻儱褰傞悳鎵畱缁岃櫣鐝烽懞鍌樷偓浣衡敄鐞涖劊鈧胶鈹栨０鍕ゴ閵嗕胶鈹栭崒顒€瀵查妴浣衡敄閹懏娅欓妴浣衡敄濮ｆ棁绶濈悰銊ョ安閸?writer 閸?fail closed閵嗕胶娓烽悾銉ヨ嫙闁插秶绱崣鍑ょ礉閹存牕鍟撻崗?`generation_status.json` 閻ㄥ嫰妾风痪褍甯崶鐙呯礉娑撳秴褰茬涵顒傛殌缁屽搫锛撻妴?
-## 6. Fallback Policy
-- 閼奉亜濮?writer 婢惰精瑙﹂弮璁圭礉娴兼ê鍘涚拫鍐暏閼存碍婀伴崘鍛枂娣囶喖顦查敍娑楃矝婢惰精瑙﹂弮鑸靛鏉╂稑鍙嗛幍瀣紣闂勫秶楠囬妴?- 閹靛浼愰梽宥囬獓閸欘亣鍏樻担璺ㄦ暏鐎电懓绨查惃鍕波閺嬪嫬寮懓鍐╂瀮娴犺泛鎷扮拹銊╁櫤濞撳懎宕熼敍灞肩瑝瀵版绱╅崗銉╊杺婢舵牗膩閺夊灝锛撻妴?- 缂傚搫鐨崗鎶芥暛鐠囦焦宓侀弮璁圭礉韫囧懘銆忛梼缁樻焽楠炶泛鎮滈悽銊﹀煕鐠囧瓨妲戦棁鈧憰浣剿夋禒鈧稊鍫涒偓?- 娑撳秴绶遍悽銊⑩偓婊冨嚒閻胶鏆愰垾婵冣偓婊冨嚒闂呮劘妫岄垾婵囨禌娴狅絿婀＄€圭偞娼靛┃鎰嚛閺勫簺鈧?- 娑撳秷鍏橀崑鍥偓姘崇箖閿涘奔绗夐懗鑺ュΩ娑撳秴褰叉宀冪槈閻ㄥ嫬鍞寸€圭懓瀵樼憗鍛灇鐎瑰本鍨氶幀浣碘偓?
-## 7. Output Requirements
-- 閺堚偓缂佸牅姘︽禒妯煎⒖韫囧懘銆忛崠鍛儓閿?  - `MD`
-  - `DOCX`
-- 鐎电鐦界粣妤€褰涢崣顏囩翻閸戦缚绻樻惔锔衡偓渚€妯嗛弬顓炲斧閸ョ姴鎷伴張鈧紒鍫ｇ熅瀵板嫸绱濇稉宥堢翻閸戝搫鐣弫瀛樺Г閸涘﹥顒滈弬鍥モ偓?- Word 鏉堟挸鍤弽宄扮础韫囧懘銆忔穱婵囧瘮娴犮儰绗呯拠锔剧矎鐟欏嫬鍨敍?  - 妞ょ敻娼伴敍姘辨棻閸?A4
-  - 瀹革箑褰告潏纭呯獩缁?0.83 inch
-  - 娑撳﹣绗呮潏纭呯獩缁?0.71 inch
-  - 閼昏鲸鏋冪€涙ぞ缍?Calibri
-  - 娑擃厽鏋冪€涙ぞ缍?瀵邦喛钂嬮梿鍛寸拨
-  - 濮濓絾鏋?10.5pt
-  - 濮濓絾鏋冩０婊嗗 `#1F1F1F`
-  - 娑撶粯鐖ｆ０妯虹湷娑?18pt 濞ｈ精鎽?`#1F3A5F`
-  - 娑撯偓缁狙勭垼妫?13.5pt
-  - 娴滃瞼楠囬弽鍥暯 12pt
-  - 娑撳楠囬弽鍥暯 11pt
-  - 鐞涖劍鐗哥悰銊ャ仈濞村懓鎽戞惔?`#D9EAF7`
-  - 鐞涖劍鐗哥紒鍡欑秹閺嶈偐鍤?  - 鐞涖劌鍞撮弬鍥х摟濞擃垳绶ㄩ懖?10pt / A 閼?9.5pt
-  - 鐞涖劌銇旈崝鐘电煐
-  - 瀵洜鏁?`[N]` 娣囨繃瀵斿锝嗘瀮閸欘垵顕伴幀褝绱濇稉宥呬粵鏉╁洤鐨稉濠冪垼
-  - 閺冪姷娲拌ぐ鏇€?- 韫囧懘銆忔穱婵囧瘮鐞涖劍鐗哥痪闈涙倻閸氬牆鑻熼妴渚€鍣告径宥堛€冩径鏉戭槱閻炲棗鎷拌箛鍛邦洣閻?`w:vMerge` 缂佹挻鐏夐妴?- 娑撳秷顩﹂悽鐔稿灇閻╊喖缍嶆い鐐光偓?- 鏉堟挸鍤弬鍥︽閸氬秵瀵滈懘姘拱瑜版挸澧犵痪锕€鐣鹃悽鐔稿灇閿涘奔绗夌憰浣藉殰瀹稿崬褰熺挧铚傜婵傛鎳￠崥宥堫潐閸掓瑣鈧?
-## 8. Reference Files
-娴犮儰绗呴弬鍥︽閺勵垰缍嬮崜宥堫潐閸掓瑧娈戦弶鍐ㄢ枆鐞涖儱鍘栭敍灞绢劀閺傚洤褰ф穱婵堟殌濞翠胶鈻奸崪宀勬，缁備緤绱濈紒鍡氬Ν娴犮儴绻栨禍娑欐瀮娴犳湹璐熼崙鍡窗
-
-- `references/a-share-api-interfaces.md`閿涙 閼?API 閹恒儱褰涢崣鍌涙殶鐠囧瓨妲?- `references/a-share-report-structure.md`閿涙 閼诧紕鐝烽懞鍌滅波閺嬪嫨鈧礁鍟撴担婊嗩潐閼煎啨鈧礁鎮撴稉姘槷鏉?schema
-- `references/a-share-quality-checklist.md`閿涙 閼猜ゅ窛闁插繑绔婚崡鏇氱瑢濡偓閺屻儵銆?- `references/hk-us-api-playbook.md`閿涙碍鑵愮紘搴ゅ亗 API 娴ｈ法鏁ら幍瀣斀
-- `references/hk-us-report-structure.md`閿涙碍鑵愮紘搴ゅ亗缁旂姾濡紒鎾寸€妴浣稿晸娴ｆ粏顫夐懠鍐︹偓浣告倱娑撴碍鐦潏?schema
-- `references/hk-us-quality-checklist.md`閿涙碍鑵愮紘搴ゅ亗鐠愩劑鍣哄〒鍛礋娑撳孩顥呴弻銉┿€?
+- `references/a-share-api-interfaces.md`：A 股接口参数
+- `references/a-share-report-structure.md`：A 股章节、同业 schema 与估值写法
+- `references/a-share-quality-checklist.md`：A 股质量清单
+- `references/hk-us-api-playbook.md`：港美股接口
+- `references/hk-us-report-structure.md`：港美股章节与写法
+- `references/hk-us-quality-checklist.md`：港美股质量清单

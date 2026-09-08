@@ -2903,11 +2903,100 @@ def _gen_section93_v131(key_data: dict) -> str:
     return "### 9.3 估值分析\n\n" + "".join(narrative) + "\n\n" + table
 
 
-def _has_safe_scenario_input(key_data: dict) -> bool:
-    """Only source-bound operating fact cards can seed a scenario table."""
-    cards = str(key_data.get("operating_fact_cards") or "")
-    return bool(re.search(r"\{\{FACT:F\d+\}\}", cards))
+def _scenario_factor(label: str) -> str:
+    label = str(label or '')
+    if any(word in label for word in ('直销', '经销', '渠道', 'i茅台', '直营')):
+        return '渠道与消费者触达'
+    if any(word in label for word in ('产能', '产量', '基酒', '系列酒')):
+        return '供给与产品结构'
+    if any(word in label for word in ('销量', '出货', '单价', '吨价', '价格', '批价')):
+        return '量价表现'
+    if '市占率' in label:
+        return '竞争份额'
+    if '毛利率' in label:
+        return '盈利质量'
+    return '经营指标'
 
+
+def _scenario_fact_candidates(key_data: dict, max_items: int = 4) -> list:
+    """选择不同传导维度的事实卡，避免同一渠道指标重复充当两个变量。"""
+    selected, seen_factors, candidates = [], set(), []
+    facts = key_data.get('fact_marker_refs') or {}
+    priority = {
+        '渠道与消费者触达': 0,
+        '供给与产品结构': 1,
+        '量价表现': 2,
+        '竞争份额': 3,
+        '盈利质量': 4,
+        '经营指标': 5,
+    }
+    for marker, fact in facts.items():
+        if not isinstance(fact, dict) or not fact.get('value') or not fact.get('ref'):
+            continue
+        factor = _scenario_factor(fact.get('label', ''))
+        candidates.append((priority.get(factor, 99), str(marker), fact, factor))
+    for _priority, marker, fact, factor in sorted(candidates, key=lambda item: item[0]):
+        if factor in seen_factors:
+            continue
+        selected.append((marker, fact, factor))
+        seen_factors.add(factor)
+        if len(selected) >= max_items:
+            break
+    return selected
+
+
+def _scenario_driver_label(fact: dict, factor: str) -> str:
+    label = str(fact.get('label') or '').strip()
+    if label == 'i茅台' and str(fact.get('value') or '').endswith('元'):
+        return 'i茅台价格'
+    if label in {'i茅台', '直营', '直销', '经销', '渠道'}:
+        return f'{label}相关指标'
+    if label:
+        return label
+    return factor
+
+
+def _build_deterministic_section94(key_data: dict) -> str:
+    """在 LLM 结构或溯源失败时，以同一批真实事实卡重建安全情景表。"""
+    facts = _scenario_fact_candidates(key_data, max_items=2)
+    if len(facts) < 2:
+        return ''
+    core_lines, assumptions = [], []
+    for marker, fact, factor in facts:
+        label = _scenario_driver_label(fact, factor)
+        value = f"{fact['value']}[{int(fact['ref'])}]"
+        core_lines.append(f'• **{label}**：{value}；反映{factor}的当前经营基础。')
+        assumptions.append(label)
+    good = '<br>'.join(f'{item}优于当前基础' for item in assumptions)
+    base = '<br>'.join(f'{item}大体延续当前基础' for item in assumptions)
+    bad = '<br>'.join(f'{item}弱于当前基础' for item in assumptions)
+    return f'''### 9.4 情景推演
+
+**核心变量**
+{chr(10).join(core_lines)}
+
+**情景推演表**：
+
+| 情景 | 核心假设 | 经营含义 | 估值含义 |
+|:-----|:---------|:---------|:---------|
+| 乐观（概率~25%） | {good} | 相关经营条件改善，收入、利润与现金流预期边际改善。 | 相对统一价格锚的上行敏感性增强；仅作敏感性判断，不提供目标价 |
+| 中性（概率~50%） | {base} | 当前经营节奏大体延续，收入、利润与现金流按既有预期演变。 | 当前预期大体兑现；仅作敏感性判断，不提供目标价 |
+| 悲观（概率~25%） | {bad} | 相关经营条件承压，收入、利润与现金流预期面临下修压力。 | 相对统一价格锚的下行风险上升；仅作敏感性判断，不提供目标价 |
+'''
+
+
+def _has_safe_scenario_input(key_data: dict) -> bool:
+    """至少两项不同经营维度的来源绑定事实卡才允许生成 §9.4。"""
+    return len(_scenario_fact_candidates(key_data, max_items=2)) >= 2
+
+
+def _scenario_fact_card_prompt_block(key_data: dict) -> str:
+    selected = {marker for marker, _fact, _factor in _scenario_fact_candidates(key_data)}
+    lines = [
+        line for line in str(key_data.get('operating_fact_cards') or '').splitlines()
+        if any(f'{{{{FACT:{marker}}}}}' in line for marker in selected)
+    ]
+    return '\n'.join(lines) or '（无可核验经营事实卡；不得生成情景推演）'
 
 def _gen_section94_v131(client, key_data: dict) -> str:
     """Generate operating scenarios, never unsourced numerical target prices."""
@@ -2931,13 +3020,13 @@ def _gen_section94_v131(client, key_data: dict) -> str:
     prompt = f"""为{name}生成第9.4节情景推演。
 
 【可核验经营事实卡】
-{key_data.get("operating_fact_cards")}
+{_scenario_fact_card_prompt_block(key_data)}
 
 【统一估值口径】
 {valuation_context}
 
 【硬规则】
-1. 只选2-4个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，不得自行填写数字或引用。
+1. 只选2个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，每条核心变量只保留该一个标记和定性传导说明，不得自行填写任何其他数字或引用。
 2. 三档假设只写相对当前基准的方向与触发条件，如“订单兑现快于当前预期”“毛利率维持/承压”；不得编造新的销量、收入、利润、EPS、PE或股价数字。
 3. 经营含义只写收入、利润、现金流的方向和传导路径，不写没有来源的预测值。
 4. 估值含义只能讨论相对统一价格锚的上行/下行敏感性；每格都明确“仅作敏感性判断，不提供目标价”。
@@ -3476,6 +3565,10 @@ def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
     return '\n'.join(result_lines)
 
 
+_A_SHARE_PEER_HEADERS = ['竞争关系', '公司（代码）', '市场', '可比业务', '行业地位', '相关业务进展', '商业模式', '目标客户群体', '核心产品']
+_PEER_PROGRESS_MAX_CHARS = 80
+
+
 def _peer_progress_refs(key_data: dict) -> dict:
     """返回 {peer_code: [引用编号]}，只供同业表的“相关业务进展”列使用。"""
     refs = key_data.get('ref_map') or {}
@@ -3487,19 +3580,75 @@ def _peer_progress_refs(key_data: dict) -> dict:
     return grouped
 
 
-def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict) -> str:
-    """同业表仅允许经过采集/检索双重约束的公司；进展引用无效时只清空该单元格。"""
+def _target_progress_materials(key_data: dict, max_items: int = 2) -> tuple:
+    """返回标的公司进展列可使用的研报证据及其引用编号。"""
+    refs, lines = set(), []
+    for report in key_data.get('reports') or []:
+        report_id = str(report.get('id') or '')
+        ref_no = (key_data.get('ref_map') or {}).get(f'report_{report_id}', {}).get('n')
+        source = ' '.join(str(report.get(key) or '') for key in ('title', 'detail_text', 'abstract', 'text'))
+        if not ref_no or not source.strip():
+            continue
+        refs.add(int(ref_no))
+        lines.append(f'[{int(ref_no)}] {source[:1200]}')
+        if len(lines) >= max_items:
+            break
+    return refs, '\n'.join(lines)
+
+
+def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
+    """将同业表进展压缩为一条可读、可引用的事件，避免横向表格失控。"""
+    raw = re.sub(r'\s+', ' ', str(cell or '')).strip()
+    refs = []
+    for ref in re.findall(r'\[(\d+)\]', raw):
+        if ref not in refs:
+            refs.append(ref)
+    body = re.sub(r'\[\d+\]', '', raw).strip(' ，,;；')
+    if not body or not refs:
+        return '—'
+    first_sentence = re.split(r'(?<=[。！？])', body, maxsplit=1)[0].strip()
+    body = first_sentence or body
+    if len(body) > max_chars:
+        body = body[:max_chars].rstrip(' ，,;；') + '…'
+    return body + ''.join(f'[{ref}]' for ref in refs)
+
+
+def _render_peer_table(rows: list, include_progress: bool) -> str:
+    """渲染固定 schema；进展列无基准证据时整体省略。"""
+    header = list(_A_SHARE_PEER_HEADERS)
+    rendered_rows = [list(row) for row in rows]
+    if not include_progress:
+        del header[5]
+        rendered_rows = [row[:5] + row[6:] for row in rendered_rows]
+    sep = '|' + '|'.join([':---'] * len(header)) + '|'
+    return '\n'.join([
+        '| ' + ' | '.join(header) + ' |',
+        sep,
+        *['| ' + ' | '.join(row) + ' |' for row in rendered_rows],
+    ])
+
+
+def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict, target_progress_refs=None) -> str:
+    """仅约束公司身份和进展来源；非进展列保留模型的定性研究画像。"""
     parsed = _parse_markdown_table(table_md or '')
-    if not parsed or parsed.get('col_count') != 10:
+    if not parsed or parsed.get('col_count') != len(_A_SHARE_PEER_HEADERS):
         return ''
-    expected_header = ['竞争关系', '公司（代码）', '市场', '可比业务', '行业地位', '相关业务进展', '市值', '商业模式', '目标客户群体', '核心产品']
-    if parsed.get('header_cells') != expected_header:
+    if parsed.get('header_cells') != _A_SHARE_PEER_HEADERS:
         return ''
     rows = parsed.get('rows') or []
     if len(rows) < 3 or ticker not in rows[0][1] or name not in rows[0][1]:
         return ''
+
+    target_allowed_refs = {int(n) for n in (target_progress_refs or [])}
+    cleaned_rows = [list(rows[0])]
+    target_actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', cleaned_rows[0][5])}
+    if target_allowed_refs and target_actual_refs and target_actual_refs.issubset(target_allowed_refs):
+        cleaned_rows[0][5] = _compact_peer_progress(cleaned_rows[0][5])
+    else:
+        cleaned_rows[0][5] = '—'
+
     allowed = {str(item.get('code')): str(item.get('current_name')) for item in allowed_peers}
-    found, cleaned_rows = set(), [list(rows[0])]
+    found = set()
     for row in rows[1:]:
         cleaned = list(row)
         company_cell, progress_cell = cleaned[1], cleaned[5]
@@ -3512,13 +3661,18 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         found.add(code)
         required_refs = set(progress_refs.get(code) or [])
         actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', progress_cell)}
-        if (required_refs and (not actual_refs or not actual_refs.issubset(required_refs))) or (not required_refs and (actual_refs or progress_cell.strip() not in {'—', '-'})):
+        if required_refs and actual_refs and actual_refs.issubset(required_refs):
+            cleaned[5] = _compact_peer_progress(progress_cell)
+        else:
             cleaned[5] = '—'
         cleaned_rows.append(cleaned)
     if len(found) < 2:
         return ''
-    separator = table_md.strip().splitlines()[1]
-    return '\n'.join([parsed['header_line'], separator] + ['| ' + ' | '.join(row) + ' |' for row in cleaned_rows])
+
+    # 进展是唯一必须逐格引源的列。基准没有可靠来源时整列跳过，避免首行
+    # 空白且不让无来源信息进入交付物；其他研究维度仍保留。
+    return _render_peer_table(cleaned_rows, include_progress=cleaned_rows[0][5] != '—')
+
 
 def gen_peer_table(client, key_data: dict) -> str:
     """生成来源绑定的同业表；无法取得两家代码候选时整节跳过。"""
@@ -3526,12 +3680,10 @@ def gen_peer_table(client, key_data: dict) -> str:
     peers = key_data.get('peer_validated') or []
     if len(peers) < 2:
         return ''
-    fin, mc = key_data['fin'], key_data.get('mc', {})
-    years = fin.get('years', [])
-    y0 = years[0] if years else '?'
-    d = fin.get(y0, {}) if y0 else {}
+    mc = key_data.get('mc', {})
     primary_biz = '、'.join(list(mc.get('segments') or {})[:3])
     progress_refs = _peer_progress_refs(key_data)
+    target_progress_refs, target_materials = _target_progress_materials(key_data)
     materials_by_code = {}
     for index, item, _peer_name, peer_code in _peer_material_entries(key_data.get('_raw_data') or {}):
         ref_no = (key_data.get('ref_map') or {}).get(_peer_material_ref_key(index, item), {}).get('n')
@@ -3543,29 +3695,34 @@ def gen_peer_table(client, key_data: dict) -> str:
         code, peer_name = str(peer.get('code') or ''), str(peer.get('current_name') or '')
         evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填“—”。'
         peer_lines.append(f'【{peer_name}（{code}）】\n{evidence}')
-    header = '| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |'
-    sep = '|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|'
+    header = '| ' + ' | '.join(_A_SHARE_PEER_HEADERS) + ' |'
+    sep = '|' + '|'.join([':---'] * len(_A_SHARE_PEER_HEADERS)) + '|'
     allowed_text = '\n'.join(f"- {p['current_name']}（{p['code']}）" for p in peers)
+    target_evidence = target_materials or '无可核验标的进展材料：基准行进展填“—”，程序会删除整列。'
     prompt = f"""为 {name} 生成来源受限的同业比较表，只输出 Markdown 表格。
 
-标的基准：{name}（{ticker}），{y0}年营业总收入{_fmt(d.get('tRevenue'))}亿元；主营业务：{primary_biz or '见主营构成'}。
+标的基准：{name}（{ticker}）；主营业务：{primary_biz or '见主营构成'}。
 允许的可比公司仅限以下名单，禁止新增、替换或凭行业知识补充任何公司：
 {allowed_text}
 
-定向材料（只可用于“相关业务进展”列）：
+【标的公司定向材料（仅可用于基准行“相关业务进展”）】
+{target_evidence}
+
+【可比公司定向材料（仅可用于对应 peer 的“相关业务进展”）】
 {chr(10).join(peer_lines)}
 
 {header}
 {sep}
 
 规则：
-1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”。其后逐一列出上述全部可比公司。
-2. 每行严格10列；除“相关业务进展”外，其余列可基于公司公开常识和行业常识写简洁的定性画像，无需引用。避免编造精确财务数字、排名或客户名单；仅在确无合理描述时填“—”。
-3. “相关业务进展”是唯一需要引用的列：优先概括新品、产品结构、渠道、价格、产能、组织改革或市场份额等经营事件，并保留该公司定向材料的对应[N]。财务数据可以作为一句背景，但不得以营收、利润、EPS、PE或同比指标作为该列主要内容；没有材料时必须填“—”，不得引用其他公司的来源。
-4. 不要使用目标公司研报、常识或推测为可比公司补写业务进展。
+1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”；其后逐一列出上述全部可比公司。
+2. 每行严格9列；除“相关业务进展”外，其余列可基于公司公开常识和行业常识写简洁的定性画像，无需引用。避免编造精确财务数字、排名或客户名单；仅在确无合理描述时填“—”。
+3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格只写一条最新经营事件，最多80个汉字；优先新品、产品结构、渠道、价格、产能、组织改革或市场份额。财务数据只可作简短背景，不得成为主要内容；无材料填“—”。
+4. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
-    return _validate_peer_table(result, name, ticker, peers, progress_refs)
+    return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs)
+
 
 def _fmt_s3_source(ref_map: dict) -> str:
     """格式化催化事件表的表级来源引用。提取研报和公告的引用编号。"""
@@ -4520,14 +4677,11 @@ def _normalize_markdown_tables(md_text: str) -> str:
             out.extend(block)
         else:
             # A peer comparison table is a fixed research schema, not a sparse
-            # numeric table. Preserve all ten dimensions even when a qualitative
-            # cell is temporarily “—”; the writer prompt, rather than post-hoc
-            # column deletion, decides what can be described without a citation.
-            is_peer_comparison = (
-                n_cols == 10
-                and header[:2] == ["竞争关系", "公司（代码）"]
-                and "相关业务进展" in header
-            )
+            # numeric table. Preserve the nine research dimensions; the sourced
+            # progress column may be omitted as a whole when the baseline has no
+            # auditable progress material.
+            header_without_progress = [cell for index, cell in enumerate(_A_SHARE_PEER_HEADERS) if index != 5]
+            is_peer_comparison = header == _A_SHARE_PEER_HEADERS or header == header_without_progress
             if not is_peer_comparison:
                 normalized = _drop_all_empty_table_columns(normalized)
             out.extend(normalized)
@@ -4925,7 +5079,7 @@ def _sparse_cleanup(md_content: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _drop_invalid_section94(md_text: str, key_data: dict) -> str:
-    """Remove only §9.4 when its sourced qualitative scenario contract fails."""
+    """修复或移除不合格的 §9.4；兜底仍只使用来源绑定事实卡。"""
     text = str(md_text or "")
     match = re.search(r"(?m)^###\s*9\.4\s*情景推演\s*$", text)
     if not match:
@@ -4937,7 +5091,11 @@ def _drop_invalid_section94(md_text: str, key_data: dict) -> str:
     errors = _scenario_target_price_errors(fragment, key_data)
     if not errors:
         return text
-    print(f"  ⚠ v1.2.31: 删除不满足安全情景规则的§9.4：{errors}")
+    fallback = _build_deterministic_section94(key_data)
+    if fallback and not _scenario_target_price_errors(fallback, key_data):
+        print(f"  ⚠ v1.2.33: §9.4 LLM产物不合格（{errors}），改用来源绑定的确定性情景表")
+        return text[:match.start()].rstrip() + "\n\n" + fallback.strip() + "\n\n" + text[end:].lstrip()
+    print(f"  ⚠ v1.2.33: 删除不满足安全情景规则的§9.4：{errors}")
     return text[:match.start()].rstrip() + "\n\n" + text[end:].lstrip()
 
 def _drop_empty_optional_section9(md_text: str) -> str:
@@ -5260,8 +5418,11 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     unit_re = r'(%|pct|万吨|万台|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
     token_re = re.compile(r'(?<!\d)([-+]?\d+(?:\.\d+)?)\s*' + unit_re)
     grouped_re = re.compile(r'([-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?){1,5})\s*' + unit_re)
-    fact_terms = _OPERATIONAL_NUMERIC_TERMS + ("营业收入", "营收", "收入", "归母净利润", "净利润", "占比", "渠道", "直营", "i茅台")
-    primary_terms = {"销量", "产量", "出货", "吨价", "单价", "直销", "经销", "渠道占比", "市占率", "产能", "系列酒", "基酒", "营业收入", "营收", "收入", "归母净利润", "净利润", "占比", "渠道", "直营", "i茅台"}
+    # §9.4 的核心变量必须是经营驱动，而不是营收、净利润或券商预测结果。
+    # 这些卡同时作为确定性情景兜底的唯一数值来源。
+    fact_terms = ("销量", "产量", "出货", "吨价", "单价", "直销", "经销", "渠道占比", "市占率", "产能", "系列酒", "基酒", "渠道", "直营", "i茅台", "毛利率", "价格", "批价")
+    primary_terms = set(fact_terms)
+
     candidates, seen = [], set()
     for ref_no in sorted(evidence):
         src = evidence[ref_no]
@@ -5270,7 +5431,8 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
         text = re.sub(r'\s+', ' ', str(src.get("text") or ""))
         for sentence in re.split(r'(?<=[。；;！？])', text):
             terms = [term for term in fact_terms if term in sentence]
-            if not terms:
+            # 预测营收/利润是结果，不应伪装成场景驱动的当前基准值。
+            if not terms or re.search(r'预计|预测|一致预期|CAGR|forecast', sentence, re.I):
                 continue
             grouped = list(grouped_re.finditer(sentence))
             tokens = [
@@ -5288,6 +5450,10 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                     tokens.append((f"{number.group(0)}{group.group(2)}", group_pos))
                     grouped_positions.add(group_pos)
             for display, pos in tokens:
+                # 经营驱动卡不接受“亿元/亿/万元”收入、利润类金额；即使句中
+                # 恰好出现渠道或产品词，也不能将结果指标错配为驱动变量。
+                if re.search(r'(?:亿元|亿|万元)$', display):
+                    continue
                 positions = [(term, match.start()) for term in terms for match in re.finditer(re.escape(term), sentence)]
                 nearest_term, nearest_pos = min(positions, key=lambda x: abs(pos - x[1]))
                 nearest = abs(pos - nearest_pos)
@@ -5306,6 +5472,7 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                 candidates.append({
                     "score": score, "ref": int(ref_no), "value": display,
                     "api": src.get("api", ""), "snippet": snippet,
+                    "label": nearest_term,
                 })
 
     # 相同来源的同一个数值只保留相关性最高的一张卡，避免 61% 等重复事实挤掉唯一数据。
@@ -5345,7 +5512,10 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     cards, fact_map = [], {}
     for item in selected[:max_cards]:
         marker = f"F{len(fact_map) + 1}"
-        fact_map[marker] = {"value": item["value"], "ref": item["ref"], "api": item["api"]}
+        fact_map[marker] = {
+            "value": item["value"], "ref": item["ref"], "api": item["api"],
+            "label": item.get("label", "经营指标"),
+        }
         cards.append(
             f"{{{{FACT:{marker}}}}} = {item['value']}[{item['ref']}] | "
             f"来源:{item['api']} | 原文:{item['snippet'][:300]}"

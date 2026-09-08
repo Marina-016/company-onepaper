@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.33
+
+- Rebuilt `SKILL.md` as clean UTF-8 and consolidated the active A-share workflow rules.
+- Treat a successful `ticker_period` response with `data: null` as a non-blocking annual-period fallback.
+- Removed market cap from the A-share peer schema; baseline progress now uses target-company evidence, sourced progress is limited to one compact event, and the full progress column is omitted when the baseline cannot be sourced.
+- Narrowed §9.4 fact cards to operating drivers and added a source-bound deterministic fallback when LLM output loses required core variables during provenance cleanup.
 ## v1.2.32
 
 - Replaced title keyword gating with structural title checks so complete investment viewpoints are not rejected for omitting a fixed word.

@@ -231,16 +231,20 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("\u4e0d\u5f97\u5355\u72ec\u7b80\u5199\u201c\u8425\u6536\u201d", writer.SYSTEM_PROMPT)
         self.assertIn("`tRevenue` \u4e3a\u8425\u4e1a\u603b\u6536\u5165", writer.SYSTEM_PROMPT)
         self.assertIn("`revenue` \u4e3a\u8425\u4e1a\u6536\u5165", writer.SYSTEM_PROMPT)
-    def test_peer_table_allows_dash_when_peer_progress_has_no_material(self):
+    def test_peer_table_keeps_sourced_progress_and_drops_column_without_baseline_source(self):
         peers = [{"code": "000858", "current_name": "五粮液"}, {"code": "000568", "current_name": "泸州老窖"}]
-        table = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 市值 | 商业模式 | 目标客户群体 | 核心产品 |
-|:---------|:-----|:-----|:---------|:---------|:-------------|:-----|:---------|:-------------|:---------|
-| —（基准） | 贵州茅台（600519） | A股 | 白酒 | — | — | — | — | — | — |
-| 直接竞争 | 五粮液（000858） | A股 | 白酒 | — | 经营进展[4] | — | — | — | — |
-| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | — | — | — | — | — | — |"""
-        self.assertEqual(writer._validate_peer_table(table, "贵州茅台", "600519", peers, {"000858": [4]}), table)
-        self.assertIn("| 直接竞争 | 五粮液（000858） | A股 | 白酒 | — | — |", writer._validate_peer_table(table.replace("[4]", "[9]"), "贵州茅台", "600519", peers, {"000858": [4]}))
-
+        table = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| —（基准） | 贵州茅台（600519） | A股 | 白酒 | 龙头 | 渠道改革推进并优化终端触达[3] | 品牌驱动 | 高端消费 | 茅台酒 |
+| 直接竞争 | 五粮液（000858） | A股 | 白酒 | 龙头 | 第八代产品推进渠道分类运营[4] | 品牌驱动 | 商务消费 | 五粮液酒 |
+| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | 品牌厂商 | — | 品牌驱动 | 商务消费 | 国窖1573 |"""
+        result = writer._validate_peer_table(table, "贵州茅台", "600519", peers, {"000858": [4]}, {3})
+        self.assertIn("相关业务进展", result)
+        self.assertIn("渠道改革推进并优化终端触达[3]", result)
+        self.assertIn("第八代产品推进渠道分类运营[4]", result)
+        no_baseline = writer._validate_peer_table(table.replace("[3]", "[9]"), "贵州茅台", "600519", peers, {"000858": [4]}, {3})
+        self.assertNotIn("相关业务进展", no_baseline)
+        self.assertNotIn("市值", no_baseline)
     def test_peer_material_reference_resolves_to_original_source(self):
         data = {"peer_materials": [{"peer_name": "五粮液", "peer_code": "000858", "id": "m1", "title": "五粮液进展", "text": "五粮液渠道反馈"}]}
         refs = writer.build_ref_map(data)
@@ -378,15 +382,14 @@ class AShareWriterRegressionTests(unittest.TestCase):
         title = "\u6e20\u9053\u6539\u9769\u91cd\u5851\u4ef7\u683c\u4f53\u7cfb"
         self.assertTrue(writer._valid_title_conclusion(title))
 
-    def test_peer_table_preserves_all_ten_dimensions_during_normalization(self):
+    def test_peer_table_preserves_nine_dimensions_during_normalization(self):
         header = [
-            "\u7ade\u4e89\u5173\u7cfb", "\u516c\u53f8\uff08\u4ee3\u7801\uff09", "\u5e02\u573a", "\u53ef\u6bd4\u4e1a\u52a1",
-            "\u884c\u4e1a\u5730\u4f4d", "\u76f8\u5173\u4e1a\u52a1\u8fdb\u5c55", "\u5e02\u503c", "\u5546\u4e1a\u6a21\u5f0f",
-            "\u76ee\u6807\u5ba2\u6237\u7fa4\u4f53", "\u6838\u5fc3\u4ea7\u54c1",
+            "竞争关系", "公司（代码）", "市场", "可比业务", "行业地位", "相关业务进展",
+            "商业模式", "目标客户群体", "核心产品",
         ]
         rows = [
-            ["\u2014", "\u8d35\u5dde\u8305\u53f0\uff08600519\uff09", "A\u80a1", "\u767d\u9152", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014"],
-            ["\u76f4\u63a5\u7ade\u4e89", "\u4e94\u7cae\u6db2\uff08000858\uff09", "A\u80a1", "\u767d\u9152", "\u2014", "\u6e20\u9053\u6539\u9769[1]", "\u2014", "\u2014", "\u2014", "\u2014"],
+            ["—", "贵州茅台（600519）", "A股", "白酒", "—", "渠道改革[1]", "—", "—", "—"],
+            ["直接竞争", "五粮液（000858）", "A股", "白酒", "—", "渠道分类运营[2]", "—", "—", "—"],
         ]
         md = "\n".join([
             "| " + " | ".join(header) + " |",
@@ -394,7 +397,35 @@ class AShareWriterRegressionTests(unittest.TestCase):
             *["| " + " | ".join(row) + " |" for row in rows],
         ])
         normalized = writer._normalize_markdown_tables(md)
-        self.assertEqual(len(writer._md_cells(normalized.splitlines()[0])), 10)
-        self.assertIn("\u76ee\u6807\u5ba2\u6237\u7fa4\u4f53", normalized)
+        self.assertEqual(len(writer._md_cells(normalized.splitlines()[0])), 9)
+        self.assertIn("目标客户群体", normalized)
+        self.assertNotIn("市值", normalized)
+
+    def test_ticker_period_null_is_a_nonblocking_annual_fallback(self):
+        original = fetch.call
+        fetch.call = lambda *args, **kwargs: ({"code": 1, "data": None}, 200, None)
+        try:
+            self.assertEqual(fetch.get_ticker_period({"ticker_period": {"url": "https://example.test/{ticker}"}}, "600519", "token"), ("A", None, None))
+        finally:
+            fetch.call = original
+
+    def test_invalid_scenario_uses_source_bound_deterministic_fallback(self):
+        key_data = {
+            "fact_marker_refs": {
+                "F1": {"value": "44%", "ref": 4, "label": "i茅台"},
+                "F2": {"value": "4.1万吨", "ref": 22, "label": "基酒"},
+            }
+        }
+        md = """### 9.4 情景推演
+
+**核心变量**
+• **渠道**：44%[4]
+
+**情景推演表**：
+"""
+        result = writer._drop_invalid_section94(md, key_data)
+        self.assertIn("**i茅台相关指标**：44%[4]", result)
+        self.assertIn("**基酒**：4.1万吨[22]", result)
+        self.assertEqual(writer._scenario_target_price_errors(result, key_data), [])
 if __name__ == "__main__":
     unittest.main()

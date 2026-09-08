@@ -292,6 +292,12 @@ def get_ticker_period(meta, ticker, token):
 
     data = rj.get("data")
 
+    # 部分标的该接口会以 HTTP/API 成功的 ``data: null`` 表示未提供最新
+    # 财报期，而不是调用失败。后续接口可以安全使用年度口径，不能把它计入
+    # 失败接口数，否则会误导运行结果。
+    if data is None:
+        return "A", None, None
+
     # data 可能是 list（ticker_period 接口返回期列表，按时间倒序）
     if isinstance(data, list) and data:
         latest = data[0]  # 最新一期
