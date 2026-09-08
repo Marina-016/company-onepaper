@@ -258,6 +258,28 @@ class AShareWriterRegressionTests(unittest.TestCase):
         phrases = {item["query"] for item in candidates if not item["code"]}
         self.assertTrue({"五粮液", "泸州老窖", "山西汾酒"} <= phrases)
 
+    def test_peer_candidates_extract_explicit_compare_and_mixed_enumeration(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "相比之下，宁德时代（CATL）在固态电池领域推进更快。主要对手包括比亚迪、国轩高科和亿纬锂能等电池厂商。"}}]
+        candidates = fetch.extract_peer_names(reports, "欣旺达")
+        phrases = {item["query"] for item in candidates if not item["code"]}
+        self.assertTrue({"宁德时代", "比亚迪", "国轩高科", "亿纬锂能"} <= phrases)
+
+    def test_validate_peer_code_uses_name_query_and_keeps_code_binding(self):
+        seen_queries = []
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            seen_queries.append((params or {}).get("query"))
+            return {"code": 1, "data": {"hits": [{"entity_id": "000858", "name": "五粮液股份有限公司"}]}}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            validated = fetch.validate_peer_names({"stock_search": {"url": "u"}}, [
+                {"query": "五粮液", "code": "000858"},
+            ], "tok")
+        finally:
+            fetch.call = original
+        self.assertEqual(seen_queries, ["五粮液"])
+        self.assertEqual(validated[0]["code"], "000858")
+        self.assertEqual(validated[0]["current_name"], "五粮液股份有限公司")
     def test_peer_candidates_extract_competitive_brand_enumeration(self):
         reports = [{"id": "r1", "_meta": {"abstractText": "\u98de\u5929\u8305\u53f0\u7684\u9500\u91cf\u589e\u957f\u5c06\u65e5\u76ca\u6324\u5360\u4e94\u7cae\u6db2\u3001\u6cf8\u5dde\u8001\u7a96\u7b49\u5176\u4ed6\u9ad8\u7aef\u54c1\u724c\u7684\u5e02\u573a\u9700\u6c42\u3002"}}]
         candidates = fetch.extract_peer_names(reports, "\u8d35\u5dde\u8305\u53f0")
@@ -271,6 +293,9 @@ class AShareWriterRegressionTests(unittest.TestCase):
         reports = [{"id": "r1", "_meta": {"abstractText": "\u67d0\u9879\u63aa\u65bd\u53ef\u80fd\u51b2\u51fb\u5e02\u573a\u7a33\u5b9a\u6027\u3002\u5206\u9f84\u8fd0\u8425\u7834\u5c40\u5e74\u8f7b\u5316\uff0c\u5e02\u503c\u7ba1\u7406\u63a5\u529b\u63a8\u8fdb\u3002"}}]
         self.assertEqual(fetch.extract_peer_names(reports, "\u8d35\u5dde\u8305\u53f0"), [])
 
+    def test_peer_candidates_reject_disclaimer_enumeration(self):
+        reports = [{"id": "r1", "_meta": {"abstractText": "可比估值说明：如需了解我们如何计算高盛因子概况的详细说明，请联系您的高盛代表。"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "海天味业"), [])
     def test_peer_candidates_reject_generic_peer_sentences(self):
         reports = [{"id": "r2", "_meta": {"abstractText": "参考可比公司2026年底部区间为12-24倍PE，我们给予25倍PE。"}}]
         self.assertEqual(fetch.extract_peer_names(reports, "贵州茅台"), [])

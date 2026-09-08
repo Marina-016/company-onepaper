@@ -694,14 +694,20 @@ def _normalize_security_name(name):
 
 def extract_peer_names(reports, company_short_name):
     """从研报明确的同业或竞争语境提取候选；无代码名称仍须经精确证券名称核验。"""
-    contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|相比(?:同行|同业|竞争)).{0,300}')
+    contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|主要对手|核心对手|直接竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|同业领先|相比之下|相较(?:于|之下)|相比(?:同行|同业|竞争)).{0,300}')
     named_code = re.compile(r'(?:^|[、，,；;：:\s])(?P<name>[\u4e00-\u9fa5]{2,12}?)(?:股份有限公司|集团)?[（(]\s*(?P<code>[036]\d{5})\s*[）)]')
-    enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*([\u4e00-\u9fa5]{2,8}(?:[、，,][\u4e00-\u9fa5]{2,8}){1,8})')
+    enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*(?P<names>[\u4e00-\u9fa5、，,和及与]{2,80}?)(?=等(?:其他)?(?:[\u4e00-\u9fa5]{0,6})?(?:品牌|公司|厂商|酒企|同行|竞争者)?(?:[，,。；;]|$)|[。；;])')
     # Match explicit competition verbs plus an enumeration of two or more names only.
     competitive_enum = re.compile(
-        '(?:\u6324\u5360|\u5206\u6d41|\u62a2\u5360|\u66ff\u4ee3|\u51b2\u51fb|\u4e89\u593a).{0,80}?'
-        '(?P<names>[\u4e00-\u9fa5]{2,8}(?:[\u3001\uff0c,][\u4e00-\u9fa5]{2,8}){1,8})'
+        '(?:\u6324\u5360|\u5206\u6d41|\u62a2\u5360|\u66ff\u4ee3|\u51b2\u51fb|\u4e89\u593a|\u8ffd\u8d76|\u8d76\u8d85|\u8d85\u8d8a).{0,80}?'
+        '(?P<names>[\u4e00-\u9fa5]{2,8}(?:(?:[\u3001\uff0c,]|\u548c|\u53ca|\u4e0e)[\u4e00-\u9fa5]{2,8}){1,8})'
         '(?=\u7b49(?:\u5176\u4ed6)?(?:\u9ad8\u7aef)?(?:\u54c1\u724c|\u516c\u53f8|\u5382\u5546|\u9152\u4f01|\u540c\u884c|\u7ade\u4e89\u8005))'
+    )
+    # A single competitor is admissible only when an explicit comparative/competitor
+    # lead-in names it. Generic phrases such as “竞争对手的追赶” do not match.
+    explicit_single_peer = re.compile(
+        r'(?:相比之下|相较(?:于|之下)|主要(?:竞争)?对手|核心(?:竞争)?对手|直接竞争(?:对手)?)'
+        r'(?:为|是|包括|有|[:：，,\s]+)(?P<name>[\u4e00-\u9fa5]{2,12})(?=[（(、，,。；;：:\s]|$)'
     )
     phrase = re.compile(r'[\u4e00-\u9fa5]{2,8}')
     blocked = {'公司', '行业', '可比公司', '同业公司', '同类公司', '竞争对手', '主要竞争对手', '竞争公司', '对标公司', '可比上市', '同类上市', company_short_name or ''}
@@ -725,18 +731,25 @@ def extract_peer_names(reports, company_short_name):
                     entry = candidates.setdefault('c:' + code, {'query': name, 'code': code, 'source_report_id': report_id, 'count': 0})
                     entry['count'] += 1
                 # 放宽：同业列举中的纯名称短语（无代码），后续须经 stock_search 名称一致核验才有效
-                enum_texts = enum.findall(context)
+                enum_texts = [match.group('names') for match in enum.finditer(context)]
                 enum_texts.extend(competitive_names)
                 competitive_names = []
+                candidate_names = []
                 for enum_text in enum_texts:
-                    for name in phrase.findall(enum_text):
-                        name = re.sub(r'[等]$', '', name)
-                        if len(name) < 2 or name in blocked or company_short_name in name:
-                            continue
-                        if name.endswith(_PEER_NOISE_SUFFIXES):
-                            continue
-                        entry = candidates.setdefault('n:' + name, {'query': name, 'code': '', 'source_report_id': report_id, 'count': 0})
-                        entry['count'] += 1
+                    parts = [part.strip() for part in re.split(r'[、，,]|和(?!而)|及|与', enum_text) if part.strip()]
+                    # 仅保留短公司名枚举；免责声明中的长句即使被“如”触发也不能占用候选配额。
+                    parts = [part for part in parts if 2 <= len(part) <= 8]
+                    if len(parts) >= 2:
+                        candidate_names.extend(parts)
+                candidate_names.extend(match.group('name') for match in explicit_single_peer.finditer(context))
+                for name in candidate_names:
+                    name = re.sub(r'[等]$', '', name)
+                    if len(name) < 2 or name in blocked or company_short_name in name:
+                        continue
+                    if name.endswith(_PEER_NOISE_SUFFIXES):
+                        continue
+                    entry = candidates.setdefault('n:' + name, {'query': name, 'code': '', 'source_report_id': report_id, 'count': 0})
+                    entry['count'] += 1
     return sorted(candidates.values(), key=lambda item: (-item['count'], item['code']))[:8]
 
 
@@ -751,11 +764,23 @@ def validate_peer_names(meta, peer_candidates, token, target_ticker=''):
         if re.match(r'^\d{6}$', code):
             if code == str(target_ticker or ''):
                 continue
-            rj, _, err = call('GET', url, token, params={'query': code, 'dataType': '1', 'topK': '10'})
+            phrase = str(candidate.get('query') or '').strip()
+            if len(phrase) < 2:
+                continue
+            # stock_search 的数字查询可能只返回模糊结果；以候选名称查询，
+            # 再同时核验返回代码和名称，保留代码候选的双重身份约束。
+            rj, _, err = call('GET', url, token, params={'query': phrase, 'dataType': '1', 'topK': '10'})
             if err or not rj:
                 continue
             hits = (rj.get('data') or {}).get('hits') or []
-            exact = next((item for item in hits if str(item.get('entity_id') or '').strip() == code), None)
+            expected_name = _normalize_security_name(phrase)
+            exact = next((
+                item for item in hits
+                if str(item.get('entity_id') or '').strip() == code
+                and _normalize_security_name(str(item.get('name') or ''))
+                and (expected_name in _normalize_security_name(str(item.get('name') or ''))
+                     or _normalize_security_name(str(item.get('name') or '')) in expected_name)
+            ), None)
             if not exact:
                 continue
             current_name = str(exact.get('name') or '').strip()
