@@ -13,19 +13,58 @@ FETCH_SPEC.loader.exec_module(fetch)
 
 
 class AShareWriterRegressionTests(unittest.TestCase):
-    def test_high_valuation_allows_no_target_price_statement(self):
+    def test_scenario_uses_qualitative_contract_and_rejects_unsourced_target(self):
         key_data = {
             "valuation": {"items": {
-                "市盈率PE": {"val": -1},
-                "市净率PB": {"val": 56.6, "avg": 8.0},
+                "市盈率PE": {"val": 21.3552, "avg": 18.0},
+                "市净率PB": {"val": 2.35, "avg": 2.0},
             }},
-            "consensus_forecasts": [],
+            "consensus_forecasts": [
+                {"foreYear": 2026, "conEps": 3.905, "conPe": 18.2995},
+                {"foreYear": 2027, "conEps": 4.3614, "conPe": 16.3848},
+            ],
+            "actual_consensus": {"conEps": 2.3068},
         }
-        valid = "传统PE法失效：当前处于主题/预期定价阶段，不输出目标价。"
-        invalid = "EPS＝0.42元 × PE＝45x ＝18.90元"
+        valid = """### 9.4 情景推演
+**核心变量**
+• **销量**：100万件[1]；影响收入兑现
+• **单价**：10元[2]；影响盈利水平
+
+**情景推演表**：
+
+| 情景 | 核心假设 | 经营含义 | 估值含义 |
+|:-----|:---------|:---------|:---------|
+| 乐观（概率~25%） | 销量兑现更快<br>单价稳定 | 收入利润弹性增强 | 仅作敏感性判断，不提供目标价 |
+| 中性（概率~50%） | 延续当前节奏 | 收入利润符合当前预期 | 仅作敏感性判断，不提供目标价 |
+| 悲观（概率~25%） | 销量兑现偏慢<br>单价承压 | 收入利润承压 | 仅作敏感性判断，不提供目标价 |
+"""
         self.assertEqual(writer._scenario_target_price_errors(valid, key_data), [])
+        invalid = valid.replace(
+            "仅作敏感性判断，不提供目标价",
+            "EPS＝3.91元 × PE＝18.3x ＝71.55元",
+            1,
+        )
         self.assertTrue(writer._scenario_target_price_errors(invalid, key_data))
 
+    def test_valuation_context_detects_cross_interface_price_conflict(self):
+        key_data = {
+            "valuation": {"items": {
+                "市盈率PE": {"val": 21.3552, "avg": 18.0, "rank": 2, "rankBase": 5},
+                "市净率PB": {"val": 2.35, "avg": 2.0},
+            }},
+            "consensus_forecasts": [
+                {"foreYear": 2026, "conEps": 3.905, "conPe": 18.2995},
+                {"foreYear": 2027, "conEps": 4.3614, "conPe": 16.3848},
+            ],
+            "actual_consensus": {"conEps": 2.3068},
+            "ref_map": {"valuation_rank": {"n": 1}, "consensus": {"n": 2}},
+        }
+        ctx = writer._scenario_valuation_context(key_data)
+        self.assertAlmostEqual(ctx["anchor_price"], 71.46, places=1)
+        self.assertFalse(ctx["rank_reconciled"])
+        section = writer._gen_section93_v131(key_data)
+        self.assertIn("接口口径未对齐", section)
+        self.assertIn("不作为当前定价、PEG或情景目标价依据", section)
     def test_empty_section_recovery_uses_heading_not_separator(self):
         md = "## 5 产销链分析\n\n## 6 公司财务数据分析\n\n正文\n"
         result = writer._replace_empty_h2_body(md, 5, "来源化 fallback[3]。")
@@ -48,6 +87,14 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertTrue(valid, issues)
         self.assertNotIn("**因此**", result)
         self.assertEqual(result.count("**"), 6)
+    def test_risk_gate_accepts_two_source_backed_company_risks(self):
+        body = (
+            "• **核心产品需求放缓风险**：客户订单节奏放缓可能影响收入兑现[1]\n"
+            "• **行业价格竞争风险**：主要产品降价可能压缩公司毛利率[2]"
+        )
+        valid, issues = writer._validate_a_share_risk_body(body)
+        self.assertTrue(valid, issues)
+
 
     def test_section_nine_rejects_heading_only_fragment(self):
         self.assertEqual(writer._normalize_section9_llm_fragment("## 9 一致预期、盈利预测与估值"), "")
@@ -147,10 +194,27 @@ class AShareWriterRegressionTests(unittest.TestCase):
         for match in __import__("re").finditer(r"\*\*Q：\*\*", rendered):
             self.assertRegex(rendered[match.start():match.start() + 500], r"\[11\]")
 
-    def test_qa_labels_meeting_note_as_non_guidance(self):
+    def test_qa_uses_concise_answer_label(self):
         rendered = writer._format_qa_markdown([{"q": "question", "a": "answer"}], [])
-        self.assertIn("\u8c03\u7814\u7eaa\u8981\u89c2\u70b9\uff0c\u975e\u516c\u53f8\u6307\u5f15", rendered)
+        self.assertIn("**A：** answer", rendered)
+        self.assertNotIn("调研纪要观点，非公司指引", rendered)
 
+    def test_section_seven_topic_blocks_are_promoted_to_h3(self):
+        md = """## 7 公司调研大纲
+
+**议题1：渠道库存与回款节奏**
+背景：渠道库存仍需跟踪[1]
+
+**议题2：产品结构与价格带表现**
+背景：核心产品动销变化[2]
+
+**议题3：费用投放效率**
+背景：销售费用率变化[3]
+"""
+        rendered = writer._renumber_a_share_subsections(md)
+        self.assertIn("### 7.1 渠道库存与回款节奏", rendered)
+        self.assertIn("### 7.2 产品结构与价格带表现", rendered)
+        self.assertIn("### 7.3 费用投放效率", rendered)
     def test_structure_gate_rejects_heading_inside_table_cell(self):
         errors = writer._markdown_structure_errors("| metric | ## 2 malformed heading |\n|:--|:--|")
         self.assertTrue(any("\u8868\u683c\u5355\u5143\u683c\u5185\u5305\u542b\u6807\u9898" in error for error in errors))

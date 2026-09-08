@@ -1,4 +1,13 @@
 # Changelog
+
+## v1.2.31
+
+- Unified §9.3/§9.4 on one consensus-implied price anchor and stopped treating unreconciled valuation-rank PE as current pricing.
+- Replaced LLM-written §9.3 with deterministic relative-valuation interpretation.
+- Changed §9.4 to source-bound operating scenarios; without three sourced scenario EPS/PE pairs it emits no numerical target price and fails closed on malformed output.
+- Removed the legacy postprocessor that could recreate an X.XX × Yx placeholder scenario table.
+- Relaxed §10 to 2-5 source-backed risks and allowed explicitly sourced company-specific demand/competition/macro risks while retaining citation and anti-boilerplate gates.
+- Logged risk JSON rejection reasons before the source-backed fallback.
 ## v1.2.30
 
 ### P1: Competition-context peer extraction

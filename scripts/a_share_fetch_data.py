@@ -1353,7 +1353,7 @@ def generate_charts(meta, financial_data, main_comp_data, token,
             return key, None
         import time as _time
         for attempt in range(3):
-            rj, _, err = call("POST", url, token, body={"text": text}, timeout=30)
+            rj, _, err = call("POST", url, token, body={"text": text}, timeout=60)
             if not err and rj:
                 img = (rj.get("chart_urls") or [None])[0]
                 if img:
@@ -1522,8 +1522,12 @@ def run(ticker_input, token, output_path):
     if peer_err:
         record_error("getMaterialsV2", peer_err)
         print(f"  △ peer_materials: 无数据 | {peer_err}")
+    elif not peer_validated:
+        print("  - peer_materials: 跳过（无可核验候选）")
+    elif peer_data:
+        print(f"  ✓ peer_materials: {len(peer_data)} 条（可比公司: {', '.join(peer_labels)}）")
     else:
-        print(f"  ✓ peer_materials: 有数据（可比公司: {', '.join(peer_labels) if peer_labels else '无可核验候选'}）")
+        print(f"  △ peer_materials: 未找到可核验材料（可比公司: {', '.join(peer_labels)}）")
 
     # ── Phase 4: 图表
     print("\n[4/5] 生成图表...")

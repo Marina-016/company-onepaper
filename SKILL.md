@@ -1,11 +1,11 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.30
+version: v1.2.31
 license: MIT
 compatibility: network
 description: |
   閻㈢喐鍨?A閼猜扳偓浣硅厫閼测€虫嫲缂囧氦鍋傞崗顒€寰冮惃鍕嫳閺傜顫嬬憴鎺戝彆閸欓晲绔存い鐢电剨閹躲儱鎲￠妴?  娑撴槒鐭惧鍕贩鐠?DATAYES_TOKEN閵嗕垢ython3閵嗕笍atayes 閺佺増宓侀柌鍥肠閼存碍婀伴崪宀冨殰閸斻劌瀵?writer 閻㈢喐鍨?MD + DOCX閵?  瑜版挸澧犻悧鍫熸拱瀵缚鐨熼惇鐔风杽閺佺増宓侀妴浣哥穿閻劑妫撮悳顖樷偓浣烘窗閺嶅洤鍙曢崣闀愮閼峰瓨鈧佲偓浣虹波閺嬪嫬瀵茬拹銊╁櫤闂傘劎顩﹂崪宀冨殰閸斻劋鎱ㄦ径宥冣偓?  瑜版挾鏁ら幋鐤洣濮瑰倻鏁撻幋鎰ㄢ偓婵呯妞ょ數鐒婇垾婵冣偓婵嗗彆閸欓晲绔存い鐢电剨閳ユ績鈧繆鍋傜粊銊х埡缁岃埖濮ら崨濞锯偓婵冣偓婵嗗彆閸欏摜鐖虹粚鑸靛Г閸涘ň鈧繃鍨ㄦ潏鎾冲弳娑撳﹤绔堕崗顒€寰冮崥宥囆?娴狅絿鐖滅憰浣圭湴閸掑棙鐎介弮鎯靶曢崣鎴欌偓?  娑撳秴顦╅悶鍡涙姜娑撳﹤绔舵稉璁崇秼閵嗕線娼柌鎴ｇ€洪惍鏃傗敀娴犺濮熼幋鏍ㄦ￥濞夋洖褰囧妤€褰叉宀冪槈閺夈儲绨惃鍕彆閸欑鍨庨弸鎰剁礉娑撳秴婀拠浣瑰祦娑撳秷鍐婚弮鍓佺椽闁姵濮ら崨濞库偓?metadata:
-  short-description: 閻㈢喐鍨欰閼?濞擃垵鍋?缂囧氦鍋傞崗顒€寰冩稉鈧い鐢电剨閿涘澊1.2.13閿?  openclaw:
+  short-description: 閻㈢喐鍨欰閼?濞擃垵鍋?缂囧氦鍋傞崗顒€寰冩稉鈧い鐢电剨閿涘澊1.2.31閿?  openclaw:
     requires:
       env: [DATAYES_TOKEN]
       bins: [python3]
@@ -135,6 +135,12 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
+### v1.2.31 Unified valuation anchor and evidence-safe scenarios
+
+- Build one consensus-implied price anchor from same-date forecast EPS/PE rows and use it across §9.3 and §9.4.
+- If the valuation-rank PE implies a price more than 15% away from that anchor, show it only as an interface-relative peer rank; do not treat it as current pricing, PEG input or scenario target-price basis.
+- Generate §9.3 deterministically. Generate §9.4 only from source-bound operating fact cards; without three independently sourced bull/base/bear valuation inputs, keep valuation implications qualitative and explicitly omit target prices.
+- Accept 2-5 source-backed company risks. Competition, demand and macro risks are permitted when the cited evidence explicitly links them to the company; unsupported generic boilerplate remains forbidden.
 ### v1.2.29 Source binding and optional-section integrity
 
 - Bind each research report citation to its own `reportId` body only. A missing body is not substituted with another report's body and cannot support a generated claim.

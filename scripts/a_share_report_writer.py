@@ -2268,8 +2268,7 @@ def _format_qa_markdown(selected: list, ref_tags: list) -> str:
             a = _re.sub(r'(?:\s*\[\d+\])+\s*$', '', a).rstrip()
             a = a + ref
         lines.append(f"**Q：** {q}")
-        # Q&A may be a broker meeting note rather than company guidance.
-        lines.append(f"**A（调研纪要观点，非公司指引）：** {a}")
+        lines.append(f"**A：** {a}")
     return "\n\n".join(lines)
 
 
@@ -2748,11 +2747,7 @@ def _as_positive_float(value):
 
 
 def _scenario_valuation_context(key_data: dict) -> dict:
-    """给 §9.4 提供唯一的估值口径，并判定传统 PE 目标价法是否可用。
-
-    ``conPe`` 是当前股价相对一致预期 EPS 的隐含 PE，因此 ``conEps × conPe``
-    是可复核的当前定价锚。高 PB 或亏损标的不允许用任意固定 PE 重新定价。
-    """
+    """Return the single valuation anchor shared by §9.3 and §9.4."""
     valuation = key_data.get("valuation") or {}
     items = valuation.get("items") or {}
     pe_item = items.get("市盈率PE") or {}
@@ -2761,280 +2756,272 @@ def _scenario_valuation_context(key_data: dict) -> dict:
     pb = _as_positive_float(pb_item.get("val"))
     pb_avg = _as_positive_float(pb_item.get("avg"))
 
-    baseline_eps = baseline_pe = None
-    for forecast in key_data.get("consensus_forecasts") or []:
+    forecast_points = []
+    for index, forecast in enumerate(key_data.get("consensus_forecasts") or []):
         eps = _as_positive_float(forecast.get("conEps"))
         pe = _as_positive_float(forecast.get("conPe"))
-        if eps is not None and pe is not None:
-            baseline_eps, baseline_pe = eps, pe
-            break
+        if eps is None or pe is None:
+            continue
+        try:
+            year = int(forecast.get("foreYear"))
+        except (TypeError, ValueError):
+            year = None
+        forecast_points.append({
+            "year": year,
+            "eps": eps,
+            "pe": pe,
+            "implied_price": round(eps * pe, 4),
+            "index": index,
+        })
 
-    reasons = []
-    # 接口以负值/0 表示 PE 不适用；不存在有效值不直接当作亏损处理。
-    raw_pe_ttm = pe_item.get("val")
+    baseline = forecast_points[0] if forecast_points else {}
+    implied_prices = sorted(point["implied_price"] for point in forecast_points)
+    anchor_price = anchor_spread = None
+    if implied_prices:
+        mid = len(implied_prices) // 2
+        median_price = (
+            implied_prices[mid]
+            if len(implied_prices) % 2
+            else (implied_prices[mid - 1] + implied_prices[mid]) / 2
+        )
+        anchor_price = round(median_price, 2)
+        if anchor_price:
+            anchor_spread = (max(implied_prices) - min(implied_prices)) / anchor_price
+
+    actual = key_data.get("actual_consensus") or {}
+    actual_eps = _as_positive_float(actual.get("conEps"))
+    rank_implied_price = round(pe_ttm * actual_eps, 2) if pe_ttm and actual_eps else None
+    rank_price_gap = None
+    rank_reconciled = None
+    if anchor_price and rank_implied_price:
+        rank_price_gap = abs(rank_implied_price - anchor_price) / anchor_price
+        rank_reconciled = rank_price_gap <= 0.15
+
+    disable_reasons = []
+    raw_pe = pe_item.get("val")
     try:
-        pe_ttm_nonpositive = raw_pe_ttm is not None and float(raw_pe_ttm) <= 0
+        if raw_pe is not None and float(raw_pe) <= 0:
+            disable_reasons.append("PE(TTM)≤0")
     except (TypeError, ValueError):
-        pe_ttm_nonpositive = False
-    if pe_ttm_nonpositive:
-        reasons.append("PE(TTM)≤0")
+        pass
     if pb is not None and pb_avg is not None and pb >= pb_avg * 3:
-        reasons.append(f"PB={pb:.2f}x，为行业均值{pb_avg:.2f}x的{pb / pb_avg:.1f}倍")
+        disable_reasons.append(f"PB={pb:.2f}x，为行业均值{pb_avg:.2f}x的{pb / pb_avg:.1f}倍")
 
-    anchor_price = round(baseline_eps * baseline_pe, 2) if baseline_eps and baseline_pe else None
-    target_price_allowed = bool(anchor_price) and not reasons
+    # Quantitative target prices remain disabled until the fetch pipeline supplies a fully source-bound Bull/Base/Bear input set.
+    quantitative_scenarios_allowed = False
     return {
         "pe_ttm": pe_ttm,
         "pb": pb,
         "pb_avg": pb_avg,
-        "baseline_eps": baseline_eps,
-        "baseline_pe": baseline_pe,
+        "forecast_points": forecast_points,
+        "baseline_eps": baseline.get("eps"),
+        "baseline_pe": baseline.get("pe"),
+        "baseline_year": baseline.get("year"),
         "anchor_price": anchor_price,
-        "target_price_allowed": target_price_allowed,
-        "disable_reasons": reasons,
+        "anchor_spread": anchor_spread,
+        "actual_eps": actual_eps,
+        "rank_implied_price": rank_implied_price,
+        "rank_price_gap": rank_price_gap,
+        "rank_reconciled": rank_reconciled,
+        "quantitative_scenarios_allowed": quantitative_scenarios_allowed,
+        "disable_reasons": disable_reasons,
     }
 
 
-def _scenario_target_price_errors(section: str, key_data: dict) -> list:
-    """校验情景估值不会绕开当前定价锚；返回错误原因供 fail-closed 使用。"""
+def _gen_section93_v131(key_data: dict) -> str:
+    """Render §9.3 deterministically so separate valuation APIs are not blended."""
+    valuation = key_data.get("valuation") or {}
+    items = valuation.get("items") or {}
+    ref_map = key_data.get("ref_map") or {}
+    valuation_ref = (ref_map.get("valuation_rank") or {}).get("n")
+    consensus_ref = (ref_map.get("consensus") or {}).get("n")
+    valuation_cite = f"[{valuation_ref}]" if valuation_ref else ""
+    consensus_cite = f"[{consensus_ref}]" if consensus_ref else ""
     ctx = _scenario_valuation_context(key_data)
-    formulas = list(re.finditer(
-        r"EPS\s*[＝=]\s*(\d+(?:\.\d+)?)\s*元?\s*[×x*]\s*PE\s*[＝=]\s*(\d+(?:\.\d+)?)\s*x?\s*[＝=]\s*(\d+(?:\.\d+)?)\s*元",
-        section,
-        re.IGNORECASE,
-    ))
-    # “传统PE法失效，不输出目标价”属于否定说明，不是实际目标价。
-    # 仅拦截可执行的 PE 公式，或“目标价/对应股价 + 数值”的正向陈述。
-    has_target_language = bool(re.search(
-        r"(?:目标价|对应股价)\s*(?:为|是|约|：|:|=|上调至|下调至)?\s*(?:人民币|RMB|￥)?\s*\d",
-        section,
-        re.I,
-    ))
-    has_per_share_price = bool(re.search(
-        r"(?:\u6bcf\u80a1(?:\u4ef7\u503c|\u4ef7\u683c)?|\u80a1\u4ef7|\u4ef7\u683c)\s*(?:\u4e3a|\u662f|\u7ea6|\uff1a|:|=|\u4e0a\u8c03\u81f3|\u4e0b\u8c03\u81f3)?\s*"
-        r"(?:\u4eba\u6c11\u5e01|RMB|\uffe5)?\s*\d+(?:\.\d+)?\s*\u5143(?:/\u80a1)?",
-        section,
-        re.I,
-    ))
-    errors = []
 
-    if not ctx["target_price_allowed"]:
-        if formulas or has_target_language or has_per_share_price:
-            reason = "；".join(ctx["disable_reasons"]) or "缺少当前定价锚"
-            errors.append(f"传统PE目标价法不可用({reason})，却输出了目标价")
-        if "传统PE法失效" not in section and "缺少当前定价锚" not in section:
-            errors.append("未明确说明传统PE法失效或当前定价锚缺失")
-        return errors
-
-    if len(formulas) < 3:
-        errors.append("目标价公式不足3档，无法复核")
-        return errors
-
-    anchor = ctx["anchor_price"]
-    for match in formulas[:3]:
-        eps, pe, target = (float(v) for v in match.groups())
-        expected = round(eps * pe, 2)
-        if abs(expected - target) > max(0.05, expected * 0.01):
-            errors.append(f"目标价算术不匹配: {eps}×{pe}={expected}，报告为{target}")
-        if not (anchor * 0.25 <= target <= anchor * 4.0):
-            errors.append(f"目标价{target}元脱离当前定价锚{anchor}元")
-    return errors
-
-
-def _has_scenario_input(key_data: dict) -> bool:
-    """检查情景推演是否有输入基础：
-    1. 有一致预期 EPS 和 PE（用于计算目标价）
-    2. 或研报/纪要中有可提取为业务驱动变量的内容
-    均不满足则跳过 9.4 整节
-    """
-    forecasts = key_data.get("consensus_forecasts", [])
-    if forecasts:
-        fc0 = forecasts[0]
-        if fc0.get("conEps") is not None and fc0.get("conPe") is not None:
-            try:
-                float(fc0["conEps"]); float(fc0["conPe"])
-                return True
-            except (TypeError, ValueError):
-                pass
-    # 检查材料中是否有可用的业务变量文本
-    for src in [key_data.get("reports", []), key_data.get("meetings", [])]:
-        for item in (src or [])[:5]:
-            txt = (item.get("detail_text") or item.get("text") or "")[:3000]
-            if re.search(
-                r'(?:出货|装机|产能|市占|单价|毛利率\b|ASP\b|开工|利用率|ARPU\b|GMV\b|take.rate|单瓦|吨|价差|净息|拨备|渗透率|量价).*?\d+',
-                txt
-            ):
-                return True
-    return False
-
-
-def _gen_section93(client, key_data: dict) -> str:
-    """仅生成 9.3 估值分析（v1.2.11 拆分：独立于 9.4）"""
-    valuation = key_data["valuation"]
-    pe_data = valuation["items"].get("市盈率PE", {})
-    pb_data = valuation["items"].get("市净率PB", {})
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
-    forecasts = key_data.get("consensus_forecasts", [])
-
-    # ── 动态构建估值维度表格行 ──
-    def _has_val(d):
-        v = d.get("val")
-        return v is not None and str(v).strip() not in ("", "—", "0", "0.0")
-
-    val_rows = []
-    _dim_priority = ["市盈率PE", "市净率PB", "市销率PS", "EV/EBITDA", "市现率PCF"]
-    for dim_name in _dim_priority + [k for k in valuation["items"] if k not in _dim_priority]:
-        d = valuation["items"].get(dim_name, {})
-        if not _has_val(d):
+    rows = []
+    priority = ["市盈率PE", "市净率PB", "市销率PS", "EV/EBITDA", "市现率PCF"]
+    ordered_names = priority + [name for name in items if name not in priority]
+    for name in ordered_names:
+        item = items.get(name) or {}
+        value = _as_positive_float(item.get("val"))
+        if value is None:
             continue
-        avg_str = f"，行业均值{d.get('avg','—')}x" if d.get("avg") else ""
-        rank_str = (f"，排名{d.get('rank','—')}/{d.get('rankBase','—')}"
-                    if d.get("rank") and d.get("rankBase") else "")
-        val_rows.append(
-            f"| {dim_name} | {d.get('val','—')}x{avg_str}{rank_str} | [分析此维度当前是否低估/合理/偏高，1句话] |"
+        avg = _as_positive_float(item.get("avg"))
+        rank = item.get("rank")
+        rank_base = item.get("rankBase")
+        level = f"{value:.2f}x"
+        if avg is not None:
+            level += f"；行业均值{avg:.2f}x"
+        if rank and rank_base:
+            level += f"；排名{rank}/{rank_base}"
+        level += valuation_cite
+
+        interpretations = []
+        if avg is not None and avg:
+            gap = (value / avg - 1) * 100
+            direction = "溢价" if gap >= 0 else "折价"
+            interpretations.append(f"较行业均值{direction}{abs(gap):.1f}%")
+        if rank and rank_base:
+            interpretations.append(f"同接口样本排名{rank}/{rank_base}")
+        rows.append(f"| {name} | {level} | {'；'.join(interpretations) or '仅作同接口横向观察'} |")
+
+    if not rows:
+        return ""
+
+    narrative = []
+    anchor = ctx.get("anchor_price")
+    if anchor:
+        narrative.append(
+            f"一致预期各预测年度EPS与对应PE隐含的统一价格锚约为{anchor:.2f}元{consensus_cite}。"
+        )
+    if ctx.get("rank_reconciled") is False:
+        gap_pct = (ctx.get("rank_price_gap") or 0) * 100
+        rank_price = ctx.get("rank_implied_price")
+        narrative.append(
+            f"估值排名接口PE按最新实际EPS折算约{rank_price:.2f}元{valuation_cite}{consensus_cite}，"
+            f"与统一锚偏离{gap_pct:.1f}%；因接口口径未对齐，下表仅用于同接口横向比较，"
+            "不作为当前定价、PEG或情景目标价依据。"
+        )
+    elif ctx.get("rank_reconciled") is True:
+        gap_pct = (ctx.get("rank_price_gap") or 0) * 100
+        narrative.append(
+            f"估值排名接口与统一价格锚的隐含价格偏差为{gap_pct:.1f}%，可作交叉验证；"
+            "下表仍仅解释同接口的行业相对位置。"
+        )
+    else:
+        narrative.append(
+            "估值排名接口缺少可与统一价格锚交叉核验的同口径实际EPS，"
+            "下表仅用于同接口横向比较，不延伸为目标价或PEG判断。"
         )
 
-    if not val_rows:
-        return ""  # v1.2.11: 所有估值维度无效 → 不生成 9.3
-
-    val_table_str = (
-        "| 估值维度 | 当前水平 | 解读 |\n"
-        "|:---------|:---------|:-----|\n"
-        + "\n".join(val_rows)
+    table = (
+        "| 估值维度 | 接口口径值（横向） | 横向解读 |\n"
+        "|:---------|:---------------------|:---------|\n"
+        + "\n".join(rows)
     )
-
-    # 9.1/9.2 表格上下文（供 LLM 参考，不重复数字）
-    consensus_ctx = key_data.get("consensus_table_ctx", "")
-    forecast_ctx = key_data.get("forecast_table_ctx", "")
-    tables_section = ""
-    if consensus_ctx or forecast_ctx:
-        tables_section = "\n【9.1/9.2已生成表格（9.3不重复表中数字，只做解读和判断）】\n"
-        if consensus_ctx:
-            tables_section += f"9.1市场一致预期：\n{consensus_ctx}\n"
-        if forecast_ctx:
-            tables_section += f"9.2各机构预测：\n{forecast_ctx}\n"
-
-    fc_text = "\n".join([
-        f"2026E: 净利{_fmt(f.get('conProfit'), unit=1e4)}亿, EPS{f.get('conEps','—')}, PE{round(f.get('conPe',0),1)}x"
-        for f in forecasts[:2]
-    ]) if forecasts else "（无一致预期数据）"
-
-    prompt = f"""为 {name} 撰写第9.3节的估值分析。
-{tables_section}
-【估值数据】
-PE(TTM): {pe_data.get('val','—')}x，行业均值{pe_data.get('avg','—')}x，排名{pe_data.get('rank','—')}/{pe_data.get('rankBase','—')}
-PB: {pb_data.get('val','—')}x，行业均值{pb_data.get('avg','—')}x
-估值评价: {valuation.get('comment','')}
-
-【一致预期数据】
-{fc_text}
-
-【引用映射】
-fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
-consensus=[{ref_map.get('consensus',{}).get('n','')}]
-valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}]
-
-【格式要求】
-
-### 9.3 估值分析
-[**2-3句话**（禁止仅一句话）：当前PE(TTM)水平、处于近N年分位数、与同业对比的折溢价幅度，含具体数字并标注引用[N]。不要复述下方表格已有数字，只做投资判断层面的解读。]
-
-{val_table_str}
-
-**重要**：上方表格已按实际有数据的维度生成，**只填写每行的"解读"列，不新增行、不删除行、不修改前两列**。
-⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
-"""
-    return call_claude(client, prompt, max_tokens=800)
+    return "### 9.3 估值分析\n\n" + "".join(narrative) + "\n\n" + table
 
 
-def _gen_section94(client, key_data: dict) -> str:
-    """仅生成 9.4 情景推演（v1.2.11 拆分：独立于 9.3）"""
-    forecasts = key_data.get("consensus_forecasts", [])
-    fin = key_data["fin"]
+def _has_safe_scenario_input(key_data: dict) -> bool:
+    """Only source-bound operating fact cards can seed a scenario table."""
+    cards = str(key_data.get("operating_fact_cards") or "")
+    return bool(re.search(r"\{\{FACT:F\d+\}\}", cards))
+
+
+def _gen_section94_v131(client, key_data: dict) -> str:
+    """Generate operating scenarios, never unsourced numerical target prices."""
     name = key_data["name"]
-    ref_map = key_data["ref_map"]
+    ref_map = key_data.get("ref_map") or {}
+    consensus_ref = (ref_map.get("consensus") or {}).get("n")
+    consensus_cite = f"[{consensus_ref}]" if consensus_ref else ""
+    ctx = _scenario_valuation_context(key_data)
+    anchor = ctx.get("anchor_price")
 
-    fc_text = "\n".join([
-        f"2026E: 净利{_fmt(f.get('conProfit'), unit=1e4)}亿, EPS{f.get('conEps','—')}, PE{round(f.get('conPe',0),1)}x"
-        for f in forecasts[:2]
-    ]) if forecasts else "（无一致预期数据）"
-
-    # ── 统一估值锚：不得由 LLM 任意挑选固定 PE ──
-    valuation_ctx = _scenario_valuation_context(key_data)
-    if valuation_ctx["target_price_allowed"]:
-        _anchor = valuation_ctx["anchor_price"]
-        _base_eps = valuation_ctx["baseline_eps"]
-        _base_pe = valuation_ctx["baseline_pe"]
-        scenario_valuation_rule = f"""⚠️ **目标价必须锚定当前定价，不得自由填写**：
-- 当前定价锚 = 一致预期 EPS {_base_eps:.4g}元 × 当前隐含 PE {_base_pe:.2f}x = {_anchor:.2f}元。
-- 各情景只能围绕此锚定价变化，并同时反映 EPS 与隐含 PE 的变化；不得凭空采用 40x、45x 等固定 PE。
-- 估值含义写作 `EPS＝X.XX元 × PE=Yx = Z.ZZ元`，其中 Z.ZZ 必须准确等于前两项乘积，且在 {_anchor * 0.25:.2f}–{_anchor * 4:.2f} 元范围内。
-- 不要写“基于2026年EPS”“给予PEG对应PE”“基于[N]推算”或“内部测算”等额外说明。"""
-        valuation_cell_example = "EPS＝X.XX元 × PE=Yx = Z.ZZ元"
+    if anchor:
+        valuation_context = (
+            f"一致预期各预测年度EPS×对应PE隐含的统一价格锚约为{anchor:.2f}元{consensus_cite}。"
+            "该数值只用于检查三档方向与当前预期是否一致，不是目标价。"
+        )
     else:
-        _reason = "；".join(valuation_ctx["disable_reasons"]) or "缺少可复核的当前定价锚"
-        scenario_valuation_rule = f"""⚠️ **传统 PE 目标价法已禁用**：{_reason}。
-- 估值含义必须明确写“当前处于主题/预期定价阶段，传统PE法失效”，并结合当前隐含估值说明上行或下行敏感性。
-- 禁止出现“目标价”、`EPS＝… × PE=…`、固定 PE 倍数或任何具体股价数字；不得用传统 EPS×PE 给出目标价。"""
-        valuation_cell_example = "当前处于主题/预期定价阶段，传统PE法失效；说明估值敏感性"
+        valuation_context = "当前缺少可复核的统一价格锚，三档只讨论经营与估值敏感方向。"
+    if ctx.get("disable_reasons"):
+        valuation_context += "传统PE法不适用：" + "；".join(ctx["disable_reasons"]) + "。"
 
-    prompt = f"""为 {name} 撰写第9.4节的情景推演。
-
-【一致预期数据】
-{fc_text}
-{scenario_valuation_rule}
-【财务数据（最近实际年度）】
-{_compact_fin(fin)}
+    prompt = f"""为{name}生成第9.4节情景推演。
 
 【可核验经营事实卡】
-{key_data.get("operating_fact_cards", "（无可核验经营事实卡；不得编造经营数字）")}
+{key_data.get("operating_fact_cards")}
 
-【事实卡硬规则】
-- 核心变量如涉及销量、产量、出货、单价、渠道占比、市占率、产能、系列酒或基酒，必须原样使用 `{{{{FACT:F编号}}}}` 代替数值和引用；不得自己填写数值或[N]。
-- 程序会将标记渲染为原始来源的“数值[N]”。无卡片的经营变量不可写入核心变量或情景假设。
+【统一估值口径】
+{valuation_context}
 
-【引用映射】
-fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
-consensus=[{ref_map.get('consensus',{}).get('n','')}]
+【硬规则】
+1. 只选2-4个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，不得自行填写数字或引用。
+2. 三档假设只写相对当前基准的方向与触发条件，如“订单兑现快于当前预期”“毛利率维持/承压”；不得编造新的销量、收入、利润、EPS、PE或股价数字。
+3. 经营含义只写收入、利润、现金流的方向和传导路径，不写没有来源的预测值。
+4. 估值含义只能讨论相对统一价格锚的上行/下行敏感性；每格都明确“仅作敏感性判断，不提供目标价”。
+5. 严格输出4列表格，顺序为乐观/中性/悲观；概率分别25%/50%/25%，合计100%。
+6. 不输出任何解释、注释、内部测算或额外章节。
 
-【格式要求】
+严格按以下格式输出：
 
 ### 9.4 情景推演
 **核心变量**
-⚠️ **核心变量必须是驱动业务的输入侧指标**，例如：出货量/装机量、单价/单瓦盈利、产能利用率、市占率、毛利率、扩产节奏、原材料成本等——取决于行业特性。
-⚠️ **严禁将营收、净利润、EPS、归母净利润等财务结果填为核心变量**，这些是预测的输出，不是输入。
-⚠️ **每个变量必须来自不同来源**（研报/纪要/公告等），不得所有变量统一标注同一个引用如[N]。
-⚠️ `research_sec_coredata` 只可引用全公司营收、净利润、EPS、PE 等一致预期输出；严禁把它作为投放量、销量、产量、渠道占比、产品增速等经营假设的来源。未提供研报、纪要、MD&A 或业务明细来源时，不写该经营变量。
-⚠️ **fdmtNew仅支持结构化财务指标，不得用于ARPU、客户数、DICT增速、资本开支规划、派息率等经营指标**——这些必须从研报或纪要引用。
-⚠️ **每个核心变量只写当前数值和选择该变量作为核心驱动因素的理由，不要写敏感性区间**。
-⚠️ **有引用编号[N]即可，不要再写"来源：公司年度报告/行业一致预期/定期报告"等括号来源说明，不要写"基于[N]推算"或"内部测算"。**
-⚠️ **核心变量必须含具体数值和[N]引用**，例如「• **800G出货量**：2026年预计X万件[N]；[一句话说明]」，不得写「• **需求风险**：[N]」等无数字的条目。
-• **[业务驱动变量1]**：[数值][N]；[一句话说明为何是核心变量]
-• **[业务驱动变量2]**：[数值] [N]；[一句话说明，不同于变量1的来源]
-• ...（3-5个，每个变量有自己的独立引用）
+• **[变量1]**：{{{{FACT:F编号}}}}；[为什么影响公司经营]
+• **[变量2]**：{{{{FACT:F编号}}}}；[为什么影响公司经营]
 
 **情景推演表**：
 
-⚠️ **情景推演表必须基于上方列出的核心变量，写出每个情景下核心变量的具体取值**，不得出现「基于核心变量乐观假设」等无信息量的模板话术。
-
-⚠️ **币种统一规则**：本报告主体为A股({name})，股价、目标价、EPS、股息率必须统一使用**人民币/A股口径**。
-
-{scenario_valuation_rule}
-
-⚠️ **三种情景概率之和必须为100%，概率只写在情景名中，不标注"内部测算"**。
-
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~X%） | 1）核心变量1取乐观值X[N]<br>2）核心变量2取乐观值Y[N] | 1）营收/利润结果<br>2）EPS结果 | {valuation_cell_example} |
-| 中性（概率~Y%） | 1）核心变量1取基准值X[N]<br>2）核心变量2取基准值Y[N] | 1）基准预测<br>2）EPS结果 | {valuation_cell_example} |
-| 悲观（概率~Z%） | 1）核心变量1取悲观值X[N]<br>2）核心变量2取悲观值Y[N] | 1）下行预测<br>2）EPS结果 | {valuation_cell_example} |
-
-X+Y+Z=100%，每个假设数字须标注引用[N]；若同一单元格内有多个小点，必须用 `<br>` 分隔换行。
-⚠️ **表格格式强制规则**：每行必须严格 4 列（以 | 分隔，开头和结尾各一个 |），单元格内容不得包含未转义的 | 符号；不得合并单元格；三档情景必须各占独立一行，单元格内换行只使用 `<br>`。
+| 乐观（概率~25%） | [各变量向好条件，用<br>分隔] | [经营传导方向] | 相对统一价格锚的上行敏感性增强；仅作敏感性判断，不提供目标价 |
+| 中性（概率~50%） | [各变量大体延续当前基准，用<br>分隔] | [经营传导方向] | 当前预期大体兑现；仅作敏感性判断，不提供目标价 |
+| 悲观（概率~25%） | [各变量转弱条件，用<br>分隔] | [经营传导方向] | 相对统一价格锚的下行风险上升；仅作敏感性判断，不提供目标价 |
 """
-    return call_claude(client, prompt, max_tokens=1200)
+    return call_claude(client, prompt, max_tokens=1000)
 
+
+def _scenario_target_price_errors(section: str, key_data: dict) -> list:
+    """Validate the safe qualitative §9.4 contract."""
+    text = str(section or "")
+    errors = []
+    formula = re.search(r"EPS\s*[＝=].*?[×x*]\s*PE\s*[＝=]", text, re.I)
+    target_number = re.search(
+        r"(?:目标价|对应股价|每股价值|每股价格|股价)\s*(?:为|是|约|：|:|=)?\s*(?:人民币|RMB|￥)?\s*\d",
+        text,
+        re.I,
+    )
+    if formula or target_number:
+        errors.append("当前版本未接入三档可核验EPS/PE输入，不得输出量化目标价")
+    if not re.search(r"(?:不提供|不给出|不输出|不作)目标价", text):
+        errors.append("未声明不提供不可复核目标价")
+
+    core_match = re.search(r"\*\*核心变量\*\*(.*?)(?=\*\*情景推演表\*\*)", text, re.S)
+    core_lines = []
+    if core_match:
+        core_lines = [
+            line for line in core_match.group(1).splitlines()
+            if re.match(r"^\s*[-*•]\s+", line)
+        ]
+    if len(core_lines) < 2:
+        errors.append("核心变量不足2项")
+    elif any(not re.search(r"\d", line) or not re.search(r"\[\d+\]", line) for line in core_lines):
+        errors.append("核心变量缺少来源化基准值")
+
+    table_rows = []
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            continue
+        cells = [cell.strip() for cell in stripped[1:-1].split("|")]
+        if cells and (cells[0] == "情景" or re.match(r"^(乐观|中性|悲观)", cells[0])):
+            table_rows.append(cells)
+    expected_header = ["情景", "核心假设", "经营含义", "估值含义"]
+    if not table_rows or table_rows[0] != expected_header:
+        errors.append("情景表必须严格使用四列表头")
+        return errors
+
+    scenario_rows = [
+        row for row in table_rows[1:]
+        if row and re.match(r"^(乐观|中性|悲观)", row[0])
+    ]
+    if len(scenario_rows) != 3 or any(len(row) != 4 for row in scenario_rows):
+        errors.append("情景表必须包含三档且每行严格四列")
+        return errors
+    labels = [re.match(r"^(乐观|中性|悲观)", row[0]).group(1) for row in scenario_rows]
+    if labels != ["乐观", "中性", "悲观"]:
+        errors.append("三档情景顺序必须为乐观/中性/悲观")
+    probabilities = []
+    for row in scenario_rows:
+        match = re.search(r"概率\s*[~～约]?\s*(\d+(?:\.\d+)?)%", row[0])
+        if match:
+            probabilities.append(float(match.group(1)))
+    if len(probabilities) != 3 or abs(sum(probabilities) - 100) > 0.5:
+        errors.append("三档情景概率必须完整且合计100%")
+    if any(not re.search(r"(?:不提供|不给出|不输出|不作)目标价", row[3]) for row in scenario_rows):
+        errors.append("每档估值含义均须明确不提供目标价")
+    return errors
 
 def _normalize_section9_llm_fragment(fragment: str) -> str:
     """Accept only a substantive §9 fragment; never let a model inject a second H2."""
@@ -3059,12 +3046,12 @@ def gen_section9_valuation(client, key_data: dict) -> str:
     parts = []
 
     if _has_valuation_data(key_data.get("valuation", {})):
-        s93 = _normalize_section9_llm_fragment(_gen_section93(client, key_data))
+        s93 = _normalize_section9_llm_fragment(_gen_section93_v131(key_data))
         if s93:
             parts.append(s93)
 
-    if _has_scenario_input(key_data):
-        s94 = _normalize_section9_llm_fragment(_gen_section94(client, key_data))
+    if _has_safe_scenario_input(key_data):
+        s94 = _normalize_section9_llm_fragment(_gen_section94_v131(client, key_data))
         if s94:
             parts.append(s94)
 
@@ -3091,7 +3078,6 @@ _A_SHARE_GENERIC_RISK_PATTERNS = (
     r'数据缺失风险',
     r'模型不确定性风险',
     r'本报告不构成投资建议',
-    r'\*\*(?:宏观经济|宏观政策|行业竞争|市场竞争|核心业务需求|市场需求)风险?\*\*',
 )
 
 
@@ -3244,19 +3230,19 @@ def _derive_a_share_risk_title(sentence: str, company_name: str = "") -> str:
     if len(candidate) < 4:
         candidate = clean
     candidate = re.sub(r'[，,。；;：:].*$', '', candidate).strip()
-    return candidate[:20].rstrip("的") or "公司特有风险"
+    return candidate[:24].rstrip("的") or "公司特有风险"
 
 
 def _is_valid_a_share_risk_title(title: str) -> bool:
     title = str(title or "").strip()
-    if not 4 <= len(title) <= 20:
+    if not 3 <= len(title) <= 24:
         return False
     if re.fullmatch(r'(?:因此|同时|具体来看|此外|其中|一是|二是|三是|首先|其次|最后|\d{4}年.*)', title):
         return False
     return bool(re.search(r'风险|不及预期|下滑|下降|受阻|削减|放缓|竞争|波动|库存|减值|回款|价格|批价|需求|政策|税|替代|延期|延迟', title))
 
 
-def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
+def _build_a_share_risk_fallback(key_data: dict, max_items: int = 5) -> str:
     """Build a cited fallback only from real and explicitly risk-related evidence."""
     name = str(key_data.get("short_name") or key_data.get("name") or "")
     lines = []
@@ -3270,7 +3256,7 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
         else:
             body = re.sub(r'\[\d+\]|\s+', ' ', item["text"]).strip()
             body = re.sub(r'^' + re.escape(title) + r'[，,；;：:\-\s]*', '', body, count=1).strip()
-        if len(body) < 8:
+        if len(body) < 6:
             continue
         if len(body) > 42:
             body = body[:42].rstrip("，,；;：:") + "…"
@@ -3285,23 +3271,23 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
 def _validate_a_share_risk_body(body: str) -> tuple:
     issues = []
     lines = [line.strip() for line in str(body or "").splitlines() if _A_SHARE_RISK_BULLET_RE.match(line)]
-    if not 3 <= len(lines) <= 4:
+    if not 2 <= len(lines) <= 5:
         issues.append(f"risk_bullet_count:{len(lines)}")
     if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
         issues.append("generic_risk_template")
     titles = []
     for idx, line in enumerate(lines):
-        title_match = re.search(r'\*\*([^*]{4,20})\*\*', line)
+        title_match = re.search(r'\*\*([^*]{3,24})\*\*', line)
         if not title_match:
             issues.append(f"risk[{idx}].missing_bold_title")
         else:
             titles.append(title_match.group(1).strip())
-        if not re.search(r'\*\*[^*]+\*\*\s*[：:]\s*.{8,}', line):
+        if not re.search(r'\*\*[^*]+\*\*\s*[：:]\s*.{6,}', line):
             issues.append(f"risk[{idx}].missing_explanation")
         if not re.search(r'\[\d+\]', line):
             issues.append(f"risk[{idx}].missing_citation")
         plain_len = len(re.sub(r'\[\d+\]|\*\*|\s+', '', line))
-        if plain_len > 120:
+        if plain_len > 140:
             issues.append(f"risk[{idx}].too_long:{plain_len}")
     if len(set(titles)) != len(titles):
         issues.append("duplicate_risk_titles")
@@ -3340,7 +3326,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
     issues = []
     valid_nums = _valid_ref_numbers(ref_map)
     risks = payload.get("risks") if isinstance(payload, dict) else None
-    if not isinstance(risks, list) or not (3 <= len(risks) <= 4):
+    if not isinstance(risks, list) or not (2 <= len(risks) <= 5):
         return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = []
     for i, risk in enumerate(risks):
@@ -3348,10 +3334,10 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
             issues.append(f"risk[{i}].not_object")
             continue
         title = str(risk.get("title") or "").strip()
-        if len(title) < 4 or len(title) > 24:
+        if len(title) < 3 or len(title) > 24:
             issues.append(f"risk[{i}].title_len:{len(title)}")
         explanation = str(risk.get("explanation") or risk.get("body") or "").strip()
-        if len(explanation) < 8:
+        if len(explanation) < 6:
             issues.append(f"risk[{i}].explanation_len:{len(explanation)}")
         refs = risk.get("source_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(n, int) and n > 0 for n in refs):
@@ -3371,13 +3357,13 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         ):
             ref_str = "".join(f"[{n}]" for n in refs)
             lines.append(f"• **{title}**：{explanation}{ref_str}")
-    if len(lines) < 3:
+    if len(lines) < 2:
         issues.append(f"valid_lines:{len(lines)}")
     return ("\n".join(lines), []) if lines and not issues else ("", issues)
 
 
 def gen_section10(client, key_data: dict) -> str:
-    """10 风险提示（JSON schema，3-5条；失败则交 fallback 证据重建）。"""
+    """10 风险提示（JSON schema，2-5条；失败则交 fallback 证据重建）。"""
     reports = key_data["reports"]
     fin = key_data["fin"]
     name = key_data["name"]
@@ -3391,7 +3377,7 @@ def gen_section10(client, key_data: dict) -> str:
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "explanation": "一句话说明触发条件及对收入/利润/现金流/估值的影响", "source_refs": [1]}}]}}
-Rules: output 3-5 company-specific risks (no more than 5); title ≤20 Chinese chars; explanation is exactly one sentence; use only the context refs below; no generic macro/market-competition-only risk title.
+Rules: output 2-5 source-backed risks; title ≤24 Chinese chars; explanation is one concise sentence; use only the context refs below. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject only unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
@@ -3440,7 +3426,8 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
             return rendered
         issues.extend(f"{call_name}:{x}" for x in render_issues)
 
-    # JSON 路径失败，返回空字符串，由 _enforce_a_share_risk_section 走 fallback
+    # JSON 路径失败，记录具体拒因后由 enforcer 使用来源化 fallback。
+    print(f"  ⚠ v1.2.31: §10 JSON路径未通过，转来源化fallback：{issues[:8]}")
     return ""
 
 def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
@@ -4156,40 +4143,6 @@ def _postprocess_v123(md_content: str, ref_map: dict) -> str:
 
     # ── 阶段 7: 数值表稀疏清理 ──
     result = _sparse_cleanup(result)
-
-    # ── 阶段 7.5: 情景推演表兜底 ──
-    # 如果情景推演表标题存在但后续无实际三行情景表格，调用 LLM 补写（传入核心变量）
-    scenario_header = "**情景推演表**："
-    if scenario_header in result:
-        sh_idx = result.index(scenario_header)
-        after_header = result[sh_idx + len(scenario_header):]
-        next_break = len(after_header)
-        for marker in ["\n## "]:
-            pos = after_header.find(marker)
-            if 0 <= pos < next_break:
-                next_break = pos
-        scenario_section = after_header[:next_break]
-        scenario_rows = re.findall(r'^\| (乐观|中性|悲观).*\|$', scenario_section, re.M)
-        if len(scenario_rows) < 3:
-            # 提取核心变量文本供 LLM 使用
-            _cv_match = re.search(r'\*\*核心变量\*\*\s*(.*?)(?=\*\*情景推演表\*\*|\Z)',
-                                  result[:sh_idx + len(scenario_header)], re.DOTALL)
-            _cv_text = _cv_match.group(1).strip()[:2000] if _cv_match else ""
-            # 传入 key_data（如果可用）或直接用最小兜底
-            if _cv_text:
-                _fallback_key = {"_scenario_core_vars": _cv_text}
-                _fallback_key.update({k: v for k, v in locals().items()
-                                      if k in ('name', 'ticker', 'fin', 'forecasts', 'valuation')
-                                      and not callable(v)})
-                # 这里无法访问 key_data，用最小有效兜底（含 EPS×PE 公式占位）
-            fallback_table = (
-                "\n\n| 情景 | 核心假设 | 经营含义 | 估值含义 |\n"
-                "|:-----|:---------|:---------|:---------|\n"
-                "| 乐观（概率~25%） | 1）核心驱动变量取乐观值<br>2）盈利弹性高于基准 | 收入/利润超预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
-                "| 中性（概率~50%） | 1）核心驱动变量取基准值<br>2）盈利兑现符合预期 | 收入/利润符合预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
-                "| 悲观（概率~25%） | 1）核心驱动变量取悲观值<br>2）盈利弹性低于基准 | 收入/利润低于预期 | EPS＝X.XX元 × PE=Yx = Z.ZZ元 |\n"
-            )
-            result = result[:sh_idx + len(scenario_header)] + fallback_table + after_header[next_break:]
 
     # ── 阶段 8: 再次清理表头重复 + 删除与表头相同的"数据行" ──
     result = _dedup_table_headers(result)
@@ -4958,6 +4911,22 @@ def _sparse_cleanup(md_content: str) -> str:
 # v1.2.3 生成完成前自检（阻断级别）
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _drop_invalid_section94(md_text: str, key_data: dict) -> str:
+    """Remove only §9.4 when its sourced qualitative scenario contract fails."""
+    text = str(md_text or "")
+    match = re.search(r"(?m)^###\s*9\.4\s*情景推演\s*$", text)
+    if not match:
+        return text
+    tail = text[match.end():]
+    next_heading = re.search(r"(?m)^###\s+9\.\d+\s+|^##\s+", tail)
+    end = match.end() + (next_heading.start() if next_heading else len(tail))
+    fragment = text[match.start():end]
+    errors = _scenario_target_price_errors(fragment, key_data)
+    if not errors:
+        return text
+    print(f"  ⚠ v1.2.31: 删除不满足安全情景规则的§9.4：{errors}")
+    return text[:match.start()].rstrip() + "\n\n" + text[end:].lstrip()
+
 def _drop_empty_optional_section9(md_text: str) -> str:
     """Remove only an empty optional §9 after all table/LLM cleanup has completed."""
     pattern = r'(?ms)^##\s+9\s+[^\n]+\n*(.*?)(?=^##\s+\d+\s+|\Z)'
@@ -5016,6 +4985,13 @@ def _drop_incomplete_optional_scenarios(md_text: str) -> str:
         output.append(line)
         index += 1
     return "\n".join(output) + ("\n" if text.endswith("\n") else "")
+
+CHART_CAPTIONS = {
+    "revenue":   "营业收入及同比趋势",
+    "profit":    "归母净利润及同比趋势",
+    "margin":    "分业务毛利率",
+    "structure": "营收结构占比",
+}
 
 def _restore_chart_captions(md_text: str, charts: dict) -> str:
     """将 cleaner 修复后的 '![图表](url)' 恢复为原始图表标题。"""
@@ -5215,7 +5191,7 @@ def _normalize_final_markdown_format(md_text: str) -> str:
 
 
 def _renumber_a_share_subsections(md_text: str) -> str:
-    """在删节后，按 H2 重排其直属 H3 编号，避免 4.1/4.2/4.5 这类断号。"""
+    """在删节后，按 H2 重排直属 H3 编号，并规范第7章的调研议题标题。"""
     current_h2 = None
     next_h3 = 1
     out = []
@@ -5231,9 +5207,17 @@ def _renumber_a_share_subsections(md_text: str) -> str:
             out.append(f"### {current_h2}.{next_h3} {h3.group(2)}")
             next_h3 += 1
             continue
+        # 第7章由 LLM 输出时常将议题写成加粗行而非 H3；在此确定性提升为小节，
+        # 使后续编号重排和 DOCX 样式均遵循统一章节结构。
+        topic = re.match(r'^\s*(?:\*\*)?议题\s*\d+\s*[：:]\s*(.+?)(?:\*\*)?\s*$', line)
+        if current_h2 == "7" and topic:
+            title = topic.group(1).strip().strip("*").strip()
+            if title:
+                out.append(f"### 7.{next_h3} {title}")
+                next_h3 += 1
+                continue
         out.append(line)
     return "\n".join(out)
-
 
 _OPERATIONAL_NUMERIC_TERMS = (
     "销量", "产量", "出货", "装机", "吨价", "单价", "直销", "经销", "渠道占比",
@@ -6455,6 +6439,7 @@ def main():
     md_content, _provenance_drops = _drop_unverifiable_numeric_lines(md_content, key_data)
     if _provenance_drops:
         print(f"[{time.time()-t0:.1f}s] 溯源清洗：删除{len(_provenance_drops)}条无法核验的生成行")
+    md_content = _drop_invalid_section94(md_content, key_data)
 
     # 终检只执行一次：死引用清理、编号重排和表格标准化均在此之后。
     md_content = _postprocess_v123(md_content, ref_map)
