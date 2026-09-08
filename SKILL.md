@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.36
+version: v1.2.37
 license: MIT
 compatibility: network
 description: |

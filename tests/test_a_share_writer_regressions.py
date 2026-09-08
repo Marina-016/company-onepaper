@@ -344,6 +344,32 @@ class AShareWriterRegressionTests(unittest.TestCase):
             fetch.call = original
         self.assertEqual([v["code"] for v in ok], ["603027"])
 
+    def test_build_industry_peer_candidates_filters_target_and_st(self):
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            ticker = (params or {}).get('ticker')
+            if ticker:
+                return {"code": 1, "data": [{"ticker": "600519", "isNew": "1", "industryID3": "010321140501", "secShortName": "贵州茅台"}]}, None, None
+            iid = (params or {}).get('industryID3') or (params or {}).get('industryID2')
+            if iid == "010321140501":
+                return {"code": 1, "data": [
+                    {"ticker": "000858", "isNew": "1", "secShortName": "五粮液"},
+                    {"ticker": "000568", "isNew": "1", "secShortName": "泸州老窖"},
+                    {"ticker": "600519", "isNew": "1", "secShortName": "贵州茅台"},
+                    {"ticker": "000799", "isNew": "1", "secShortName": "ST酒鬼"},
+                ]}, None, None
+            return {"code": 1, "data": []}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            cands = fetch.build_industry_peer_candidates({"getEquIndustry": {"url": "u"}}, "600519", "tok")
+        finally:
+            fetch.call = original
+        queries = [c["query"] for c in cands]
+        self.assertNotIn("贵州茅台", queries)
+        self.assertNotIn("ST酒鬼", queries)
+        self.assertIn("五粮液", queries)
+        self.assertTrue(all(c.get("fuzzy") for c in cands))
+
     def test_validate_peer_names_accepts_exact_name_without_code(self):
         def fake_call(method, url, token, params=None, body=None, timeout=None):
             query = (params or {}).get("query")

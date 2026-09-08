@@ -119,6 +119,7 @@ ALL_API_NAMES = [
     "Ashare_tenHolders", "Ashare_orgHoldingdetail",
     "Executive_information", "Ashare_info", "Ashare_bonus",
     "getMaterialsV2",
+    "getEquIndustry",
 ]
 
 # ─────────────────────────────────────────────
@@ -760,6 +761,77 @@ def _coverage_names_from(source):
         if len(parts) >= 2:
             names.extend(parts)
     return names
+
+def _industry_rows_for_ticker(url, ticker, token, version='010321'):
+    """查单只股票的申万2021行业归属（取 isNew=1 的当前行）。"""
+    rj, _, err = call('GET', url, token, params={'ticker': ticker, 'industryVersionCD': version, 'pagenum': '1', 'pagesize': '50'})
+    if err or not rj:
+        return [], err
+    return [r for r in (rj.get('data') or []) if str(r.get('isNew')) == '1'], None
+
+
+def _industry_constituents(url, industry_id, token, level='industryID3', version='010321', pagesize=200):
+    """按行业编码反查成分股（level 取 industryID3 / industryID2）。"""
+    rows = []
+    for p in (1, 2, 3):
+        rj, _, err = call('GET', url, token, params={'industryVersionCD': version, level: industry_id, 'pagenum': str(p), 'pagesize': str(pagesize)})
+        if err or not rj or not rj.get('data'):
+            break
+        batch = rj['data']
+        if not batch:
+            break
+        rows.extend(batch)
+        if len(batch) < pagesize:
+            break
+    return rows
+
+
+def build_industry_peer_candidates(meta, ticker, token):
+    """行业池兜底：getEquIndustry（申万2021）三级行业成分股生成 peer 候选。
+    候选带官方简称并标记 fuzzy，须经 stock_search 名称验证后方可作为 §8.2 peer。"""
+    url = meta.get('getEquIndustry', {}).get('url', '')
+    if not url:
+        return []
+    rows, err = _industry_rows_for_ticker(url, ticker, token)
+    if err or not rows:
+        return []
+    cands, seen = [], set()
+    for level in ('industryID3', 'industryID2'):
+        iid = rows[0].get(level) or ''
+        if not iid:
+            continue
+        constituents = _industry_constituents(url, iid, token, level=level)
+        for c in constituents:
+            if str(c.get('isNew')) != '1':
+                continue
+            ccode = str(c.get('ticker') or '')
+            nm = str(c.get('secShortName') or '').strip()
+            if not ccode or not nm or ccode == str(ticker or ''):
+                continue
+            if nm.startswith('ST') or nm.startswith('*ST') or nm.startswith('退'):
+                continue
+            if nm in seen:
+                continue
+            seen.add(nm)
+            cands.append({'query': nm, 'code': '', 'fuzzy': True, 'source_report_id': 'industry', 'count': 0})
+        # 该级已凑足至少 2 家非自身候选，不再降级到更粗的上级行业
+        if len(cands) >= 2:
+            break
+    return cands[:14]
+
+
+def merge_peer_candidates(*lists):
+    """按 query 去重合并候选列表；先出现者优先（正则候选优先于行业池兜底）。"""
+    seen, out = set(), []
+    for lst in lists:
+        for c in lst or []:
+            q = str(c.get('query') or '').strip()
+            if not q or q in seen:
+                continue
+            seen.add(q)
+            out.append(c)
+    return out
+
 
 def extract_peer_names(reports, company_short_name):
     """从研报明确的同业或竞争语境提取候选；无代码名称仍须经精确证券名称核验。"""
@@ -1609,6 +1681,12 @@ def run(ticker_input, token, output_path):
     # 研报拿到后立即提取可比公司名，通过 stock_search 验证当前官方简称，再启动 getMaterialsV2
     peers = extract_peer_names(result.get("research_reports") or [], company_name)
     peer_validated = validate_peer_names(meta, peers, token, target_ticker=ticker)
+    if len(peer_validated) < 2:
+        industry_cands = build_industry_peer_candidates(meta, ticker, token)
+        if industry_cands:
+            peers = merge_peer_candidates(peers, industry_cands)
+            print(f"  → 行业池兜底候选: {len(industry_cands)} 家（申万三级行业成分）")
+            peer_validated = validate_peer_names(meta, peers, token, target_ticker=ticker)
     result["peer_validated"] = peer_validated
     peer_labels = [p['current_name'] for p in peer_validated]
     if peer_validated:
