@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.34
+
+- 清理 A 股 writer 已不再调用的旧章节生成器、旧表格裁剪器、旧模型配置读取和通用催化剂兜底，避免历史分支继续干扰维护。
+- 统一主链路中仍在使用的后处理、估值和自检函数命名；来源、风险、同业及情景推演门禁逻辑保持不变。
+- 移除对不存在的 `check_report_quality_v123.py` 的陈旧说明；质量控制均由 writer 内置主链路执行。
+- `SKILL.md`、`CHANGELOG.md` 与代码版本同步为 v1.2.34。
 ## v1.2.33
 
 - Rebuilt `SKILL.md` as clean UTF-8 and consolidated the active A-share workflow rules.

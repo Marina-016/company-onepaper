@@ -62,7 +62,7 @@ class AShareWriterRegressionTests(unittest.TestCase):
         ctx = writer._scenario_valuation_context(key_data)
         self.assertAlmostEqual(ctx["anchor_price"], 71.46, places=1)
         self.assertFalse(ctx["rank_reconciled"])
-        section = writer._gen_section93_v131(key_data)
+        section = writer._gen_section93(key_data)
         self.assertIn("接口口径未对齐", section)
         self.assertIn("不作为当前定价、PEG或情景目标价依据", section)
     def test_empty_section_recovery_uses_heading_not_separator(self):

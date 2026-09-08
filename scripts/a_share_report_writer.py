@@ -916,15 +916,6 @@ def refs_to_markdown(ref_map: dict) -> str:
     return "\n".join(lines)
 
 
-def get_ref_n(ref_map: dict, *keys) -> str:
-    """返回多个引用序号，如 [1][2][3]"""
-    ns = []
-    for k in keys:
-        if k in ref_map:
-            ns.append(f"[{ref_map[k]['n']}]")
-    return "".join(ns)
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # 纯 Python 表格生成
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1672,147 +1663,6 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
     return {"s1": s1, "s2": s2, "s3": s3}
 
 
-# ── 通用章节生成防护层（重试 + 失败标记检测）─────────────────────────
-_FAILURE_MARKERS = ["[生成失败:", "[生成失败", "[生成失败"]
-
-def _safe_gen_section(fn_name: str, gen_fn, client, key_data, max_retries=2):
-    """带重试和失败检测的章节生成包装器。3次均失败则抛出 RuntimeError。"""
-    last_result = ""
-    for attempt in range(max_retries + 1):
-        result = gen_fn(client, key_data)
-        if not isinstance(result, str):
-            return result  # dict，如 gen_section4/gen_sections_1_2_3
-        if any(m in result for m in _FAILURE_MARKERS):
-            last_result = result
-            if attempt < max_retries:
-                time.sleep(2 * (attempt + 1))
-                continue
-        # 检查返回内容是否过短（可能是空响应）
-        if len(result.strip()) < 20:
-            last_result = result
-            if attempt < max_retries:
-                time.sleep(2 * (attempt + 1))
-                continue
-        return result
-    raise RuntimeError(
-        f"章节 {fn_name} 生成失败（{max_retries+1}次重试后仍失败）: {last_result[:200]}"
-    )
-
-
-def gen_section1(client, key_data: dict) -> str:
-    """1 公司近况跟踪 (300-400字)"""
-    reports = key_data["reports"]
-    fin = key_data["fin"]
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
-    valuation = key_data["valuation"]
-    meetings = key_data.get("meetings", [])
-    forecasts = key_data.get("consensus_forecasts", [])
-
-    pe_val = valuation["items"].get("市盈率PE", {})
-    pb_val = valuation["items"].get("市净率PB", {})
-    pe = pe_val.get("val", "—")
-    pb = pb_val.get("val", "—")
-
-    report_refs = _refs_labels(reports, ref_map, n=4)
-
-    meetings_text = _compact_meetings(meetings, n=2)
-
-    # 构造简短的一致预期摘要（营收/净利润三年预测）
-    years_fin = fin.get("years", [])
-    base_yr = int(years_fin[0]) if years_fin else 2025
-    con_lines = []
-    for i, fc in enumerate(forecasts[:3]):
-        yr = base_yr + i + 1
-        inc = fc.get("conIncome")
-        prf = fc.get("conProfit")
-        inc_str = f"{inc/1e4:.0f}亿" if inc else "—"
-        prf_str = f"{prf/1e4:.0f}亿" if prf else "—"
-        con_lines.append(f"{yr}E营收{inc_str}/净利{prf_str}")
-    con_summary = "、".join(con_lines) if con_lines else "（暂无一致预期数据）"
-
-    prompt = f"""为 {name} 撰写"公司近况跟踪"章节（第1节），严格控制在220字以内。
-
-【财务数据】
-{_compact_fin(fin)}
-
-【近期研报摘要（最新3篇）】
-{_compact_reports(reports, n=3)}
-
-【近期会议纪要（路演/业绩说明会）】
-{meetings_text}
-
-【市场一致预期（三年简览）】
-{con_summary}
-
-【引用映射（正文中用[N]标注，N取括号内数字）】
-研报引用序号：{report_refs}
-会议纪要引用：{_meeting_refs_str(meetings, ref_map, n=2)}
-结构化数据引用：fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], valuation_rank=[{ref_map.get('valuation_rank',{}).get('n','')}], consensus=[{ref_map.get('consensus',{}).get('n','')}]
-
-【格式要求】220字严格上限，超出必须压缩。
-- 2-3个 • 要点：每个要点必须单独占一行（• 开头，换行分隔），每点仅1句话，⚠️ 不要对要点内容加粗，只陈述事实和数字；优先提炼里程碑/突破性数字（首次突破某门槛、历史新高、行业第一、同比大幅超预期等），这类数字比普通增速更有冲击力；普通同比数据不单独成点
-- 要点聚焦近1-3个月核心事件+1个最具代表性数字，不展开分析（分析在第2节）
-- 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
-- 最后一段（独立行，1句）：一致预期未来两年营收/净利润关键数字，格式"市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润分别为…"，标注[N]
-- 不要重复历史背景，不要介绍商业模式，所有数字标注[N]
-"""
-    return call_claude(client, prompt, max_tokens=900)
-
-
-def gen_section2(client, key_data: dict) -> str:
-    """2 核心投资逻辑"""
-    reports = key_data["reports"]
-    fin = key_data["fin"]
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
-    mc = key_data["mc"]
-    meetings = key_data.get("meetings", [])
-    raw_data = key_data.get("_raw_data", {})
-    mgmt_text = _compact_mgmt(raw_data)
-
-    prompt = f"""为 {name} 撰写"核心投资逻辑"章节（第2节），包含2.1短期逻辑和2.2长期逻辑。
-这是报告中分析深度要求最高的章节，要求有独立判断、量化支撑、可验证的逻辑链条。
-
-【财务数据（近3年）】
-{_compact_fin(fin)}
-
-【主营构成（业务结构）】
-板块: {list(mc['segments'].keys())}
-年份: {mc['years']}
-占比（最新年）: """ + ", ".join([
-        f"{seg}:{mc['segments'][seg][0]/mc['totals'][0]*100:.1f}%" if mc['totals'] and mc['totals'][0] and mc['segments'][seg][0] is not None else f"{seg}"
-        for seg in mc['segments']
-    ]) + f"""
-
-【近期研报全文（5篇，含完整分析）】
-{_compact_reports(reports, n=3, ref_map=ref_map)}
-
-【近期会议纪要（管理层路演/业绩发布会，含完整正文）】
-{_compact_meetings(meetings, n=1, include_text=True, ref_map=ref_map)}
-
-{"【管理层讨论（MD&A）】" + chr(10) + mgmt_text if mgmt_text else ""}
-
-【引用映射】
-{_refs_str(reports, ref_map, 5)}
-{_meeting_refs_str(meetings, ref_map, n=1)}
-fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('maincomp',{}).get('n','')}]
-{"mgmt=[" + str(ref_map.get('mgmt_discussion',{}).get('n','')) + "]" if mgmt_text else ""}
-
-【格式要求】**总字数700字以内**（2.1+2.2合计）。
-### 2.1 短期逻辑（3-12个月催化剂）
-• **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
-• **[催化剂2标题]**：...（共3个要点）
-
-### 2.2 长期逻辑（核心竞争力）
-• **[核心壁垒]**：[含市占率/规模量化数据，标注引用，聚焦核心]
-• **[成长驱动力]**：[标注引用]
-• **[商业模式优势]**：[ROE/可持续性，标注引用]
-
-> 注：短期逻辑侧重可验证的近期催化剂，长期逻辑侧重可持续竞争优势。本节所有数据须标注引用。*
-"""
-    return call_claude(client, prompt, max_tokens=1800)
-
 
 def gen_section3(client, key_data: dict) -> str:
     """3 催化事件时间表"""
@@ -1853,45 +1703,6 @@ def gen_section3(client, key_data: dict) -> str:
 ↑ 每条事件的事件列或影响列**必须至少有1处[N]引用**，引用编号来自【引用映射】
 """
     return call_claude(client, prompt, max_tokens=1200)
-
-
-def gen_section4_intro(client, key_data: dict) -> str:
-    """4.1 业务概况与边际变化（盈利模式 + 边际变化，各1段，共约200字）"""
-    fin = key_data["fin"]
-    mc = key_data["mc"]
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
-    years = mc["years"]
-    meetings = key_data.get("meetings", [])
-    raw_data = key_data.get("_raw_data", {})
-    mgmt_text = _compact_mgmt(raw_data, max_len=1500)
-
-    segs_summary = ", ".join([
-        f"{seg}:{_fmt(mc['segments'][seg][0])}亿" for seg in mc["segments"]
-        if mc["segments"][seg] and mc["segments"][seg][0]
-    ]) if mc["segments"] else "无数据"
-
-    prompt = f"""为 {name} 撰写"4.1 业务概况与边际变化"的两段内容。
-
-【主营构成（最新年 {years[0] if years else '?'}）】
-{segs_summary}
-
-【财务概览】
-{_compact_fin(fin)}
-
-{"【管理层讨论】" + chr(10) + mgmt_text if mgmt_text else ""}
-
-【引用映射】
-fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('maincomp',{}).get('n','')}]
-{"mgmt=[" + str(ref_map.get('mgmt_discussion',{}).get('n','')) + "]" if mgmt_text else ""}
-
-【格式要求】**两段合计200字以内**。直接输出以下两段，不要输出章节标题：
-
-**盈利模式**：[1段约100字，说明收入来源结构和主要盈利路径，含各板块收入占比，标注引用]
-
-**业务边际变化**：[1段约100字，当前最重要的1-2个业务变化，含量化同比数据，标注引用]
-"""
-    return call_claude(client, prompt, max_tokens=500)
 
 
 def gen_section4_deep(client, key_data: dict) -> str:
@@ -1950,127 +1761,6 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], maincomp=[{ref_map.get('mainc
 • **[优势3标题]**：[2句量化支撑，标注引用]
 """
     return call_claude(client, prompt, max_tokens=1000)
-
-
-def gen_section4_profit_model(client, key_data: dict) -> str:
-    """4.1 盈利方式：结合公司实际经营情况说明盈利路径（120-160字）"""
-    mc = key_data["mc"]
-    fin = key_data["fin"]
-    name = key_data["name"]
-    ref_map = key_data["ref_map"]
-    raw_data = key_data.get("_raw_data", {})
-    company_info = key_data.get("company_info", {})
-    reports = key_data["reports"]
-    mgmt_text = _compact_mgmt(raw_data, max_len=800)
-    segs = list(mc["segments"].keys())
-
-    # 提取最新年主营数据用于支撑描述
-    years = mc.get("years", [])
-    y0 = years[0] if years else ""
-    segs_data = "\n".join([
-        f"- {seg}: {_fmt(mc['segments'][seg][0])}亿（{y0}）"
-        for seg in mc["segments"] if mc["segments"][seg]
-    ]) if y0 else ""
-
-    prompt = f"""为 {name} 撰写"盈利方式"（第4.1节），**120-160字以内**。
-
-【主营业务板块及规模（{y0}年）】
-{segs_data or segs}
-
-【财务概览】
-{_compact_fin(fin)}
-
-【公司基础信息】
-{json.dumps(company_info, ensure_ascii=False)[:400] if company_info else "（无）"}
-
-{"【管理层讨论（摘要）】" + chr(10) + mgmt_text if mgmt_text else ""}
-
-【研报摘要（理解商业模式）】
-{_compact_reports(reports, n=2)}
-
-【引用映射】
-maincomp=[{ref_map.get('maincomp',{}).get('n','')}], fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
-
-【格式要求】
-- 用2-3个 bullet（• 开头），每条格式：**[盈利维度]**：[结合本公司实际经营情况说明如何通过这个维度赚钱]
-- 盈利维度要**同时结合行业特点和本公司实际经营特色**，体现差异化（示例维度仅供参考，根据公司实际调整）：
-  - 金融/券商："靠通道与交易量赚钱"/"靠资管规模赚钱"/"靠资本杠杆和自营赚钱"
-  - 消费品："靠品牌溢价赚钱"/"靠渠道铺设赚钱"/"靠产品升级赚钱"
-  - 科技："靠技术壁垒赚钱"/"靠平台生态赚钱"/"靠规模效应赚钱"
-  - 周期品："靠低成本产能赚钱"/"靠价差赚钱"
-- 每条描述建议结构：**先说行业通用盈利逻辑**（该业务为何能赚钱）→ **再用本公司具体数字说明竞争位置**（规模/市占率/客户数等），两层逻辑缺一不可
-- **可以引用关键规模数字或市场地位数字**支撑描述（如市占率、资产规模、客户数等），但不要堆砌收入/利润明细（明细在下方表格）
-- 语言简练，说清楚本质，标注引用
-"""
-    return call_claude(client, prompt, max_tokens=400)
-
-
-def gen_section4_survey_qa(client, key_data: dict) -> str:
-    """4.5 机构调研核心问答
-
-    数据优先级：
-    1. surveys（institution_research_detail.content）— 官方机构调研接口，内容最完整
-    2. meetings（getMeetingSummaryDetail.aiQa）— 会议纪要 AI 摘要，作为补充
-    任意来源有数据即可生成本节；两者均无数据则跳过。
-    只输出真实 Q/A 格式，不编造建议调研问题。
-    """
-    surveys  = key_data.get("surveys", [])   # institution_research_detail
-    meetings = key_data.get("meetings", [])
-    name     = key_data["name"]
-    ref_map  = key_data["ref_map"]
-
-    qa_blocks = []
-
-    # 优先：机构调研接口 detail_content
-    for sv in surveys[:5]:
-        if not sv.get("content"):
-            continue
-        qa_blocks.append(
-            f"【{sv['date']} {sv['type']}（机构调研）】\n{sv['content'][:4000]}"
-        )
-
-    # 补充：会议纪要 aiQa（若调研接口内容不足时）
-    if len(qa_blocks) < 3:
-        for m in meetings[:5]:
-            if not m.get("qa"):
-                continue
-            ref_key = "meeting_" + m["date"] + "_" + m["title"][:20]
-            ref_n   = ref_map.get(ref_key, {}).get("n", "")
-            ref_tag = f"[{ref_n}]" if ref_n else ""
-            qa_blocks.append(
-                f"【{m['date']} {m['type']} {m['title']}】{ref_tag}\n{m['qa'][:3000]}"
-            )
-
-    if not qa_blocks:
-        return ""   # 无任何 Q&A 数据则跳过本节
-
-    qa_text = "\n\n".join(qa_blocks)
-    meeting_refs = _meeting_refs_str(meetings, ref_map, n=5)
-
-    prompt = f"""你是顶级券商分析师，正在为{name}撰写公司一页纸报告的"机构调研核心问答"小节。
-
-以下是最近机构调研/业绩说明会/路演的原始内容（来源：机构调研接口 + 会议纪要）：
-{qa_text}
-
----
-任务：从以上内容中精选 3-5 个最有基本面价值的真实问答，聚焦以下类型：
-• 盈利能力变化原因（毛利率/净利率涨跌驱动）
-• 新产品/新业务落地进展（含具体数据节点）
-• 主要风险点（商誉减值、客户集中、竞争加剧等，需有数据支撑）
-• 资本开支/产能/现金流展望
-
-输出格式要求：
-- ⚠️ **只能使用真实管理层原话，使用 **Q：** / **A：** 格式输出**
-- ⚠️ **Q 与 A 必须分两行——Q 一行、A 下一行，A 回答前必须换行**
-- ⚠️ **严禁编造 Q/A，严禁输出"建议调研："等任何建议性问题**
-- 每条末尾标注引用 [N]（若有对应引用编号）
-- 不引入原文中没有的信息
-- 不含券商/机构具体名称
-- 总字数 400 字以内
-
-引用映射（供标注用）：{meeting_refs}
-"""
-    return call_claude(client, prompt, max_tokens=700)
 
 
 def _extract_qa_candidates(qa_blocks: list) -> list:
@@ -2828,7 +2518,7 @@ def _scenario_valuation_context(key_data: dict) -> dict:
     }
 
 
-def _gen_section93_v131(key_data: dict) -> str:
+def _gen_section93(key_data: dict) -> str:
     """Render §9.3 deterministically so separate valuation APIs are not blended."""
     valuation = key_data.get("valuation") or {}
     items = valuation.get("items") or {}
@@ -2998,7 +2688,7 @@ def _scenario_fact_card_prompt_block(key_data: dict) -> str:
     ]
     return '\n'.join(lines) or '（无可核验经营事实卡；不得生成情景推演）'
 
-def _gen_section94_v131(client, key_data: dict) -> str:
+def _gen_section94(client, key_data: dict) -> str:
     """Generate operating scenarios, never unsourced numerical target prices."""
     name = key_data["name"]
     ref_map = key_data.get("ref_map") or {}
@@ -3135,12 +2825,12 @@ def gen_section9_valuation(client, key_data: dict) -> str:
     parts = []
 
     if _has_valuation_data(key_data.get("valuation", {})):
-        s93 = _normalize_section9_llm_fragment(_gen_section93_v131(key_data))
+        s93 = _normalize_section9_llm_fragment(_gen_section93(key_data))
         if s93:
             parts.append(s93)
 
     if _has_safe_scenario_input(key_data):
-        s94 = _normalize_section9_llm_fragment(_gen_section94_v131(client, key_data))
+        s94 = _normalize_section9_llm_fragment(_gen_section94(client, key_data))
         if s94:
             parts.append(s94)
 
@@ -3519,55 +3209,8 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
     print(f"  ⚠ v1.2.31: §10 JSON路径未通过，转来源化fallback：{issues[:8]}")
     return ""
 
-def _strip_all_dash_columns(table_md: str, min_peer_rows: int = 0) -> str:
-    """移除Markdown表格中数据不足的列（保留表头不变）。
-    min_peer_rows=0（默认）：移除所有行均为'—'的列
-    min_peer_rows=1：移除仅第一行（标的公司）有数据、其余可比公司均为'—'的列
-    """
-    if not table_md or '|' not in table_md:
-        return table_md
-    lines = [l for l in table_md.strip().split('\n') if '|' in l]
-    if len(lines) < 3:
-        return table_md
-
-    def parse_row(line):
-        parts = line.split('|')
-        return [p.strip() for p in parts[1:-1]]  # 去掉首尾空项
-
-    def is_dash(v):
-        return v.strip() in ('—', '-', '', '——', '--', '─', '－')
-
-    header_parts = parse_row(lines[0])
-    sep_parts    = parse_row(lines[1])
-    data_rows    = [parse_row(l) for l in lines[2:]]
-    n_cols = len(header_parts)
-
-    cols_to_keep = []
-    for i in range(n_cols):
-        col_vals = [row[i] if i < len(row) else '' for row in data_rows]
-        if min_peer_rows > 0 and len(col_vals) > 1:
-            # 检查除第一行（标的公司）外，有几行有实际数据
-            peer_non_dash = sum(1 for v in col_vals[1:] if not is_dash(v))
-            cols_to_keep.append(peer_non_dash >= min_peer_rows)
-        else:
-            cols_to_keep.append(not all(is_dash(v) for v in col_vals))
-
-    if all(cols_to_keep):
-        return table_md  # 无列需要移除
-
-    def rebuild(parts):
-        filtered = [parts[i] if i < len(parts) else '' for i in range(n_cols) if cols_to_keep[i]]
-        return '| ' + ' | '.join(filtered) + ' |'
-
-    result_lines = [rebuild(header_parts), rebuild(sep_parts)]
-    for row in data_rows:
-        result_lines.append(rebuild(row))
-    return '\n'.join(result_lines)
-
-
 _A_SHARE_PEER_HEADERS = ['竞争关系', '公司（代码）', '市场', '可比业务', '行业地位', '相关业务进展', '商业模式', '目标客户群体', '核心产品']
 _PEER_PROGRESS_MAX_CHARS = 80
-
 
 def _peer_progress_refs(key_data: dict) -> dict:
     """返回 {peer_code: [引用编号]}，只供同业表的“相关业务进展”列使用。"""
@@ -4158,35 +3801,7 @@ def _print_credential_source(label, source, base_url, model, fmt):
     print(f"  [{label}] 凭据来源: {source}; endpoint={safe_url}; format={fmt}; model={model}")
 
 
-def _legacy_load_models_json_single_path():
-    """Backward-compatible reader kept for old datayesclaw config shape."""
-    path = os.path.expanduser("~/.datayesclaw/agents/main/agent/models.json")
-    if not os.path.exists(path):
-        return []
-    try:
-        with open(path, encoding="utf-8") as f:
-            cfg = json.load(f)
-        result = []
-        for pid, prov in cfg.get("providers", {}).items():
-            key = prov.get("apiKey", "").strip()
-            url = prov.get("baseUrl", "").strip()
-            for m in prov.get("models", []):
-                result.append({
-                    "provider_id": pid,
-                    "api_key":     key,
-                    "base_url":    url,
-                    "model_id":    m.get("id", ""),
-                })
-        return result
-    except Exception:
-        return []
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 主流程
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _postprocess_v123(md_content: str, ref_map: dict) -> str:
+def _postprocess_report(md_content: str, ref_map: dict) -> str:
     """v1.2.3 后处理：移除死引用（两阶段稳定替换）+ 数值表稀疏清理。
 
     处理步骤：
@@ -4763,7 +4378,7 @@ def _build_a_share_industry_fallback(key_data: dict, md_content: str = "") -> st
         "• **跟踪重点**：后续应基于可核验材料持续观察行业景气、竞争格局与估值传导；同业数据不足时不虚构可比公司表。"
     )
 
-def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict) -> str:
+def _enforce_a_share_required_blocks(md_content: str, key_data: dict, ref_map: dict) -> str:
     """Final deterministic guard for A-share RC output blocks."""
     name = key_data.get("name", "")
     ticker = key_data.get("ticker", "")
@@ -4831,7 +4446,7 @@ def _enforce_v124_a_share_blocks(md_content: str, key_data: dict, ref_map: dict)
         r'(### 4\.3 业务深度分析\n\n)(.*?)(?=\n### 4\.4 |\n### 4\.5 |\n---\n\n## 5 )',
         rf'\1{profile["deep"]}{main_ref}。\n'
     )
-    # `_postprocess_v123` has already removed `---`, so section recovery is based
+    # `_postprocess_report` has already removed `---`, so section recovery is based
     # on heading boundaries only.  Fall back only to cited/source-derived text.
     _chain_fallback = _build_a_share_chain_fallback(key_data, main_ref_no)
     if _chain_fallback:
@@ -5093,7 +4708,7 @@ def _drop_invalid_section94(md_text: str, key_data: dict) -> str:
         return text
     fallback = _build_deterministic_section94(key_data)
     if fallback and not _scenario_target_price_errors(fallback, key_data):
-        print(f"  ⚠ v1.2.33: §9.4 LLM产物不合格（{errors}），改用来源绑定的确定性情景表")
+        print(f"  ⚠ v1.2.34: §9.4 LLM产物不合格（{errors}），改用来源绑定的确定性情景表")
         return text[:match.start()].rstrip() + "\n\n" + fallback.strip() + "\n\n" + text[end:].lstrip()
     print(f"  ⚠ v1.2.33: 删除不满足安全情景规则的§9.4：{errors}")
     return text[:match.start()].rstrip() + "\n\n" + text[end:].lstrip()
@@ -5872,7 +5487,7 @@ def _markdown_structure_errors(md_content: str) -> list:
     return issues
 
 
-def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None) -> list:
+def _final_self_check(md_content: str, ref_map: dict, key_data: dict = None) -> list:
     """v1.2.3 报告生成完成前自检，返回阻断问题列表。为空则通过。
 
     检查覆盖：
@@ -5949,10 +5564,6 @@ def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None
         t = re.sub(r'^#+\s+', '', t).strip()
         t = re.sub(r'^\d+[\.\、\s]+', '', t).strip()
         return t
-
-    # ── 2.5: 催化事件表条数检查（仅报 warning，不阻断生成）─-─
-    # 条数不足由 check_report_quality_v123.py 离线检查处理
-
     # ── 3. 重复章节标题 ──
 
     for i, m in enumerate(h2_matches):
@@ -6099,16 +5710,13 @@ def _final_self_check_v123(md_content: str, ref_map: dict, key_data: dict = None
             ref_refs.add(int(rm.group(1)))
 
         orphans = body_refs - ref_refs
-        dead = ref_refs - body_refs
         if orphans:
             blockers.append(f"14.孤儿引用: 正文引用{orphans}未在参考资料中定义")
-        if dead:
-            pass  # dead refs are removed by _postprocess_v123, not a blocking issue
 
     return blockers
 
 
-def _v124_post_repair(md_content: str, key_data: dict) -> tuple:
+def _repair_catalyst_section(md_content: str, key_data: dict) -> tuple:
     """Apply only deterministic, section-local post-generation repairs.
 
     §9.4 is intentionally excluded pending its dedicated redesign. Re-generating a
@@ -6171,14 +5779,6 @@ def _valid_catalyst_table(section_text: str, min_rows: int = 3) -> bool:
     return False
 
 
-def _fallback_catalyst_table(key_data: dict) -> str:
-    name = key_data.get("short_name") or key_data.get("name", "")
-    ticker = key_data.get("ticker", "")
-    profile = _a_share_profile(name, ticker, key_data)
-    rows = "\n".join(f"| {dt} | {event} | {impact} |" for dt, event, impact in profile["catalysts"])
-    return "## 3 催化事件时间表\n\n| 时间 | 事件 | 影响 |\n|:-----|:-----|:-----|\n" + rows
-
-
 def _gen_catalyst_table(key_data: dict) -> str:
     """调用 LLM 补写催化事件时间表。"""
     name = key_data.get("name", "")
@@ -6234,7 +5834,7 @@ def _gen_catalyst_table(key_data: dict) -> str:
     result = call_claude(None, prompt, max_tokens=2000).strip()
     # Strip HTML tags from LLM output
     result = re.sub(r'<br\s*/?>', '\n', result)
-    # Strip leading "## 3" header to avoid duplicate when inserted by _v124_post_repair
+    # Strip leading "## 3" header to avoid duplicate when inserted by _repair_catalyst_section
     result = re.sub(r'^##\s*3[^\n]*\n*', '', result).strip()
     # Extract table content
     m = re.search(r'(?:催化事件时间表)?(.*?)(?=##\s|$)', result, re.DOTALL)
@@ -6611,10 +6211,10 @@ def main():
     md_content = _render_fact_markers(md_content, key_data.get("fact_marker_refs", {}))
 
     # 只保留确定性催化表修复；情景推演不再由后处理二次调用 LLM 重写。
-    md_content, _repair_log = _v124_post_repair(md_content, key_data)
+    md_content, _repair_log = _repair_catalyst_section(md_content, key_data)
     if _repair_log:
         print(f"[{time.time()-t0:.1f}s] 自动修复: {_repair_log}")
-    md_content = _enforce_v124_a_share_blocks(md_content, key_data, ref_map)
+    md_content = _enforce_a_share_required_blocks(md_content, key_data, ref_map)
     md_content = _normalize_markdown_tables(md_content)
     md_content = _fix_orphan_refs(md_content)
 
@@ -6625,7 +6225,7 @@ def main():
     md_content = _drop_invalid_section94(md_content, key_data)
 
     # 终检只执行一次：死引用清理、编号重排和表格标准化均在此之后。
-    md_content = _postprocess_v123(md_content, ref_map)
+    md_content = _postprocess_report(md_content, ref_map)
     md_content = _normalize_markdown_tables(md_content)
     md_content = _drop_incomplete_optional_scenarios(md_content)
     # ── v1.2.3 生成完成前自检 ──────────────────────────────────────────────────
@@ -6637,7 +6237,7 @@ def main():
 
     # ── v1.2.5-R3: 图表标题还原（cleaner 修了残缺 !(url) 但丢掉了原标题）────────
     md_content = _restore_chart_captions(md_content, charts)
-    blockers = _final_self_check_v123(md_content, ref_map, key_data)
+    blockers = _final_self_check(md_content, ref_map, key_data)
     if blockers:
         # 保存调试副本，方便排查自检问题
         _debug_path = args.output.replace('.md', '_debug.md')

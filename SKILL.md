@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.33
+version: v1.2.34
 license: MIT
 compatibility: network
 description: |
@@ -66,7 +66,7 @@ python3 -X utf8 <skill_root>/scripts/a_share_report_writer.py \
   --docx "{输出目录}/{公司名}（{股票代码}）公司一页纸.docx"
 ```
 
-writer 负责正文生成、来源绑定、结构修复、质量门禁和 DOCX 导出。不要将聊天窗口作为报告正文输出。
+writer 负责正文生成、来源绑定、结构修复、质量门禁和 DOCX 导出；上述处理均在内置主链路完成，不依赖外部质量检查脚本。不要将聊天窗口作为报告正文输出。
 
 ### 3.3 A 股同业比较
 
