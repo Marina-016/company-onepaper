@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.32
+
+- Replaced title keyword gating with structural title checks so complete investment viewpoints are not rejected for omitting a fixed word.
+- Preserved all ten A-share peer-comparison dimensions during Markdown normalization.
+- Made peer-table generation prompt-led: only related business progress requires peer-specific citations, and that column prioritizes operating developments over financial-scorecard summaries.
+
 ## v1.2.31
 
 - Unified §9.3/§9.4 on one consensus-implied price anchor and stopped treating unreconciled valuation-rank PE as current pricing.

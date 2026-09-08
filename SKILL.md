@@ -1,6 +1,6 @@
 ---
 name: datayes-company-onepaper
-version: v1.2.31
+version: v1.2.32
 license: MIT
 compatibility: network
 description: |
@@ -135,6 +135,12 @@ python3 -X utf8 <skill_root>/scripts/hk_us_report_writer.py \
 - 閸欏倽鈧啳绁弬娆忕箑妞ゅ鈧劕鐡ф径宥呭煑 `title`閵嗕梗organization`閵嗕梗publishTime`閵?
 ### 5.5 Actual / Forecast / Guidance / Estimate
 - `actual` 閸欘亣銆冪粈鍝勫嚒閸欐垹鏁撻幋鏍у嚒閹额偊婀舵禍瀣杽閵?- `forecast` 閸欘亣銆冪粈铏圭埡閹躲儵顣╁ù瀣ㄢ偓?- `guidance` 閸欘亣銆冪粈鍝勫彆閸欏憡瀵氬鏇樷偓?- `estimate` 閸欘亣銆冪粈鐑樐侀崹瀣╁強缁犳ぜ鈧?- 娑撳秴绶遍幎濠囶暕濞村鍟撻幋鎰嚒閸欐垹鏁撻敍灞肩瑝瀵版濡搁幐鍥х穿閸愭瑦鍨氭禍瀣杽閿涘奔绗夊妤佸Ω濡€崇€锋导鎵暬閸愭瑦鍨氶崗顒€寰冮幎顐︽苟閵?
+### v1.2.32 Prompt-led titles and complete peer schema
+
+- Title conclusion keeps structural quality checks but no longer rejects a complete investment viewpoint solely for missing a fixed judgment keyword.
+- Peer comparison preserves its ten research dimensions through Markdown normalization. Only peer-specific business progress needs a source; other columns may use concise qualitative company profiles.
+- Peer progress prompts prioritize business events and allow financial figures only as supporting context.
+
 ### v1.2.31 Unified valuation anchor and evidence-safe scenarios
 
 - Build one consensus-implied price anchor from same-date forecast EPS/PE rows and use it across §9.3 and §9.4.

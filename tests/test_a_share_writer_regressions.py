@@ -372,5 +372,29 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertNotIn("| 中性", result)
         self.assertNotIn("| 悲观", result)
         self.assertIn("## 10 风险提示", result)
+    def test_title_accepts_complete_viewpoint_without_keyword_whitelist(self):
+        # “渠道改革重塑价格体系” contains none of the legacy mandatory
+        # terms (驱动/修复/改善/放量) but is still a complete viewpoint.
+        title = "\u6e20\u9053\u6539\u9769\u91cd\u5851\u4ef7\u683c\u4f53\u7cfb"
+        self.assertTrue(writer._valid_title_conclusion(title))
+
+    def test_peer_table_preserves_all_ten_dimensions_during_normalization(self):
+        header = [
+            "\u7ade\u4e89\u5173\u7cfb", "\u516c\u53f8\uff08\u4ee3\u7801\uff09", "\u5e02\u573a", "\u53ef\u6bd4\u4e1a\u52a1",
+            "\u884c\u4e1a\u5730\u4f4d", "\u76f8\u5173\u4e1a\u52a1\u8fdb\u5c55", "\u5e02\u503c", "\u5546\u4e1a\u6a21\u5f0f",
+            "\u76ee\u6807\u5ba2\u6237\u7fa4\u4f53", "\u6838\u5fc3\u4ea7\u54c1",
+        ]
+        rows = [
+            ["\u2014", "\u8d35\u5dde\u8305\u53f0\uff08600519\uff09", "A\u80a1", "\u767d\u9152", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014", "\u2014"],
+            ["\u76f4\u63a5\u7ade\u4e89", "\u4e94\u7cae\u6db2\uff08000858\uff09", "A\u80a1", "\u767d\u9152", "\u2014", "\u6e20\u9053\u6539\u9769[1]", "\u2014", "\u2014", "\u2014", "\u2014"],
+        ]
+        md = "\n".join([
+            "| " + " | ".join(header) + " |",
+            "|" + "|".join([":---"] * len(header)) + "|",
+            *["| " + " | ".join(row) + " |" for row in rows],
+        ])
+        normalized = writer._normalize_markdown_tables(md)
+        self.assertEqual(len(writer._md_cells(normalized.splitlines()[0])), 10)
+        self.assertIn("\u76ee\u6807\u5ba2\u6237\u7fa4\u4f53", normalized)
 if __name__ == "__main__":
     unittest.main()

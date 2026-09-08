@@ -3560,8 +3560,8 @@ def gen_peer_table(client, key_data: dict) -> str:
 
 规则：
 1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”。其后逐一列出上述全部可比公司。
-2. 每行严格10列；除“相关业务进展”外，其余列无需引用，但没有可靠信息一律填“—”，不得杜撰排名、财务数字或客户名单。
-3. “相关业务进展”是唯一需要引用的列：该公司有定向材料时，仅概括其材料并保留对应[N]；没有材料时必须填“—”，不得引用其他公司的来源。
+2. 每行严格10列；除“相关业务进展”外，其余列可基于公司公开常识和行业常识写简洁的定性画像，无需引用。避免编造精确财务数字、排名或客户名单；仅在确无合理描述时填“—”。
+3. “相关业务进展”是唯一需要引用的列：优先概括新品、产品结构、渠道、价格、产能、组织改革或市场份额等经营事件，并保留该公司定向材料的对应[N]。财务数据可以作为一句背景，但不得以营收、利润、EPS、PE或同比指标作为该列主要内容；没有材料时必须填“—”，不得引用其他公司的来源。
 4. 不要使用目标公司研报、常识或推测为可比公司补写业务进展。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
@@ -3597,6 +3597,7 @@ def _title_zh_len(text: str) -> int:
 
 
 def _valid_title_conclusion(text: str, short_name: str = "") -> bool:
+    """Keep title quality checks structural; wording should not depend on a keyword whitelist."""
     if not text:
         return False
     if any(term in text for term in _TITLE_FORBIDDEN_TERMS):
@@ -3610,8 +3611,10 @@ def _valid_title_conclusion(text: str, short_name: str = "") -> bool:
     zh_len = _title_zh_len(text)
     if zh_len < 10 or zh_len > 30:
         return False
-    judgment_terms = ("驱动", "受益", "稳健", "韧性", "延续", "打开", "修复", "改善", "支撑", "增量", "需求", "龙头")
-    return any(term in text for term in judgment_terms)
+    # The generation prompt asks for an investment conclusion. Do not reject an
+    # otherwise complete viewpoint merely because it omits a fixed word such as
+    # “驱动” or “修复”; those words remain useful only in the deterministic fallback.
+    return True
 
 
 def _sanitize_title_conclusion(raw: str, short_name: str, ticker: str) -> str:
@@ -4516,7 +4519,17 @@ def _normalize_markdown_tables(md_text: str) -> str:
             # Keep a malformed original if it was not a real table.
             out.extend(block)
         else:
-            normalized = _drop_all_empty_table_columns(normalized)
+            # A peer comparison table is a fixed research schema, not a sparse
+            # numeric table. Preserve all ten dimensions even when a qualitative
+            # cell is temporarily “—”; the writer prompt, rather than post-hoc
+            # column deletion, decides what can be described without a citation.
+            is_peer_comparison = (
+                n_cols == 10
+                and header[:2] == ["竞争关系", "公司（代码）"]
+                and "相关业务进展" in header
+            )
+            if not is_peer_comparison:
+                normalized = _drop_all_empty_table_columns(normalized)
             out.extend(normalized)
     return '\n'.join(out)
 
