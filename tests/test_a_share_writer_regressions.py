@@ -300,6 +300,50 @@ class AShareWriterRegressionTests(unittest.TestCase):
         reports = [{"id": "r2", "_meta": {"abstractText": "参考可比公司2026年底部区间为12-24倍PE，我们给予25倍PE。"}}]
         self.assertEqual(fetch.extract_peer_names(reports, "贵州茅台"), [])
 
+    def test_peer_candidates_extract_paren_annotation_enumeration(self):
+        # fix2：同行，如X（37个）和Y（35个）的括号数量注释不再打断 enum 提取
+        reports = [{"id": "r1", "_meta": {"abstractText": "这显著领先于紧随其后的同行，如信达生物（37个）和中国生物制药（35个）（图9）。此外，管线继续扩张。"}}]
+        candidates = fetch.extract_peer_names(reports, "恒瑞医药")
+        phrases = {item["query"] for item in candidates if not item["code"]}
+        self.assertTrue({"信达生物", "中国生物制药"} <= phrases)
+
+    def test_peer_candidates_extract_coverage_list_with_leadin(self):
+        # fix1：覆盖范围内…而言：的覆盖名单是可比池信号
+        reports = [{"id": "r1", "_meta": {"abstractText": "相对于其覆盖范围内的其他公司而言：贵州茅台、泸州老窖、蒙牛乳业、千禾味业。其余为概述。"}}]
+        candidates = fetch.extract_peer_names(reports, "海天味业")
+        phrases = {item["query"] for item in candidates if not item["code"]}
+        self.assertTrue({"贵州茅台", "泸州老窖", "千禾味业"} <= phrases)
+
+    def test_peer_candidates_reject_ib_revenue_disclosure(self):
+        # fix1 安全闸：投行报酬披露名单（含石化等非同业）不得作为同业候选
+        reports = [{"id": "r1", "_meta": {"abstractText": "摩根士丹利预计将从蓝星安迪苏股份有限公司、中国石油化工股份有限公司、宁德时代新能源科技股份有限公司获得投资银行服务相关报酬。"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "宁德时代"), [])
+
+    def test_peer_candidates_reject_broker_entity_list(self):
+        # fix1 安全闸：券商自身法律实体名单（杰富瑞系列）不得作为同业候选
+        reports = [{"id": "r1", "_meta": {"abstractText": "本报告由与以下机构相关的人员编制：杰富瑞证券有限公司、杰富瑞国际有限公司、杰富瑞有限公司、杰富瑞香港有限公司。"}}]
+        self.assertEqual(fetch.extract_peer_names(reports, "招商银行"), [])
+
+    def test_validate_peer_names_fuzzy_only_for_coverage_candidates(self):
+        # fuzzy 候选允许归一化包含（“千禾味业食品”对“千禾味业”）；普通候选仍要求完全一致
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            query = (params or {}).get("query")
+            if query == "千禾味业食品":
+                return {"code": 1, "data": {"hits": [{"entity_id": "603027", "name": "千禾味业"}]}}, None, None
+            if query == "五粮液酒":
+                return {"code": 1, "data": {"hits": [{"entity_id": "000858", "name": "五粮液"}]}}, None, None
+            return {"code": 1, "data": {"hits": []}}, None, None
+        original = fetch.call
+        fetch.call = fake_call
+        try:
+            ok = fetch.validate_peer_names({"stock_search": {"url": "u"}}, [
+                {"query": "千禾味业食品", "code": "", "fuzzy": True},
+                {"query": "五粮液酒", "code": ""},
+            ], "tok")
+        finally:
+            fetch.call = original
+        self.assertEqual([v["code"] for v in ok], ["603027"])
+
     def test_validate_peer_names_accepts_exact_name_without_code(self):
         def fake_call(method, url, token, params=None, body=None, timeout=None):
             query = (params or {}).get("query")

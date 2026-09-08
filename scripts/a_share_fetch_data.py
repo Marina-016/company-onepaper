@@ -682,7 +682,20 @@ _PEER_NOISE_SUFFIXES = (
     '公司', '行业', '产业', '格局', '优势', '壁垒', '市场', '领域', '层面', '方面',
     '来看', '而言', '地位', '空间', '趋势', '发展', '水平', '数量', '赛道', '龙头',
     '集中度', '增速', '占比', '估值', '股价', '竞争力', '护城河', '同行', '同业',
+    '股票', '个股', '分析师', '清单', '列表', '范围', '目标价', '总回报', '评级',
+    '买入', '中性', '卖出', '相关', '基准', '回报', '信心', '潜力', '暂停', '披露',
     '稳定', '加剧', '激烈', '充分', '持续', '保持', '给予', '提升', '下降', '恶化',
+)
+
+# 覆盖名单/全称枚举的合规排除词：出现在句子附近时视为投行报酬或监管披露，不作为同业候选。
+_PEER_COMPLIANCE_KEYWORDS = (
+    '投资银行', '报酬', '佣金', '承销', '保荐', '做市', '客户关系', '业务关系',
+    '监管披露', '披露信息', '咨询服务', '评级机构', '薪酬', '利益相关',
+)
+# 券商法律实体名单（如“杰富瑞证券有限公司、杰富瑞国际有限公司”），是券商自身披露，非同业候选。
+_PEER_BROKER_ROOTS = (
+    '杰富瑞', '高盛', '摩根士丹利', '瑞银', '野村', '花旗', '美银', '摩根大通',
+    '大和', '德意志银行', '汇丰', '中金', '国泰君安', '中信', '伯恩斯坦', '穆迪',
 )
 
 
@@ -692,11 +705,67 @@ def _normalize_security_name(name):
     return re.sub(r'(股份有限公司|有限责任公司|集团有限公司|集团公司|有限公司|公司)$', '', s)
 
 
+# 覆盖名单/全称公司枚举：券商"覆盖范围内公司"名单是可比池信号；
+# 投行报酬/监管披露等合规语境的枚举（常混入非同业公司）必须排除。
+_PEER_COVERAGE_LEADIN = re.compile(
+    r'(?:覆盖范围内|覆盖范围|覆盖的(?:公司|企业))'
+    r'(?:的其他(?:公司|企业|同行|同业))?(?:而言|包括|有|为|是|含|：|:)[:：]?'
+    r'(?P<names>[一-龥、，,和及与（()）A-Za-z0-9]{2,300}?)'
+    r'(?=[^一-龥、，,和及与（()）A-Za-z0-9]|$)'
+)
+_PEER_FULL_NAME_ENUM = re.compile(
+    r'(?P<names>[一-龥]{2,16}?(?:集团股份有限公司|集团有限公司|股份有限公司|有限责任公司|有限公司|集团))'
+    r'(?:[、，,和及与]+[一-龥]{2,16}?(?:集团股份有限公司|集团有限公司|股份有限公司|有限责任公司|有限公司|集团)){1,}'
+)
+
+def _split_peer_enum_names(enum_text):
+    """把公司枚举串拆成短名称：去（A）/（H）/（37个）等括号注释与公司后缀，长度2-8过滤。"""
+    parts = [part.strip() for part in re.split(r'[、，,]|和(?!而)|及|与', enum_text) if part.strip()]
+    cleaned = []
+    for part in parts:
+        part = re.sub(r'[（(][^（()）]{0,24}[）)]', '', part).strip()
+        part = re.sub(r'(集团股份有限公司|集团有限公司|股份有限公司|有限责任公司|有限公司|集团)$', '', part).strip()
+        if 2 <= len(part) <= 8:
+            cleaned.append(part)
+    return cleaned
+
+def _register_name_candidates(candidates, names, blocked, company_short_name, report_id, fuzzy=False):
+    """统一去噪/过滤并登记名称候选；fuzzy=True 的候选验证时启用包含匹配（覆盖名单全称）。"""
+    for name in names:
+        name = re.sub(r'[等]$', '', name)
+        if len(name) < 2 or name in blocked or company_short_name in name:
+            continue
+        if name.endswith(_PEER_NOISE_SUFFIXES):
+            continue
+        entry = candidates.setdefault('n:' + name, {'query': name, 'code': '', 'source_report_id': report_id, 'count': 0})
+        if fuzzy:
+            entry['fuzzy'] = True
+        entry['count'] += 1
+
+def _coverage_names_from(source):
+    """从整篇文本提取覆盖名单/全称公司枚举候选；合规披露语境的全称枚举被排除。"""
+    names = []
+    for mm in _PEER_COVERAGE_LEADIN.finditer(source or ''):
+        parts = _split_peer_enum_names(mm.group('names'))
+        if len(parts) >= 2:
+            names.extend(parts)
+    for mm in _PEER_FULL_NAME_ENUM.finditer(source or ''):
+        win = (source or '')[max(0, mm.start() - 80): mm.end() + 40]
+        if any(k in win for k in _PEER_COMPLIANCE_KEYWORDS):
+            continue
+        matched = mm.group('names')
+        if any(b in matched for b in _PEER_BROKER_ROOTS):
+            continue
+        parts = _split_peer_enum_names(matched)
+        if len(parts) >= 2:
+            names.extend(parts)
+    return names
+
 def extract_peer_names(reports, company_short_name):
     """从研报明确的同业或竞争语境提取候选；无代码名称仍须经精确证券名称核验。"""
-    contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|主要对手|核心对手|直接竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|同业领先|相比之下|相较(?:于|之下)|相比(?:同行|同业|竞争)).{0,300}')
+    contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|主要对手|核心对手|直接竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|同业领先|相比之下|相较(?:于|之下)|相比(?:同行|同业|竞争)|同行(?:，|,|、)?如|同业(?:，|,|、)?如).{0,300}')
     named_code = re.compile(r'(?:^|[、，,；;：:\s])(?P<name>[\u4e00-\u9fa5]{2,12}?)(?:股份有限公司|集团)?[（(]\s*(?P<code>[036]\d{5})\s*[）)]')
-    enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*(?P<names>[\u4e00-\u9fa5、，,和及与]{2,80}?)(?=等(?:其他)?(?:[\u4e00-\u9fa5]{0,6})?(?:品牌|公司|厂商|酒企|同行|竞争者)?(?:[，,。；;]|$)|[。；;])')
+    enum = re.compile(r'(?:如|例如|包括|主要有|涵盖|涉及|对标|分别是)[:：]?\s*(?P<names>[\u4e00-\u9fa5、，,和及与（）0-9.%百千]{2,80}?)(?=等(?:其他)?(?:[\u4e00-\u9fa5]{0,6})?(?:品牌|公司|厂商|酒企|同行|竞争者)?(?:[，,。；;]|$)|[。；;])')
     # Match explicit competition verbs plus an enumeration of two or more names only.
     competitive_enum = re.compile(
         '(?:\u6324\u5360|\u5206\u6d41|\u62a2\u5360|\u66ff\u4ee3|\u51b2\u51fb|\u4e89\u593a|\u8ffd\u8d76|\u8d76\u8d85|\u8d85\u8d8a).{0,80}?'
@@ -734,22 +803,18 @@ def extract_peer_names(reports, company_short_name):
                 enum_texts = [match.group('names') for match in enum.finditer(context)]
                 enum_texts.extend(competitive_names)
                 competitive_names = []
-                candidate_names = []
                 for enum_text in enum_texts:
-                    parts = [part.strip() for part in re.split(r'[、，,]|和(?!而)|及|与', enum_text) if part.strip()]
+                    parts = _split_peer_enum_names(enum_text)
                     # 仅保留短公司名枚举；免责声明中的长句即使被“如”触发也不能占用候选配额。
-                    parts = [part for part in parts if 2 <= len(part) <= 8]
                     if len(parts) >= 2:
-                        candidate_names.extend(parts)
-                candidate_names.extend(match.group('name') for match in explicit_single_peer.finditer(context))
-                for name in candidate_names:
-                    name = re.sub(r'[等]$', '', name)
-                    if len(name) < 2 or name in blocked or company_short_name in name:
-                        continue
-                    if name.endswith(_PEER_NOISE_SUFFIXES):
-                        continue
-                    entry = candidates.setdefault('n:' + name, {'query': name, 'code': '', 'source_report_id': report_id, 'count': 0})
-                    entry['count'] += 1
+                        _register_name_candidates(candidates, parts, blocked, company_short_name, report_id)
+                _register_name_candidates(
+                    candidates,
+                    [match.group('name') for match in explicit_single_peer.finditer(context)],
+                    blocked, company_short_name, report_id,
+                )
+                # 覆盖名单/全称公司枚举（按整篇源文本，不受 peer 语境窗口限制）
+                _register_name_candidates(candidates, _coverage_names_from(source), blocked, company_short_name, report_id, fuzzy=True)
     return sorted(candidates.values(), key=lambda item: (-item['count'], item['code']))[:8]
 
 
@@ -795,7 +860,17 @@ def validate_peer_names(meta, peer_candidates, token, target_ticker=''):
             if err or not rj:
                 continue
             hits = (rj.get('data') or {}).get('hits') or []
-            exact = next((item for item in hits if _normalize_security_name(str(item.get('name') or '')) == _normalize_security_name(phrase)), None)
+            expected_name = _normalize_security_name(phrase)
+            if candidate.get('fuzzy'):
+                # 覆盖名单候选常带业务词全称（如"千禾味业食品"对"千禾味业"），用归一化包含匹配。
+                exact = None
+                for item in hits:
+                    actual_name = _normalize_security_name(str(item.get('name') or ''))
+                    if actual_name and (expected_name == actual_name or expected_name in actual_name or actual_name in expected_name):
+                        exact = item
+                        break
+            else:
+                exact = next((item for item in hits if _normalize_security_name(str(item.get('name') or '')) == expected_name), None)
             if not exact:
                 continue
             code = str(exact.get('entity_id') or '').strip()
