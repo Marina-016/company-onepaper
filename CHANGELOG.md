@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.2.40
+
+- 同业发现新增语义优先路径：用 `getMaterialsV2` 语义检索发现可比公司候选（`discover_semantic_peer_candidates`），候选经 `stock_search` 身份核验后仍须带业务可比性；研报正则与行业池降为受限兜底，非同业候选（如混入晶圆代工行业池的风电塔筒公司）不再进入 §8.2。语义结果回填 `business_evidence`/`source_kind` 供材料阶段二次过滤。
+- 业务进展兜底对等化：为 peer 行新增 `_derive_peer_progress`，从该 peer 自身材料（优先标题去前缀后的核心业务事件）确定性提取 20–60 字进展并附自身引用，避免模型漏填时 peer 格整格变 `—`；基准行沿用标的自身研报兜底。行业池候选须先经 peer 材料命中才保留，材料不含自身业务事件时正确留空而非编造。
+- §8.2 非进展列与画像质量：生成同业表时向 prompt 注入每个 peer 的业务画像提示；放宽非进展列规则为「基于材料体现的主营与模式做简洁定性描述、禁止编造精确数字/排名/客户名单」，有业务材料的 peer 不再整行 `—`。
+- 风险提示（§10）长度与去模板化：prompt 增加 title/trigger/impact/monitor 分字段字数硬约束；`_validate_render_section_10` 对超长字段就地截断并清理误并入 impact 的「重点跟踪」尾句，超长不再整体触发 fallback。未知风险标题改为 fail-closed（不再生成「风险事项持续…相关经营指标及公司后续披露」泛化模板）；新增泛化经营语言黑名单与重复主题检测。
+- 清理 LLM 用加粗 `**参考资料**`（而非 `## 参考资料`）嵌入章节的残留块（`_postprocess_report` 阶段 0a），§5 产销链等章节不再出现局部参考资料列表；同时禁止章节 prompt 输出「参考资料」字样。
+- DOCX 参考资料条目以 8.5pt 浅灰小字独立渲染，与正文段落视觉区分，不再混同于正文。
+- 回归测试新增 6 项并全绿（58/58）：语义候选/业务可比过滤、peer 进展对等兜底、风险超长截断与去模板化、加粗内嵌参考资料清理等。
+
 ## v1.2.39
 
 - Make risk-length policy explicit: 3–4 source-backed bullets, target 80–160 Chinese characters each and a hard 180-character limit after removing citations and Markdown; the writer passes `short_name` into risk evidence and fallback paths so a full legal company name cannot empty the fallback.

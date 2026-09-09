@@ -833,6 +833,86 @@ def merge_peer_candidates(*lists):
     return out
 
 
+def discover_semantic_peer_candidates(meta, company_name, ticker, token, size=10):
+    """用 getMaterialsV2 语义检索发现可比公司，不直接将结果视为已核验 peer。"""
+    url = meta.get('getMaterialsV2', {}).get('url', '')
+    if not url:
+        return [], 'getMaterialsV2 URL缺失'
+    question = (f'{company_name}（{ticker}）主要A股竞争对手、直接可比上市公司、'
+                '相邻晶圆代工或半导体制造公司，以及各自主营业务、产品、产能、客户或最新业务进展')
+    body = {'question': question, 'queryScope': 'research,researchTable,meetingSummary',
+            'rewriteQuestion': False, 'size': size}
+    rj, status, err = call('POST', url, token, body=body, timeout=45)
+    if err:
+        return [], err
+    items = safe_get_data(rj) or []
+    if not isinstance(items, list):
+        return [], f'语义检索返回格式异常(status={status})'
+    aliases = {str(x).strip() for x in (company_name, str(ticker), _normalize_security_name(company_name),
+                                        re.sub(r'(集成电路制造|股份有限公司|有限责任公司|有限公司|集团有限公司|集团公司|公司)$', '', company_name)) if str(x).strip()}
+    candidates, seen = [], set()
+    noise_names = {'指A股', 'A股', 'H股', '股票代码', '股', '中国', '港股'}
+    name_pat = re.compile(r'(?:选取|包括|可比标的|可比公司|竞争对手|同业公司|主要对手|直接可比)[:：]?\s*(?P<names>[一-龥A-Za-z·]{2,12}(?:[、，,和及与][一-龥A-Za-z·]{2,12}){1,8})\s*(?=作为|等|作为可比)')
+    adjacent_pat = re.compile(r'(?:A股市场中|业务相近|具备可比性|主要为|主要有)[^。；;]{0,45}?(?P<names>[一-龥]{2,8}(?:[、，,和及与][一-龥]{2,8}){1,8})(?=均为|作为|是|等|。)')
+    code_pat = re.compile(r'(?P<name>[一-龥A-Za-z·]{2,20})\s*[（(](?P<code>[036]\d{5})[)）]')
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        source = re.sub(r'<[^>]+>', ' ', _peer_material_text(item))
+        source = re.sub(r'(?<=\d)\s+(?=\d)', '', source)
+        matches = list(code_pat.finditer(source))
+        for name_match in list(name_pat.finditer(source)) + list(adjacent_pat.finditer(source)):
+            for raw_name in re.split(r'[、，,和及与]', name_match.group('names')):
+                name = raw_name.strip(' -—:：()（）')
+                if len(name) >= 2 and name not in noise_names and name not in aliases and name not in seen:
+                    seen.add(name)
+                    candidates.append({'query': name, 'code': '',
+                                       'source_report_id': str(item.get('id') or ''),
+                                       'source_kind': 'semantic', 'fuzzy': True,
+                                       'business_evidence': source[:1800], 'count': 1})
+        # 兼容“公司 - A（688347 CH）”和“公司 688347.SH”等语义检索常见写法。
+        loose_code_pat = re.compile(r'(?P<name>[一-龥A-Za-z·]{2,24})[^一-龥A-Za-z]{0,10}(?P<code>[036]\d{5})(?:\.?[A-Z]{2})?')
+        matches.extend(loose_code_pat.finditer(source))
+        for match in matches:
+            name = re.sub(r'(股份有限公司|有限责任公司|集团有限公司|有限公司|集团)$', '', match.group('name')).strip(' -—:：()（）')
+            name = re.sub(r'^(?:A|H|中国|香港|投资主题|估值详情|催化剂)[ -]*', '', name).strip()
+            code = match.group('code')
+            if not name or code == str(ticker) or any(alias and (alias in name or name in alias) for alias in aliases):
+                continue
+            if name in {'股票代码', 'A股', 'H股', '股', '中国', '港股'} or len(name) < 2:
+                continue
+            if code in seen or len(name) > 16:
+                continue
+            seen.add(code)
+            candidates.append({'query': name, 'code': code,
+                               'source_report_id': str(item.get('id') or ''),
+                               'source_kind': 'semantic',
+                               'business_evidence': source[:1800], 'count': 1})
+    return candidates[:10], None
+
+
+def filter_peer_business_match(peers, target_business='', target_name=''):
+    """过滤明显跨行业或没有业务依据的候选；行业池候选无证据时不升格为正式 peer。"""
+    target = f'{target_name} {target_business}'
+    if not re.search(r'半导体|晶圆|集成电路|芯片|foundry|mems|功率器件|特色工艺|fab', target, re.I):
+        return peers
+    positive = re.compile(r'半导体|晶圆|集成电路|芯片|晶圆代工|foundry|MEMS|功率器件|特色工艺|工艺平台|Fab', re.I)
+    negative = re.compile(r'风电|塔筒|海工|风机|房地产|建筑|煤炭|钢铁|化工|银行|保险|白酒|医药', re.I)
+    out = []
+    for peer in peers or []:
+        evidence = str(peer.get('business_evidence') or '')
+        source_kind = str(peer.get('source_kind') or '')
+        if source_kind == 'industry' and not evidence:
+            continue
+        text = f"{peer.get('current_name') or peer.get('query') or ''} {evidence}"
+        if negative.search(text) and not positive.search(text):
+            continue
+        if source_kind == 'semantic' and evidence and not positive.search(evidence):
+            continue
+        out.append(peer)
+    return out
+
+
 def extract_peer_names(reports, company_short_name):
     """从研报明确的同业或竞争语境提取候选；无代码名称仍须经精确证券名称核验。"""
     contexts = re.compile(r'(?:可比公司|同类公司|竞争对手|竞争公司|同业公司|主要竞争|主要对手|核心对手|直接竞争|对标公司|可比上市|同类上市|行业对比|同业比较|可比估值|同业估值|同业领先|相比之下|相较(?:于|之下)|相比(?:同行|同业|竞争)|同行(?:，|,|、)?如|同业(?:，|,|、)?如).{0,300}')
@@ -1678,15 +1758,38 @@ def run(ticker_input, token, output_path):
     else:
         print(f"  ✓ research_reports: {len(reports)} 篇（含全文）")
 
-    # 研报拿到后立即提取可比公司名，通过 stock_search 验证当前官方简称，再启动 getMaterialsV2
-    peers = extract_peer_names(result.get("research_reports") or [], company_name)
+    # 优先用语义检索发现 peer，再由 stock_search 做证券身份核验；旧正则和行业池仅作受限兜底。
+    semantic_peers, semantic_err = discover_semantic_peer_candidates(meta, company_name, ticker, token)
+    if semantic_err:
+        print(f"  △ 语义同业发现失败: {semantic_err}")
+    if semantic_peers:
+        print(f"  → 语义候选: {[(p['query'],p['code']) for p in semantic_peers]}")
+    peers = semantic_peers
+    if len(peers) < 2:
+        report_peers = extract_peer_names(result.get("research_reports") or [], company_name)
+        peers = merge_peer_candidates(peers, report_peers)
+        if report_peers:
+            print(f"  → 研报正则候选兜底: {len(report_peers)} 家")
     peer_validated = validate_peer_names(meta, peers, token, target_ticker=ticker)
+    # 将语义证据回填至已核验对象，供后续材料与业务过滤使用。
+    evidence_by_code = {str(p.get('code') or ''): p.get('business_evidence', '') for p in semantic_peers}
+    for peer in peer_validated:
+        c = str(peer.get('code') or '')
+        peer['source_kind'] = next((p.get('source_kind') for p in semantic_peers
+                                    if str(p.get('code') or '') == c or str(p.get('query') or '') == str(peer.get('query') or '')),
+                                   'report_regex')
+        peer['business_evidence'] = evidence_by_code.get(c, '')
+    target_business = ' '.join(str(x.get('itemName') or '') for x in ((result.get('main_comp') or {}).get('data') or [])[:8] if isinstance(x, dict))
+    # 行业池兜底：不做 filter，让 fetch_peer_materials 先取真实材料，之后再过滤。
     if len(peer_validated) < 2:
         industry_cands = build_industry_peer_candidates(meta, ticker, token)
         if industry_cands:
-            peers = merge_peer_candidates(peers, industry_cands)
+            peers = merge_peer_candidates(peer_validated, industry_cands)
             print(f"  → 行业池兜底候选: {len(industry_cands)} 家（申万三级行业成分）")
-            peer_validated = validate_peer_names(meta, peers, token, target_ticker=ticker)
+            extra = validate_peer_names(meta, peers, token, target_ticker=ticker)
+            for peer in extra:
+                peer.setdefault('source_kind', 'industry')
+            peer_validated = extra
     result["peer_validated"] = peer_validated
     peer_labels = [p['current_name'] for p in peer_validated]
     if peer_validated:
@@ -1702,6 +1805,21 @@ def run(ticker_input, token, output_path):
 
     peer_data, peer_err = peer_fut.result()
     ex3.shutdown(wait=False)
+    # 取到真实 peer 材料后回填 business_evidence，再对行业池候选做业务可比过滤。
+    if peer_data:
+        material_evidence_by_code = {}
+        for item in peer_data:
+            code = str(item.get('peer_code') or '')
+            if code and code not in material_evidence_by_code:
+                material_evidence_by_code[code] = _peer_material_text(item)
+        for peer in peer_validated:
+            c = str(peer.get('code') or '')
+            if not peer.get('business_evidence') and c in material_evidence_by_code:
+                peer['business_evidence'] = material_evidence_by_code[c]
+        peer_validated_final = filter_peer_business_match(peer_validated, target_business, company_name)
+        if len(peer_validated_final) >= 2 or not peer_validated:
+            peer_validated = peer_validated_final
+        result["peer_validated"] = peer_validated
     result["peer_materials"] = peer_data
     if peer_err:
         record_error("getMaterialsV2", peer_err)

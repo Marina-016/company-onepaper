@@ -610,6 +610,47 @@ class AShareWriterRegressionTests(unittest.TestCase):
 """
         self.assertEqual(writer._scenario_target_price_errors(section, {}), [])
 
+    def test_unknown_risk_profile_fails_closed_in_fallback(self):
+        original = writer._collect_a_share_risk_evidence
+        writer._collect_a_share_risk_evidence = lambda *_args, **_kwargs: [
+            {"risk_title": "管理层表述变化", "text": "风险提示：管理层表述变化", "ref": 1},
+            {"risk_title": "需求不及预期", "text": "风险提示：需求不及预期", "ref": 2},
+            {"risk_title": "价格竞争加剧", "text": "风险提示：价格竞争加剧", "ref": 3},
+        ]
+        try:
+            result = writer._build_a_share_risk_fallback({"name": "测试公司"})
+        finally:
+            writer._collect_a_share_risk_evidence = original
+        self.assertNotIn("管理层表述变化", result)
+        self.assertNotIn("相关经营指标", result)
+
+    def test_risk_validator_rejects_generic_operating_language(self):
+        body = (
+            "• **需求不及预期**：若终端订单兑现弱于预期，出货节奏可能放缓；重点跟踪相关经营指标及公司后续披露。[1]\n"
+            "• **价格竞争加剧**：若行业供给释放，产品价格与盈利空间可能承压；重点跟踪产品价格、毛利率和市场份额。[2]\n"
+            "• **原材料成本波动**：若原材料价格上行，成本传导滞后可能压缩盈利能力；重点跟踪原材料价格、采购成本和毛利率。[3]"
+        )
+        valid, issues = writer._validate_a_share_risk_body(body)
+        self.assertFalse(valid)
+        self.assertTrue(any("generic_operating_language" in issue for issue in issues))
+
+    def test_risk_json_rejects_duplicate_theme(self):
+        payload = {"risks": [
+            {"title": "需求不及预期", "trigger": "终端订单兑现弱于预期", "impact": "出货节奏放缓可能拖累收入", "monitor": "订单、出货和渠道库存", "source_refs": [1]},
+            {"title": "销量下滑风险", "trigger": "终端销量低于预期", "impact": "产能利用率和收入承压", "monitor": "销量、产能利用率和库存", "source_refs": [2]},
+            {"title": "价格竞争加剧", "trigger": "行业供给释放加快", "impact": "产品价格与盈利空间承压", "monitor": "产品价格、毛利率和市场份额", "source_refs": [3]},
+        ]}
+        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 1}, "b": {"n": 2}, "c": {"n": 3}})
+        self.assertEqual(rendered, "")
+        self.assertTrue(any("duplicate_theme" in issue for issue in issues))
+
+    def test_risk_profiles_use_concrete_company_indicators(self):
+        profile = writer._risk_tracking_profile("产能爬坡与折旧压力")
+        self.assertIsNotNone(profile)
+        self.assertIn("产能利用率", profile[2])
+        self.assertIn("折旧", profile[2])
+        self.assertIsNone(writer._risk_tracking_profile("管理层表述变化"))
+
     def test_risk_length_allows_detailed_source_backed_bullet_up_to_180(self):
         explanation = "若新增产能投放节奏慢于规划，固定成本摊薄和客户导入可能延后，进而影响收入兑现与毛利率改善；重点跟踪新增产能投放、产能利用率、客户认证进度和毛利率指引。"
         line = f"• **产能投放不及预期**：{explanation}[1]"
@@ -629,5 +670,28 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertEqual(refs, {2})
         self.assertIn("[2]", materials)
         self.assertNotIn("[1]", materials)
+
+    def test_postprocess_removes_bold_embedded_reference_block(self):
+        # 回归：LLM 用加粗 "**参考资料**" 而非 "## 参考资料" 输出章节内嵌引用块，
+        # 阶段 0 只匹配 ## 标题，导致内嵌块残留进正文；阶段 0a 必须删除加粗形式内嵌块。
+        md = (
+            "## 5 产销链分析\n\n"
+            "中国大陆收入570.18亿元[1]。\n\n"
+            "**参考资料**\n\n"
+            "[1]研报 | 2026-09-03 | 华创证券 | 中芯国际半年报点评\n\n"
+            "[2]主营构成 | getFdmtMoStdItem\n\n"
+            "## 6 公司财务数据分析\n\n"
+            "正文[1][2]。\n\n"
+            "## 参考资料\n\n"
+            "[1]Datayes研报 | 华创证券\n"
+            "[2]Datayes结构化接口 | getFdmtMoStdItem\n"
+        )
+        result = writer._postprocess_report(md, {})
+        self.assertNotIn("**参考资料**", result)
+        self.assertNotIn("[1]研报 | 2026-09-03", result)
+        self.assertIn("## 5 产销链分析", result)
+        self.assertIn("## 6 公司财务数据分析", result)
+        # 真正的参考资料章节保留且唯一
+        self.assertEqual(result.count("## 参考资料"), 1)
 if __name__ == "__main__":
     unittest.main()

@@ -2202,7 +2202,7 @@ def gen_section5(client, key_data: dict) -> str:
 
     prompt = f"""为 {name} 撰写"产销链分析"章节（第5节）。
 
-⚠️ **禁止输出任何标题**（如 ### 5. 产销链分析 或 ### 5.1 等），直接输出内容。上方模板已有 ## 5 产销链分析 标题，不要再重复。
+⚠️ **禁止输出任何标题**（如 ### 5. 产销链分析 或 ### 5.1 等），直接输出内容。上方模板已有 ## 5 产销链分析 标题，不要再重复。**禁止输出"参考资料"字样或任何 [N] 编号列表**——引用全部以行内 [N] 标注，参考资料由系统统一在文末生成。
 
 【公司信息】
 {json.dumps(company_info, ensure_ascii=False)[:600] if company_info else "（无结构化数据）"}
@@ -2855,6 +2855,13 @@ _A_SHARE_GENERIC_RISK_PATTERNS = (
     r'模型不确定性风险',
     r'本报告不构成投资建议',
 )
+_A_SHARE_GENERIC_RISK_PHRASES = (
+    '风险事项持续或超出当前预期',
+    '经营预期与估值判断可能承压',
+    '相关经营指标及公司后续披露',
+    '相关经营指标',
+    '公司后续披露',
+)
 
 
 def _risk_ref_no(ref_map: dict, key: str) -> int:
@@ -3067,21 +3074,24 @@ def _risk_tracking_profile(title: str) -> tuple:
         (r'需求|订单|客户|销量|出货', ('终端需求或订单兑现弱于预期', '出货节奏放缓可能拖累收入与产能利用率', '订单、出货和渠道库存')),
         (r'原材料|成本', ('核心原材料价格波动超预期', '成本传导滞后可能压缩盈利能力', '原材料价格、采购成本和毛利率')),
         (r'价格|批价|竞争', ('行业供给释放或价格竞争加剧', '产品价格与盈利空间可能承压', '产品价格、毛利率和市场份额')),
-        (r'产能|延期|延迟', ('项目建设或产能投放进度不及预期', '新增供给释放放缓并影响业务兑现节奏', '项目进度、产能利用率和投产安排')),
-        (r'政策|监管|税|合规|审批', ('政策规则或审批节奏出现变化', '业务推进成本或市场准入预期可能承压', '政策落地、审批进度和公司应对措施')),
-        (r'汇率|海外|贸易', ('海外政策或汇率波动超预期', '海外业务盈利与扩张节奏可能受扰动', '政策进展、汇率和海外订单')),
+        (r'产能|延期|延迟|折旧|资本开支', ('项目建设、产能爬坡或资本开支节奏不及预期', '新增产能利用率不足可能放大折旧摊薄压力', '项目进度、产能利用率、资本开支和折旧')),
+        (r'研发|技术|工艺|导入|验证|量产', ('新工艺研发、客户验证或量产进度不及预期', '产品结构升级和先进产能盈利兑现可能放缓', '研发进度、客户验证、量产安排和先进制程收入')),
+        (r'政策|监管|税|合规|审批|限制|设备', ('政策、审批或关键设备供应出现变化', '产能建设、产品交付或市场准入节奏可能受扰动', '政策落地、设备交付、审批进度和公司应对措施')),
+        (r'汇率|海外|贸易|区域', ('海外政策、贸易环境或区域需求变化超预期', '海外业务盈利与收入结构可能受到扰动', '政策进展、海外订单、区域收入占比和汇率')),
         (r'回购', ('回购计划执行节奏或规模不及预期', '市场预期支撑减弱，估值情绪可能承压', '回购公告、执行进度和注销安排')),
     )
     for pattern, profile in profiles:
         if re.search(pattern, title):
             return profile
-    return ('风险事项持续或超出当前预期', '经营预期与估值判断可能承压', '相关经营指标及公司后续披露')
+    return None
 
 
 def _compose_investor_risk_explanation(trigger: str, impact: str, monitor: str) -> str:
     """统一渲染可执行的风险表述，避免无来源阈值和空泛占位语。"""
     trigger = re.sub(r'\s+', ' ', str(trigger or '')).strip('，,；;。：: ')
     impact = re.sub(r'\s+', ' ', str(impact or '')).strip('，,；;。：: ')
+    # Models sometimes include the final tracking clause in impact as well as monitor.
+    impact = re.split(r'[；;。]?重点跟踪', impact, maxsplit=1)[0].strip('，,；;。：: ')
     monitor = re.sub(r'\s+', ' ', str(monitor or '')).strip('，,；;。：: ')
     monitor = re.sub(r'^(?:重点)?跟踪(?:项)?\s*', '', monitor).strip('，,；;。：: ')
     if not trigger or not impact or not monitor:
@@ -3101,7 +3111,10 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
         theme = _risk_theme_key(title)
         if not _is_valid_a_share_risk_title(title) or title in titles or theme in themes:
             continue
-        trigger, impact, monitor = _risk_tracking_profile(title)
+        profile = _risk_tracking_profile(title)
+        if not profile:
+            continue
+        trigger, impact, monitor = profile
         body = _compose_investor_risk_explanation(trigger, impact, monitor)
         if not body:
             continue
@@ -3121,6 +3134,8 @@ def _validate_a_share_risk_body(body: str) -> tuple:
         issues.append(f"risk_bullet_count:{len(lines)}")
     if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
         issues.append("generic_risk_template")
+    if any(phrase in body for phrase in _A_SHARE_GENERIC_RISK_PHRASES):
+        issues.append("generic_operating_language")
     titles = []
     for idx, line in enumerate(lines):
         title_match = re.search(r'\*\*([^*]{3,24})\*\*', line)
@@ -3179,6 +3194,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
     if not isinstance(risks, list) or not (3 <= len(risks) <= 4):
         return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = []
+    titles_seen, themes_seen = set(), set()
     for i, risk in enumerate(risks):
         if not isinstance(risk, dict):
             issues.append(f"risk[{i}].not_object")
@@ -3189,6 +3205,11 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         trigger = str(risk.get("trigger") or "").strip()
         impact = str(risk.get("impact") or "").strip()
         monitor = str(risk.get("monitor") or "").strip()
+        # 预防性截断：字段超限时就地缩减，不触发整体 fallback。
+        # 同时清理模型可能带入的末尾跟踪句（impact 末尾的"重点跟踪…"）。
+        trigger = re.split(r'[；;]重点跟踪', trigger)[0].strip('，,；;。')[:40]
+        impact  = re.split(r'[；;]重点跟踪', impact)[0].strip('，,；;。')[:55]
+        monitor = re.sub(r'^(?:重点)?跟踪\s*', '', monitor).strip('，,；;。')[:25]
         explanation = _compose_investor_risk_explanation(trigger, impact, monitor)
         for field_name, field_value in (("trigger", trigger), ("impact", impact), ("monitor", monitor)):
             if len(field_value) < 3:
@@ -3208,9 +3229,19 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         combined = title + explanation
         if any(re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS):
             issues.append(f"risk[{i}].generic")
+        if any(phrase in combined for phrase in _A_SHARE_GENERIC_RISK_PHRASES):
+            issues.append(f"risk[{i}].generic_operating_language")
+        theme = _risk_theme_key(title)
+        if title in titles_seen:
+            issues.append(f"risk[{i}].duplicate_title")
+        if theme in themes_seen:
+            issues.append(f"risk[{i}].duplicate_theme")
+        if title:
+            titles_seen.add(title)
+            themes_seen.add(theme)
         if title and explanation and refs and not any(
             re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS
-        ):
+        ) and not any(phrase in combined for phrase in _A_SHARE_GENERIC_RISK_PHRASES):
             ref_str = "".join(f"[{n}]" for n in refs)
             lines.append(f"• **{title}**：{explanation}{ref_str}")
     if len(lines) < 3:
@@ -3233,7 +3264,17 @@ def gen_section10(client, key_data: dict) -> str:
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
-Rules: output exactly 3-4 source-backed risks. Keep each rendered bullet to about 80-160 Chinese characters (hard maximum 180 after removing citation and Markdown). For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪〈指标或事件〉”。The monitor field must be a noun phrase only and must not start with “跟踪/重点跟踪/关注”. Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
+Rules: output exactly 3-4 source-backed risks from distinct transmission themes (for example demand/orders, price/competition, input cost, capacity/depreciation, technology/customer validation, policy/equipment, overseas/region, inventory/impairment). Every title, trigger and impact must be supported by the cited target-company excerpt; do not use a source that only mentions the company incidentally.
+
+⚠️ STRICT LENGTH LIMITS — model MUST count characters before outputting:
+  • title: ≤20 Chinese characters (no Markdown)
+  • trigger: ≤35 Chinese characters — one short conditional clause only, e.g. “若产能利用率明显回落”
+  • impact: ≤45 Chinese characters — one consequence clause, e.g. “固定成本摊薄不足将压缩毛利率和利润”
+  • monitor: ≤20 Chinese characters — concrete noun phrase only, e.g. “产能利用率、折旧费用及毛利率”
+  The rendered bullet “若trigger，impact；重点跟踪monitor” must be ≤160 Chinese characters after stripping citations and Markdown (absolute hard limit 180). If your draft is over limit, shorten trigger and impact first.
+
+The monitor field must NOT start with “跟踪/重点跟踪/关注” and must NOT use vague phrases such as “相关经营指标” or “公司后续披露”.
+Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed only when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
@@ -3377,6 +3418,53 @@ def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS)
     return body + ''.join(f'[{ref}]' for ref in refs)
 
 
+def _derive_peer_progress(materials, peer_name: str, peer_code: str, refs: list, max_chars: int = 60, query_name: str = '') -> str:
+    """从该 peer 自身材料确定性提取一条业务进展，避免模型漏填造成空白。"""
+    ref_text = ''.join(f'[{int(ref)}]' for ref in refs if str(ref).isdigit())
+    if not ref_text:
+        return '—'
+    event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|Fab|fab')
+    # 标题允许更宽松的匹配（含业绩/增长/ASP/超预期等摘要性词汇即可）
+    title_event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|业绩|超预期|指引|ASP|增长|拓展|落地|布局|营收|盈利')
+    reject_terms = re.compile(r'风险|不及预期|股价|涨跌|估值|推荐历史|免责声明|市值|行业表现|行业排名|若.*承压|可能导致|管制|不确定|下行风险|风险包括')
+    candidates = []
+    for item in materials or []:
+        source = ' '.join(str(item.get(k) or '') for k in ('title', 'text', 'content', 'summary', 'abstract'))
+        if peer_name not in source and peer_code not in source:
+            continue
+        # 优先使用标题本身：标题通常是最简洁的业务事件摘要
+        title = str(item.get('title') or '').strip()
+        # peer_name 可能与原始搜索 query（如"华虹宏力"）不同，都尝试匹配
+        name_aliases = {n for n in (peer_name, peer_code, query_name, str(item.get('peer_query') or '')) if n}
+        title_hit = any(a in title for a in name_aliases)
+        # 标题优先级：去除"公司（代码）：" 前缀后取核心描述；按信息量评分排在最前
+        if title_hit and title_event_terms.search(title) and not reject_terms.search(title) and 10 <= len(title) <= 80:
+            core = re.sub(r'^.*?[）)]\s*[：:]\s*', '', title).strip() or title
+            # 含 ASP/毛利率/产能等指标的标题评分更高，用 score 标记，最后排序
+            score = sum(1 for w in ('ASP', '产能', '毛利率', '指引', '超预期', '投产', '量产') if w in core)
+            candidates.append(('title', score, core))
+        for sentence in re.split(r'(?<=[。！？])\s*', re.sub(r'\s+', ' ', source)):
+            sentence = sentence.strip()
+            if not sentence or len(sentence) < 10 or len(sentence) > 100:
+                continue
+            if reject_terms.search(sentence):
+                continue
+            if not event_terms.search(sentence):
+                continue
+            if not (peer_name in sentence or peer_code in sentence or any(k in sentence for k in ('公司', '产能', '产品', '订单', '客户', '工艺', '平台', '晶圆'))):
+                continue
+            candidates.append(('body', 0, sentence))
+    if not candidates:
+        return '—'
+    # 标题候选按 score 降序，正文候选靠后；named 优先
+    title_cands = sorted((c for c in candidates if c[0]=='title'), key=lambda x: -x[1])
+    body_cands  = [c for c in candidates if c[0]=='body']
+    ordered = title_cands + body_cands
+    # 标题由 alias 匹配产生，均来自该公司的材料，都算归属合格；直接取 ordered[0]
+    best_text = ordered[0][2] if ordered else ''
+    return _compact_peer_progress(best_text[:max_chars] + ref_text, max_chars=max_chars)
+
+
 def _keep_owned_progress_refs(cell: str, allowed_refs: set) -> str:
     """Keep one or more owned citations while avoiding an all-or-nothing table rejection."""
     allowed = {int(ref) for ref in (allowed_refs or set())}
@@ -3406,7 +3494,7 @@ def _render_peer_table(rows: list, include_progress: bool) -> str:
     ])
 
 
-def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict, target_progress_refs=None, target_progress_fallback: str = '—') -> str:
+def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict, target_progress_refs=None, target_progress_fallback: str = '—', peer_materials=None) -> str:
     """仅约束公司身份和进展来源；非进展列保留模型的定性研究画像。"""
     parsed = _parse_markdown_table(table_md or '')
     if not parsed or parsed.get('col_count') != len(_A_SHARE_PEER_HEADERS):
@@ -3446,7 +3534,11 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         if required_refs and actual_refs:
             cleaned[5] = _keep_owned_progress_refs(progress_cell, required_refs)
         else:
-            cleaned[5] = '—'
+            cleaned[5] = _derive_peer_progress(
+                peer_materials or [],
+                allowed[code], code, sorted(required_refs),
+                query_name=str(next((p.get('query') for p in allowed_peers if str(p.get('code')) == code), '') or ''),
+            )
         cleaned_rows.append(cleaned)
     if len(found) < 2:
         return ''
@@ -3473,11 +3565,24 @@ def gen_peer_table(client, key_data: dict) -> str:
         if ref_no:
             text = ' '.join(str(item.get(k, '') or '') for k in ('title', 'text', 'content', 'summary', 'abstract'))
             materials_by_code.setdefault(peer_code, []).append(f'[{ref_no}] {text[:1200]}')
+    # 从语义证据里给每个 peer 提前提炼业务画像，减少 LLM 凭空推断的需要。
+    def _peer_profile_hint(peer: dict) -> str:
+        evidence = str(peer.get('business_evidence') or '')
+        if not evidence:
+            return ''
+        # 从证据中提取简短业务描述：优先找”公司...从事|主营|专注|致力于|是一家...”的句子
+        for sent in re.split(r'[。\n]', evidence):
+            sent = sent.strip()
+            if re.search(r'主营|专注|专业|晶圆|代工|制造|工艺|半导体|Foundry|MEMS|功率|芯片', sent, re.I) and len(sent) >= 10:
+                return re.sub(r'\[.*?\]', '', sent).strip()[:80]
+        return ''
     peer_lines = []
     for peer in peers:
         code, peer_name = str(peer.get('code') or ''), str(peer.get('current_name') or '')
-        evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填“—”。'
-        peer_lines.append(f'【{peer_name}（{code}）】\n{evidence}')
+        evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填”—“。'
+        profile = _peer_profile_hint(peer)
+        hint = f'（业务提示：{profile}）' if profile else ''
+        peer_lines.append(f'【{peer_name}（{code}）{hint}】\n{evidence}')
     header = '| ' + ' | '.join(_A_SHARE_PEER_HEADERS) + ' |'
     sep = '|' + '|'.join([':---'] * len(_A_SHARE_PEER_HEADERS)) + '|'
     allowed_text = '\n'.join(f"- {p['current_name']}（{p['code']}）" for p in peers)
@@ -3499,13 +3604,16 @@ def gen_peer_table(client, key_data: dict) -> str:
 
 规则：
 1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”；其后逐一列出上述全部可比公司。
-2. 每行严格9列；除“相关业务进展”外，其余列可基于公司公开常识和行业常识写简洁的定性画像，无需引用。避免编造精确财务数字、排名或客户名单；仅在确无合理描述时填“—”。
+2. 每行严格9列。”相关业务进展”之外的其余7列（竞争关系/市场/可比业务/行业地位/商业模式/目标客户群体/核心产品）：
+   - 可基于该公司在材料中体现的主营业务和商业模式做简洁定性描述；
+   - 禁止编造精确财务数字、排名或具体客户名单；
+   - 确实没有任何依据时填”—“，不要对有业务材料的公司整行清空为”—“。
 3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格仅一句完整业务进展，正文控制在20–60个汉字、引用置末尾；不得用省略号或截断句。优先新品、产品结构、渠道、价格、产能、订单、客户导入、技术、组织改革或市场份额。
 4. 相关业务进展不得以营业总收入、归属于母公司股东的净利润、毛利率或同比等财务数据为主体；可在业务事件后以一句短背景补充。材料没有明确业务事件时，可依据该公司自身定向材料作克制的业务动向归纳并标注该材料来源，但不得虚构具体产品、客户、产能、订单或市场份额。
 5. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
-    return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs, target_progress_fallback)
+    return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs, target_progress_fallback, key_data.get('_raw_data', {}).get('peer_materials') or [])
 
 
 def _fmt_s3_source(ref_map: dict) -> str:
@@ -3966,6 +4074,20 @@ def _postprocess_report(md_content: str, ref_map: dict) -> str:
                 end = len(md_content)
             segments_to_remove.append((pos, end))
         for start, end in reversed(segments_to_remove):
+            md_content = md_content[:start] + md_content[end:]
+
+    # ── 阶段 0a: 删除加粗形式的章节内嵌参考资料块（LLM 可能输出 "**参考资料**" 而非 "## 参考资料"） ──
+    bold_ref_pat = re.compile(r'\*\*\s*参考资料\s*\*\*\s*\n')
+    bold_occ = [m.start() for m in bold_ref_pat.finditer(md_content)]
+    if bold_occ:
+        bold_segments = []
+        for pos in bold_occ:
+            # 内嵌块结束于下一个 ## 标题或文末
+            end = md_content.find('\n## ', pos + 1)
+            if end < 0:
+                end = len(md_content)
+            bold_segments.append((pos, end))
+        for start, end in reversed(bold_segments):
             md_content = md_content[:start] + md_content[end:]
 
     # ── 阶段 0b: 分离正文与参考资料 ──

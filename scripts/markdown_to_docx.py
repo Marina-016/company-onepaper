@@ -737,6 +737,25 @@ def convert_markdown_to_docx(md_content: str, output_path: str):
             i += 1
             continue
 
+        # ── 参考资料条目：[N]Datayes... / [N]Materials... ──
+        if re.match(r'^\[\d+\](?:Datayes|Materials)', stripped):
+            para = doc.add_paragraph(style="Normal")
+            set_para_spacing(para, 0, 2)
+            para.paragraph_format.left_indent = Pt(12)
+            para.paragraph_format.first_line_indent = Pt(-12)
+            # 编号部分加粗，其余浅灰小字
+            num_match = re.match(r'^(\[\d+\])(.*)', stripped)
+            if num_match:
+                r_num = para.add_run(num_match.group(1))
+                set_run_font(r_num, 8.5, True, RGBColor(0x70, 0x70, 0x70))
+                r_body = para.add_run(num_match.group(2))
+                set_run_font(r_body, 8.5, False, RGBColor(0x88, 0x88, 0x88))
+            else:
+                r = para.add_run(stripped)
+                set_run_font(r, 8.5, False, RGBColor(0x88, 0x88, 0x88))
+            i += 1
+            continue
+
         # ── 普通段落 ──
         para = doc.add_paragraph(style="Normal")
         set_para_spacing(para, 2, 4)
