@@ -2597,9 +2597,11 @@ def _scenario_factor(label: str) -> str:
     label = str(label or '')
     if any(word in label for word in ('直销', '经销', '渠道', 'i茅台', '直营')):
         return '渠道与消费者触达'
+    if any(word in label for word in ('预付款项', '存货', '采购')):
+        return '供应链备货与营运资本'
     if any(word in label for word in ('收入占比', '产品结构', '产能', '产量', '基酒', '系列酒')):
         return '供给与产品结构'
-    if any(word in label for word in ('销量', '出货', '单价', '吨价', '价格', '批价', '售价')):
+    if any(word in label for word in ('销量', '出货', '单价', '吨价', '产品价格', '批价', '售价')):
         return '量价表现'
     if '市占率' in label:
         return '竞争份额'
@@ -2614,8 +2616,9 @@ def _scenario_fact_candidates(key_data: dict, max_items: int = 4) -> list:
     facts = key_data.get('fact_marker_refs') or {}
     priority = {
         '渠道与消费者触达': 0,
-        '供给与产品结构': 1,
-        '量价表现': 2,
+        '供应链备货与营运资本': 1,
+        '供给与产品结构': 2,
+        '量价表现': 3,
         '竞争份额': 3,
         '盈利质量': 4,
         '经营指标': 5,
@@ -2637,6 +2640,10 @@ def _scenario_fact_candidates(key_data: dict, max_items: int = 4) -> list:
 
 def _scenario_driver_label(fact: dict, factor: str) -> str:
     label = str(fact.get('label') or '').strip()
+    if label.startswith('预付款项'):
+        return '备货与供应保障'
+    if label.startswith('存货'):
+        return '库存与需求匹配'
     if label == 'i茅台' and str(fact.get('value') or '').endswith('元'):
         return 'i茅台价格'
     if label in {'i茅台', '直营', '直销', '经销', '渠道'}:
@@ -2649,6 +2656,7 @@ def _scenario_driver_label(fact: dict, factor: str) -> str:
 def _scenario_operating_link(label: str, factor: str) -> str:
     links = {
         '渠道与消费者触达': '反映终端触达和渠道动销对收入兑现的影响。',
+        '供应链备货与营运资本': '反映采购备货、供应保障与营运资本占用的变化。',
         '供给与产品结构': '反映供给释放与产品结构对收入和盈利的支撑。',
         '量价表现': '反映销量与定价变化对收入和利润弹性的传导。',
         '竞争份额': '反映订单获取与竞争格局对增长预期的影响。',
@@ -2667,10 +2675,25 @@ def _build_deterministic_section94(key_data: dict) -> str:
         label = _scenario_driver_label(fact, factor)
         value = f"{fact['value']}[{int(fact['ref'])}]"
         core_lines.append(f'• **{label}**：{value}；{_scenario_operating_link(label, factor)}')
-        assumptions.append(label)
-    good = '<br>'.join(f'{item}改善并好于当前基础' for item in assumptions)
-    base = '<br>'.join(f'{item}维持当前运行节奏' for item in assumptions)
-    bad = '<br>'.join(f'{item}走弱并低于当前基础' for item in assumptions)
+        assumptions.append((label, factor))
+    def condition(label: str, factor: str, state: str) -> str:
+        if factor == '供应链备货与营运资本':
+            return {
+                'good': f'{label}按计划推进并提升供给保障效率',
+                'base': f'{label}维持当前节奏并与需求匹配',
+                'bad': f'{label}占用上升而供给保障效率走弱',
+            }[state]
+        if factor == '盈利质量':
+            return {
+                'good': f'{label}在产品结构优化与成本传导下改善',
+                'base': f'{label}大致维持当前水平',
+                'bad': f'{label}受产品结构转弱或成本压力影响回落',
+            }[state]
+        verbs = {'good': '延续改善并好于当前基础', 'base': '按当前节奏平稳推进', 'bad': '改善放缓或弱于当前基础'}
+        return f'{label}{verbs[state]}'
+    good = '<br>'.join(condition(label, factor, 'good') for label, factor in assumptions)
+    base = '<br>'.join(condition(label, factor, 'base') for label, factor in assumptions)
+    bad = '<br>'.join(condition(label, factor, 'bad') for label, factor in assumptions)
     return f'''### 9.4 情景推演
 
 **核心变量**
@@ -2680,9 +2703,9 @@ def _build_deterministic_section94(key_data: dict) -> str:
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~25%） | {good} | 订单与产品结构协同改善，收入增速和利润释放具备向上弹性。 | 盈利预期上修，市场愿意给予更高的估值中枢。 |
-| 中性（概率~50%） | {base} | 供需与产品结构按当前节奏演进，经营表现围绕既有预期兑现。 | 基本面预期稳定，估值围绕当前中枢波动。 |
-| 悲观（概率~25%） | {bad} | 需求兑现或供给节奏承压，收入与利润预期面临下修压力。 | 风险偏好下降，估值中枢承受收缩压力。 |
+| 乐观（概率~25%） | {good} | 需求兑现、供给保障与产品结构形成正向共振，收入确认和利润释放快于当前预期。 | 持续性判断增强，盈利预期上修并支撑估值中枢抬升。 |
+| 中性（概率~50%） | {base} | 订单、供给与产品结构延续既有节奏，经营表现围绕已披露趋势逐步兑现。 | 基本面预期稳定，市场维持对当前增长路径的定价。 |
+| 悲观（概率~25%） | {bad} | 需求转化、供给协同或产品结构改善不及预期，收入确认和利润改善节奏放缓。 | 增长持续性判断转弱，风险溢价上升并压制估值中枢。 |
 '''
 
 
@@ -3396,6 +3419,7 @@ def _derive_target_peer_progress(key_data: dict) -> str:
 def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
     """保留短而完整的来源化业务进展；超长或财务化单元格不作硬截断。"""
     raw = re.sub(r'\s+', ' ', str(cell or '')).strip()
+    raw = re.sub(r'^(?:事项|事件|进展)\s*[：:]\s*', '', raw)
     refs = []
     for ref in re.findall(r'\[(\d+)\]', raw):
         if ref not in refs:
@@ -3463,6 +3487,37 @@ def _derive_peer_progress(materials, peer_name: str, peer_code: str, refs: list,
     # 标题由 alias 匹配产生，均来自该公司的材料，都算归属合格；直接取 ordered[0]
     best_text = ordered[0][2] if ordered else ''
     return _compact_peer_progress(best_text[:max_chars] + ref_text, max_chars=max_chars)
+
+
+def _compact_peer_profile_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
+    """Keep an unsourced, conservative business-direction sentence only when peer materials are absent."""
+    body = re.sub(r'\[\d+\]', '', str(cell or '')).strip()
+    body = re.sub(r'^(?:事项|事件|进展)\s*[：:]\s*', '', body)
+    if not body or body in {'—', '-'} or '…' in body:
+        return '—'
+    if len(body) > max_chars:
+        sentences = [s.strip() for s in re.split(r'(?<=[。！？；;])', body) if 12 <= len(s.strip()) <= max_chars]
+        if not sentences:
+            return '—'
+        body = sentences[0]
+    # 无自身材料时仅允许“业务方向”，不带时间、金额、客户、订单或“发布/获得”等具体事件措辞。
+    if re.search(r'\d|亿元|万元|客户|订单|发布|获批|签约|中标|量产|投产', body):
+        return '—'
+    return body
+
+
+def _derive_peer_profile_progress(row: list, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
+    """Use the already-written business profile to fill a conservative, non-event direction sentence."""
+    fields = [re.sub(r'\[\d+\]|\*\*', '', str(row[i] or '')).strip() for i in (3, 8) if len(row) > i]
+    anchors = []
+    for field in fields:
+        if field and field not in {'—', '-'}:
+            anchor = re.split(r'[、，,；;（(]', field)[0].strip()
+            if 2 <= len(anchor) <= 18 and anchor not in anchors:
+                anchors.append(anchor)
+    if not anchors:
+        return '—'
+    return _compact_peer_profile_progress(f'围绕{anchors[0]}等业务方向推进产品迭代与应用拓展', max_chars)
 
 
 def _keep_owned_progress_refs(cell: str, allowed_refs: set) -> str:
@@ -3533,12 +3588,17 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', progress_cell)}
         if required_refs and actual_refs:
             cleaned[5] = _keep_owned_progress_refs(progress_cell, required_refs)
+        elif str(progress_cell or '').strip() not in {'', '—', '-'}:
+            # 无自身材料时保留 LLM 基于本行业务画像写出的“业务方向”，不得伪装成具体事件。
+            cleaned[5] = _compact_peer_profile_progress(progress_cell)
         else:
             cleaned[5] = _derive_peer_progress(
                 peer_materials or [],
                 allowed[code], code, sorted(required_refs),
                 query_name=str(next((p.get('query') for p in allowed_peers if str(p.get('code')) == code), '') or ''),
             )
+        if cleaned[5] == '—':
+            cleaned[5] = _derive_peer_profile_progress(cleaned)
         cleaned_rows.append(cleaned)
     if len(found) < 2:
         return ''
@@ -3609,7 +3669,7 @@ def gen_peer_table(client, key_data: dict) -> str:
    - 禁止编造精确财务数字、排名或具体客户名单；
    - 确实没有任何依据时填”—“，不要对有业务材料的公司整行清空为”—“。
 3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格仅一句完整业务进展，正文控制在20–60个汉字、引用置末尾；不得用省略号或截断句。优先新品、产品结构、渠道、价格、产能、订单、客户导入、技术、组织改革或市场份额。
-4. 相关业务进展不得以营业总收入、归属于母公司股东的净利润、毛利率或同比等财务数据为主体；可在业务事件后以一句短背景补充。材料没有明确业务事件时，可依据该公司自身定向材料作克制的业务动向归纳并标注该材料来源，但不得虚构具体产品、客户、产能、订单或市场份额。
+4. 有自身定向材料时，相关业务进展以业务事件为主并在句末引用，财务数据只能作短背景；不得以“事项：/事件：”开头。若该 peer 没有任何自身材料，可基于本行已写明的可比业务、商业模式和核心产品，写一句不带数字、日期、订单、客户或“发布/获得”等具体事件的克制“业务方向”；此类方向句不需要引用，且不得伪装成最新进展。
 5. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
@@ -5288,6 +5348,10 @@ def _infer_operating_fact_label(sentence: str, pos: int, display: str, fallback:
     if re.search(r'(?:12英寸|先进制程|成熟制程|晶圆)?.{0,12}(?:收入|营收).{0,8}(?:占比|比重)', context):
         match = re.search(r'((?:12英寸|先进制程|成熟制程|晶圆)?[^，。；;]{0,8}(?:收入|营收)(?:占比|比重))', context)
         return re.sub(r'^(?:公司|其)', '', match.group(1).strip()) if match else '收入占比'
+    if re.search(r'预付款项', context):
+        return '预付款项同比' if '同比' in context or '较上年' in context else '预付款项'
+    if re.search(r'存货', context):
+        return '存货变化'
     if re.search(r'产能利用率|稼动率', context):
         return '产能利用率'
     if re.search(r'平均售价|ASP|平均单价', context, re.I):
@@ -5319,7 +5383,7 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     grouped_re = re.compile(r'([-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?){1,5})\s*' + unit_re)
     # §9.4 的核心变量必须是经营驱动，而不是营收、净利润或券商预测结果。
     # 这些卡同时作为确定性情景兜底的唯一数值来源。
-    fact_terms = ("销量", "产量", "出货", "吨价", "单价", "平均售价", "ASP", "直销", "经销", "渠道占比", "市占率", "产能利用率", "稼动率", "产能", "收入占比", "系列酒", "基酒", "渠道", "直营", "i茅台", "毛利率", "价格", "批价")
+    fact_terms = ("销量", "产量", "出货", "吨价", "单价", "平均售价", "ASP", "产品价格", "直销", "经销", "渠道占比", "市占率", "产能利用率", "稼动率", "产能", "收入占比", "预付款项", "存货", "系列酒", "基酒", "渠道", "直营", "i茅台", "毛利率", "批价")
     primary_terms = set(fact_terms)
 
     candidates, seen = [], set()
@@ -5349,6 +5413,18 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                     tokens.append((f"{number.group(0)}{group.group(2)}", group_pos))
                     grouped_positions.add(group_pos)
             for display, pos in tokens:
+                numeric_context = sentence[max(0, pos - 80):pos + len(display) + 80]
+                local_prefix = sentence[max(0, pos - 40):pos]
+                # 股权融资价格、资本市场价格和纯财务结果不能伪装成经营价格/产能变量。
+                if re.search(r'定增|增发|发行价|每股发行|募集资金|融资|募资|回购|股权激励|收盘价|股价', numeric_context):
+                    continue
+                if re.search(r'毛利总额|归母净利润|净利润|营业总收入|营业收入', local_prefix):
+                    continue
+                # 研报经常穿插客户/同行资本开支；句首出现非标的公司主体时不作为标的事实卡。
+                entity_match = re.match(r'^\s*([\u4e00-\u9fa5A-Za-z]{2,12})\s*20\d{2}年', sentence)
+                aliases = {str(key_data.get(k) or '').strip() for k in ('name', 'short_name', 'ticker')}
+                if entity_match and entity_match.group(1) not in aliases:
+                    continue
                 # 经营驱动卡不接受“亿元/亿/万元”收入、利润类金额；即使句中
                 # 恰好出现渠道或产品词，也不能将结果指标错配为驱动变量。
                 if re.search(r'(?:亿元|亿|万元)$', display):
@@ -5357,6 +5433,11 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                 nearest_term, nearest_pos = min(positions, key=lambda x: abs(pos - x[1]))
                 nearest = abs(pos - nearest_pos)
                 if nearest > 120:
+                    continue
+                label = _infer_operating_fact_label(sentence, pos, display, nearest_term)
+                # 报表覆盖类/客户集中度收入占比不是可推演的经营驱动。
+                if (label in {'收入占比', '主营收入占比', '主营业务收入占比'}
+                        or re.search(r'(?:客户|前[五5]名).*收入占比', label)):
                     continue
                 key = (int(ref_no), display, nearest_term, pos)
                 if key in seen:
@@ -5371,7 +5452,7 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                 candidates.append({
                     "score": score, "ref": int(ref_no), "value": display,
                     "api": src.get("api", ""), "snippet": snippet,
-                    "label": _infer_operating_fact_label(sentence, pos, display, nearest_term),
+                    "label": label,
                 })
 
     # 相同来源的同一个数值只保留相关性最高的一张卡，避免 61% 等重复事实挤掉唯一数据。
@@ -5434,7 +5515,9 @@ def _render_fact_markers(md_content: str, fact_map: dict) -> str:
         if re.search(r'\d(?:[\d.,]*)(?:%|pct|万片|万吨|万台|亿元|万元|万|亿|元|片|吨)\s*$', left, re.I) or re.match(r'\s*\d', right):
             return ''
         return f"{fact['value']}[{fact['ref']}]"
-    return _FACT_MARKER_RE.sub(replace, content)
+    rendered = _FACT_MARKER_RE.sub(replace, content)
+    # 模型偶发输出没有编号的 {{FACT:}} 占位，不能进入交付物。
+    return re.sub(r'\{\{FACT(?::(?:[A-Z]\d+)?)?\}\}', '', rendered)
 
 
 def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:

@@ -693,5 +693,29 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("## 6 公司财务数据分析", result)
         # 真正的参考资料章节保留且唯一
         self.assertEqual(result.count("## 参考资料"), 1)
+    def test_peer_progress_strips_event_prefix(self):
+        result = writer._compact_peer_progress("事项：公司推进高端芯片产品迭代与应用拓展[12]")
+        self.assertFalse(result.startswith("事项："))
+        self.assertIn("公司推进高端芯片产品迭代", result)
+        self.assertIn("[12]", result)
+
+    def test_peer_profile_progress_allows_conservative_direction_only(self):
+        self.assertEqual(
+            writer._compact_peer_profile_progress("围绕智能芯片等业务方向推进产品迭代与应用拓展"),
+            "围绕智能芯片等业务方向推进产品迭代与应用拓展",
+        )
+        self.assertEqual(
+            writer._compact_peer_profile_progress("事项：2026年发布新产品并实现量产"),
+            "—",
+        )
+
+    def test_peer_profile_progress_derives_from_business_profile(self):
+        row = ["直接竞争", "测试公司（000001）", "A股", "智能芯片设计与销售", "—", "—", "—", "—", "AI加速芯片"]
+        result = writer._derive_peer_profile_progress(row)
+        self.assertIn("智能芯片设计与销售", result)
+        self.assertNotIn("[", result)
+
+    def test_render_fact_markers_removes_bare_marker(self):
+        self.assertEqual(writer._render_fact_markers("构建高壁垒生态{{FACT:}}[2]", {}), "构建高壁垒生态[2]")
 if __name__ == "__main__":
     unittest.main()

@@ -743,16 +743,16 @@ def convert_markdown_to_docx(md_content: str, output_path: str):
             set_para_spacing(para, 0, 2)
             para.paragraph_format.left_indent = Pt(12)
             para.paragraph_format.first_line_indent = Pt(-12)
-            # 编号部分加粗，其余浅灰小字
+            # 参考资料恢复正文同级字号和可读对比度；编号仍保留加粗以便检索。
             num_match = re.match(r'^(\[\d+\])(.*)', stripped)
             if num_match:
                 r_num = para.add_run(num_match.group(1))
-                set_run_font(r_num, 8.5, True, RGBColor(0x70, 0x70, 0x70))
+                set_run_font(r_num, 10.5, True, COLOR_BODY)
                 r_body = para.add_run(num_match.group(2))
-                set_run_font(r_body, 8.5, False, RGBColor(0x88, 0x88, 0x88))
+                set_run_font(r_body, 10.5, False, COLOR_BODY)
             else:
                 r = para.add_run(stripped)
-                set_run_font(r, 8.5, False, RGBColor(0x88, 0x88, 0x88))
+                set_run_font(r, 10.5, False, COLOR_BODY)
             i += 1
             continue
 
