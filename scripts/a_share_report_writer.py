@@ -119,7 +119,7 @@ SYSTEM_PROMPT = """你是一位在顶级投行工作30年的资深券商分析�
 - 每个经营事实短语应在其末尾紧跟对应 `[N]`；同一句含多个来源时，按事实短语用分号拆开并各自标注，禁止把多个来源集中堆在段末。
 - 经营事实中的同比、占比、涨跌幅等百分比，只有原始来源明确出现该百分比时才能直接写；若确需派生计算，必须在同一短语写出可复核公式及两项基础数值，并紧跟基础来源，否则删除该百分比。
 ## 派生测算
-- 派生测算必须保留基础数据[N]、公式、单位和假设。除主营构成差额等必须解释的派生项外，最终正文不输出"内部测算""基于[N]推算"等过程标签；9.4情景推演只保留引用编号和可复核算式。无法完整复核则只保留定性判断、删除具体数字。
+- 派生测算必须保留基础数据[N]、公式、单位和假设。除主营构成差额等必须解释的派生项外，最终正文不输出"内部测算""基于[N]推算"等过程标签；9.4情景推演不输出公式、目标价或其他计算过程，只保留来源绑定的定性判断。无法完整复核则删除具体数字。
 
 ## 保险行业适配
 - 优先使用 NBV/VONB、APE、EV、VONB Margin、OPAT、保险服务收入、偿付能力等指标。估值优先 P/EV、新业务价值倍数、EV Growth。严禁用毛利率、库存周转、普通 PE 机械填充保险业务。
@@ -2669,9 +2669,9 @@ def _build_deterministic_section94(key_data: dict) -> str:
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~25%） | {good} | 相关经营条件改善，收入、利润与现金流预期边际改善。 | 相对统一价格锚的上行敏感性增强；仅作敏感性判断，不提供目标价 |
-| 中性（概率~50%） | {base} | 当前经营节奏大体延续，收入、利润与现金流按既有预期演变。 | 当前预期大体兑现；仅作敏感性判断，不提供目标价 |
-| 悲观（概率~25%） | {bad} | 相关经营条件承压，收入、利润与现金流预期面临下修压力。 | 相对统一价格锚的下行风险上升；仅作敏感性判断，不提供目标价 |
+| 乐观（概率~25%） | {good} | 经营条件改善，收入、利润与现金流预期边际改善。 | 增长预期上修，估值中枢获得支撑。 |
+| 中性（概率~50%） | {base} | 当前经营节奏大体延续，收入、利润与现金流按既有预期演变。 | 当前预期大体兑现，估值预期保持稳定。 |
+| 悲观（概率~25%） | {bad} | 经营条件承压，收入、利润与现金流预期面临下修压力。 | 增长预期走弱，估值风险溢价上升。 |
 '''
 
 
@@ -2691,21 +2691,8 @@ def _scenario_fact_card_prompt_block(key_data: dict) -> str:
 def _gen_section94(client, key_data: dict) -> str:
     """Generate operating scenarios, never unsourced numerical target prices."""
     name = key_data["name"]
-    ref_map = key_data.get("ref_map") or {}
-    consensus_ref = (ref_map.get("consensus") or {}).get("n")
-    consensus_cite = f"[{consensus_ref}]" if consensus_ref else ""
-    ctx = _scenario_valuation_context(key_data)
-    anchor = ctx.get("anchor_price")
 
-    if anchor:
-        valuation_context = (
-            f"一致预期各预测年度EPS×对应PE隐含的统一价格锚约为{anchor:.2f}元{consensus_cite}。"
-            "该数值只用于检查三档方向与当前预期是否一致，不是目标价。"
-        )
-    else:
-        valuation_context = "当前缺少可复核的统一价格锚，三档只讨论经营与估值敏感方向。"
-    if ctx.get("disable_reasons"):
-        valuation_context += "传统PE法不适用：" + "；".join(ctx["disable_reasons"]) + "。"
+    valuation_context = "只讨论经营预期变化对估值中枢、风险溢价和市场预期的方向性影响。"
 
     prompt = f"""为{name}生成第9.4节情景推演。
 
@@ -2719,7 +2706,7 @@ def _gen_section94(client, key_data: dict) -> str:
 1. 只选2个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，每条核心变量只保留该一个标记和定性传导说明，不得自行填写任何其他数字或引用。
 2. 三档假设只写相对当前基准的方向与触发条件，如“订单兑现快于当前预期”“毛利率维持/承压”；不得编造新的销量、收入、利润、EPS、PE或股价数字。
 3. 经营含义只写收入、利润、现金流的方向和传导路径，不写没有来源的预测值。
-4. 估值含义只能讨论相对统一价格锚的上行/下行敏感性；每格都明确“仅作敏感性判断，不提供目标价”。
+4. 核心假设、经营含义和估值含义都必须是纯文字判断；不得出现公式、EPS、PE、股价、目标价、估值倍数或任何数字。估值含义只讨论估值中枢、风险溢价和市场预期的方向性变化。
 5. 严格输出4列表格，顺序为乐观/中性/悲观；概率分别25%/50%/25%，合计100%。
 6. 不输出任何解释、注释、内部测算或额外章节。
 
@@ -2734,9 +2721,9 @@ def _gen_section94(client, key_data: dict) -> str:
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~25%） | [各变量向好条件，用<br>分隔] | [经营传导方向] | 相对统一价格锚的上行敏感性增强；仅作敏感性判断，不提供目标价 |
-| 中性（概率~50%） | [各变量大体延续当前基准，用<br>分隔] | [经营传导方向] | 当前预期大体兑现；仅作敏感性判断，不提供目标价 |
-| 悲观（概率~25%） | [各变量转弱条件，用<br>分隔] | [经营传导方向] | 相对统一价格锚的下行风险上升；仅作敏感性判断，不提供目标价 |
+| 乐观（概率~25%） | [各变量向好条件，用<br>分隔] | [经营传导方向] | 增长预期上修，估值中枢获得支撑。 |
+| 中性（概率~50%） | [各变量大体延续当前基准，用<br>分隔] | [经营传导方向] | 当前预期大体兑现，估值预期保持稳定。 |
+| 悲观（概率~25%） | [各变量转弱条件，用<br>分隔] | [经营传导方向] | 增长预期走弱，估值风险溢价上升。 |
 """
     return call_claude(client, prompt, max_tokens=1000)
 
@@ -2745,16 +2732,10 @@ def _scenario_target_price_errors(section: str, key_data: dict) -> list:
     """Validate the safe qualitative §9.4 contract."""
     text = str(section or "")
     errors = []
-    formula = re.search(r"EPS\s*[＝=].*?[×x*]\s*PE\s*[＝=]", text, re.I)
-    target_number = re.search(
-        r"(?:目标价|对应股价|每股价值|每股价格|股价)\s*(?:为|是|约|：|:|=)?\s*(?:人民币|RMB|￥)?\s*\d",
-        text,
-        re.I,
-    )
-    if formula or target_number:
-        errors.append("当前版本未接入三档可核验EPS/PE输入，不得输出量化目标价")
-    if not re.search(r"(?:不提供|不给出|不输出|不作)目标价", text):
-        errors.append("未声明不提供不可复核目标价")
+    formula = re.search(r"(?:EPS|PE|PB|PS|EV/EBITDA)\s*(?:[＝=×x*]|乘以)|[＝=]\s*\d", text, re.I)
+    forbidden_valuation = re.search(r"(?:目标价|目标价格|对应股价|每股价值|每股价格|股价)", text, re.I)
+    if formula or forbidden_valuation:
+        errors.append("情景推演只允许定性文字，不得输出公式、估值倍数或目标价相关表述")
 
     core_match = re.search(r"\*\*核心变量\*\*(.*?)(?=\*\*情景推演表\*\*)", text, re.S)
     core_lines = []
@@ -2798,8 +2779,13 @@ def _scenario_target_price_errors(section: str, key_data: dict) -> list:
             probabilities.append(float(match.group(1)))
     if len(probabilities) != 3 or abs(sum(probabilities) - 100) > 0.5:
         errors.append("三档情景概率必须完整且合计100%")
-    if any(not re.search(r"(?:不提供|不给出|不输出|不作)目标价", row[3]) for row in scenario_rows):
-        errors.append("每档估值含义均须明确不提供目标价")
+    for row in scenario_rows:
+        for cell_name, cell in zip(expected_header[1:], row[1:]):
+            plain_cell = re.sub(r'<br\s*/?>', '', cell, flags=re.I).strip()
+            if not plain_cell:
+                errors.append(f"{row[0]}档{cell_name}不能为空")
+            if re.search(r"\d|(?:EPS|PE|PB|PS|目标价|股价|每股|[＝=×*])", plain_cell, re.I):
+                errors.append(f"{row[0]}档{cell_name}必须为纯文字判断")
     return errors
 
 def _normalize_section9_llm_fragment(fragment: str) -> str:
@@ -2886,6 +2872,7 @@ def _explicit_risk_titles(sentence: str) -> list:
     for item in re.split(r'[、，,；;]|以及', match.group(1)):
         title = re.sub(r'等$', '', item.strip(" \t\r\n。．·•*-：:（）()")).strip()
         title = re.sub(r'^(?:主要|相关|等)$', '', title).strip()
+        title = re.sub(r'^(?:存在|公司)', '', title).strip()
         if 4 <= len(title) <= 20:
             titles.append(title)
     return titles
@@ -3004,7 +2991,7 @@ def _derive_a_share_risk_title(sentence: str, company_name: str = "") -> str:
     clean = re.sub(r'^(?:主要)?风险(?:提示)?[:：]?', '', clean).strip()
     if company_name:
         clean = clean.replace(company_name, "").strip()
-    clean = re.sub(r'^(?:公司|我们认为|我们预计|预计|若|如果)', '', clean).strip()
+    clean = re.sub(r'^(?:公司|我们认为|我们预计|预计|若|如果|存在)', '', clean).strip()
     candidate = re.split(r'可能|或将|若|如果|导致|影响|存在', clean, maxsplit=1)[0].strip("，,：:；; ")
     if len(candidate) < 4:
         candidate = clean
@@ -3021,25 +3008,72 @@ def _is_valid_a_share_risk_title(title: str) -> bool:
     return bool(re.search(r'风险|不及预期|下滑|下降|受阻|削减|放缓|竞争|波动|库存|减值|回款|价格|批价|需求|政策|税|替代|延期|延迟', title))
 
 
-def _build_a_share_risk_fallback(key_data: dict, max_items: int = 5) -> str:
-    """Build a cited fallback only from real and explicitly risk-related evidence."""
+def _risk_theme_key(title: str) -> str:
+    """按可投资的风险传导主题去重，避免同一需求/价格风险换词重复出现。"""
+    title = str(title or "")
+    themes = (
+        (r'库存|减值', 'inventory'),
+        (r'需求|订单|客户|销量|出货', 'demand'),
+        (r'价格|批价|竞争', 'price_competition'),
+        (r'原材料|成本', 'input_cost'),
+        (r'产能|延期|延迟', 'capacity_execution'),
+        (r'政策|监管|税|合规|审批', 'policy'),
+        (r'汇率|海外|贸易', 'overseas'),
+        (r'回购', 'buyback'),
+    )
+    for pattern, theme in themes:
+        if re.search(pattern, title):
+            return theme
+    return re.sub(r'\W+', '', title)[:18]
+
+
+def _risk_tracking_profile(title: str) -> tuple:
+    """将来源明确的风险标题转换为不含虚构数字的投研跟踪框架。"""
+    title = str(title or "")
+    profiles = (
+        (r'库存|减值', ('下游去化弱于备货节奏', '库存周转承压并可能增加减值压力', '库存、周转天数和资产减值损失')),
+        (r'需求|订单|客户|销量|出货', ('终端需求或订单兑现弱于预期', '出货节奏放缓可能拖累收入与产能利用率', '订单、出货和渠道库存')),
+        (r'价格|批价|竞争', ('行业供给释放或价格竞争加剧', '产品价格与盈利空间可能承压', '产品价格、毛利率和市场份额')),
+        (r'原材料|成本', ('核心原材料价格波动超预期', '成本传导滞后可能压缩盈利能力', '原材料价格、采购成本和毛利率')),
+        (r'产能|延期|延迟', ('项目建设或产能投放进度不及预期', '新增供给释放放缓并影响业务兑现节奏', '项目进度、产能利用率和投产安排')),
+        (r'政策|监管|税|合规|审批', ('政策规则或审批节奏出现变化', '业务推进成本或市场准入预期可能承压', '政策落地、审批进度和公司应对措施')),
+        (r'汇率|海外|贸易', ('海外政策或汇率波动超预期', '海外业务盈利与扩张节奏可能受扰动', '政策进展、汇率和海外订单')),
+        (r'回购', ('回购计划执行节奏或规模不及预期', '市场预期支撑减弱，估值情绪可能承压', '回购公告、执行进度和注销安排')),
+    )
+    for pattern, profile in profiles:
+        if re.search(pattern, title):
+            return profile
+    return ('风险事项持续或超出当前预期', '经营预期与估值判断可能承压', '相关经营指标及公司后续披露')
+
+
+def _compose_investor_risk_explanation(trigger: str, impact: str, monitor: str) -> str:
+    """统一渲染可执行的风险表述，避免无来源阈值和空泛占位语。"""
+    trigger = re.sub(r'\s+', ' ', str(trigger or '')).strip('，,；;。：: ')
+    impact = re.sub(r'\s+', ' ', str(impact or '')).strip('，,；;。：: ')
+    monitor = re.sub(r'\s+', ' ', str(monitor or '')).strip('，,；;。：: ')
+    if not trigger or not impact or not monitor:
+        return ''
+    if not re.match(r'^(?:若|当|在|受)', trigger):
+        trigger = '若' + trigger
+    return f'{trigger}，{impact}；重点跟踪{monitor}。'
+
+
+def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
+    """以真实风险标题为锚，重建含触发、影响和跟踪项的来源化风险。"""
     name = str(key_data.get("short_name") or key_data.get("name") or "")
     lines = []
-    titles = set()
+    titles, themes = set(), set()
     for item in _collect_a_share_risk_evidence(key_data, max_items=16):
         title = str(item.get("risk_title") or _derive_a_share_risk_title(item["text"], name)).strip()
-        if not _is_valid_a_share_risk_title(title) or title in titles:
+        theme = _risk_theme_key(title)
+        if not _is_valid_a_share_risk_title(title) or title in titles or theme in themes:
             continue
-        if item.get("risk_title"):
-            body = "该事项被原始材料明确列为风险提示，需跟踪其对经营与估值预期的影响。"
-        else:
-            body = re.sub(r'\[\d+\]|\s+', ' ', item["text"]).strip()
-            body = re.sub(r'^' + re.escape(title) + r'[，,；;：:\-\s]*', '', body, count=1).strip()
-        if len(body) < 6:
+        trigger, impact, monitor = _risk_tracking_profile(title)
+        body = _compose_investor_risk_explanation(trigger, impact, monitor)
+        if not body:
             continue
-        if len(body) > 42:
-            body = body[:42].rstrip("，,；;：:") + "…"
         titles.add(title)
+        themes.add(theme)
         lines.append(f"• **{title}**：{body}[{item['ref']}]")
         if len(lines) >= max_items:
             break
@@ -3063,6 +3097,8 @@ def _validate_a_share_risk_body(body: str) -> tuple:
             titles.append(title_match.group(1).strip())
         if not re.search(r'\*\*[^*]+\*\*\s*[：:]\s*.{6,}', line):
             issues.append(f"risk[{idx}].missing_explanation")
+        if not re.search(r'若.{2,}[，,].{4,}[；;]重点跟踪.{2,}', line):
+            issues.append(f"risk[{idx}].missing_trigger_impact_monitor")
         if not re.search(r'\[\d+\]', line):
             issues.append(f"risk[{idx}].missing_citation")
         plain_len = len(re.sub(r'\[\d+\]|\*\*|\s+', '', line))
@@ -3070,6 +3106,8 @@ def _validate_a_share_risk_body(body: str) -> tuple:
             issues.append(f"risk[{idx}].too_long:{plain_len}")
     if len(set(titles)) != len(titles):
         issues.append("duplicate_risk_titles")
+    if len({_risk_theme_key(title) for title in titles}) != len(titles):
+        issues.append("duplicate_risk_themes")
     return not issues, issues
 
 
@@ -3115,9 +3153,15 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         title = str(risk.get("title") or "").strip()
         if len(title) < 3 or len(title) > 24:
             issues.append(f"risk[{i}].title_len:{len(title)}")
-        explanation = str(risk.get("explanation") or risk.get("body") or "").strip()
-        if len(explanation) < 6:
-            issues.append(f"risk[{i}].explanation_len:{len(explanation)}")
+        trigger = str(risk.get("trigger") or "").strip()
+        impact = str(risk.get("impact") or "").strip()
+        monitor = str(risk.get("monitor") or "").strip()
+        explanation = _compose_investor_risk_explanation(trigger, impact, monitor)
+        for field_name, field_value in (("trigger", trigger), ("impact", impact), ("monitor", monitor)):
+            if len(field_value) < 3:
+                issues.append(f"risk[{i}].{field_name}_len:{len(field_value)}")
+        if len(explanation) < 12:
+            issues.append(f"risk[{i}].invalid_investor_explanation")
         refs = risk.get("source_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(n, int) and n > 0 for n in refs):
             issues.append(f"risk[{i}].invalid_refs")
@@ -3155,8 +3199,8 @@ def gen_section10(client, key_data: dict) -> str:
     issues = []
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
-Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "explanation": "一句话说明触发条件及对收入/利润/现金流/估值的影响", "source_refs": [1]}}]}}
-Rules: output 2-5 source-backed risks; title ≤24 Chinese chars; explanation is one concise sentence; use only the context refs below. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject only unsupported generic boilerplate.
+Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
+Rules: output 2-5 source-backed risks. For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪跟踪项”。Use only the context refs below. A monitor may be a qualitative observable (for example, order, inventory, project progress or policy implementation), but never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
@@ -3210,7 +3254,7 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
     return ""
 
 _A_SHARE_PEER_HEADERS = ['竞争关系', '公司（代码）', '市场', '可比业务', '行业地位', '相关业务进展', '商业模式', '目标客户群体', '核心产品']
-_PEER_PROGRESS_MAX_CHARS = 80
+_PEER_PROGRESS_MAX_CHARS = 60
 
 def _peer_progress_refs(key_data: dict) -> dict:
     """返回 {peer_code: [引用编号]}，只供同业表的“相关业务进展”列使用。"""
@@ -3240,7 +3284,7 @@ def _target_progress_materials(key_data: dict, max_items: int = 2) -> tuple:
 
 
 def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
-    """将同业表进展压缩为一条可读、可引用的事件，避免横向表格失控。"""
+    """保留短而完整的来源化业务进展；超长或财务化单元格不作硬截断。"""
     raw = re.sub(r'\s+', ' ', str(cell or '')).strip()
     refs = []
     for ref in re.findall(r'\[(\d+)\]', raw):
@@ -3249,10 +3293,20 @@ def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS)
     body = re.sub(r'\[\d+\]', '', raw).strip(' ，,;；')
     if not body or not refs:
         return '—'
-    first_sentence = re.split(r'(?<=[。！？])', body, maxsplit=1)[0].strip()
-    body = first_sentence or body
+    if '…' in body:
+        return '—'
     if len(body) > max_chars:
-        body = body[:max_chars].rstrip(' ，,;；') + '…'
+        complete_sentences = [
+            sentence.strip() for sentence in re.split(r'(?<=[。！？；;])', body)
+            if sentence.strip() and len(sentence.strip()) <= max_chars
+        ]
+        if not complete_sentences:
+            return '—'
+        body = complete_sentences[0]
+    finance_terms = r'营业总收入|营业收入|归属于母公司股东的净利润|归母净利润|净利润|毛利率|净利率|同比|环比|EPS|PE|亿元|万元'
+    business_terms = r'新品|产品|渠道|价格|产能|订单|客户|出货|项目|技术|市场|份额|组织|改革|投产|发布|上市|推进|导入|认证|扩张|布局|运营|经营'
+    if re.search(finance_terms, body, re.I) and not re.search(business_terms, body):
+        return '—'
     return body + ''.join(f'[{ref}]' for ref in refs)
 
 
@@ -3360,8 +3414,9 @@ def gen_peer_table(client, key_data: dict) -> str:
 规则：
 1. 第一行必须为 {name}（{ticker}），竞争关系填“—（基准）”；其后逐一列出上述全部可比公司。
 2. 每行严格9列；除“相关业务进展”外，其余列可基于公司公开常识和行业常识写简洁的定性画像，无需引用。避免编造精确财务数字、排名或客户名单；仅在确无合理描述时填“—”。
-3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格只写一条最新经营事件，最多80个汉字；优先新品、产品结构、渠道、价格、产能、组织改革或市场份额。财务数据只可作简短背景，不得成为主要内容；无材料填“—”。
-4. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
+3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格仅一句完整业务进展，正文控制在20–60个汉字、引用置末尾；不得用省略号或截断句。优先新品、产品结构、渠道、价格、产能、订单、客户导入、技术、组织改革或市场份额。
+4. 相关业务进展不得以营业总收入、归属于母公司股东的净利润、毛利率或同比等财务数据为主体；可在业务事件后以一句短背景补充。材料没有明确业务事件时，可依据该公司自身定向材料作克制的业务动向归纳并标注该材料来源，但不得虚构具体产品、客户、产能、订单或市场份额。
+5. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
     return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs)

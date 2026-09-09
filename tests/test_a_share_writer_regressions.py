@@ -34,13 +34,13 @@ class AShareWriterRegressionTests(unittest.TestCase):
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~25%） | 销量兑现更快<br>单价稳定 | 收入利润弹性增强 | 仅作敏感性判断，不提供目标价 |
-| 中性（概率~50%） | 延续当前节奏 | 收入利润符合当前预期 | 仅作敏感性判断，不提供目标价 |
-| 悲观（概率~25%） | 销量兑现偏慢<br>单价承压 | 收入利润承压 | 仅作敏感性判断，不提供目标价 |
+| 乐观（概率~25%） | 销量兑现更快<br>单价稳定 | 收入和利润预期改善 | 增长预期上修，估值中枢获得支撑。 |
+| 中性（概率~50%） | 延续当前节奏 | 收入和利润按预期演变 | 当前预期大体兑现，估值预期保持稳定。 |
+| 悲观（概率~25%） | 销量兑现偏慢<br>单价承压 | 收入和利润预期承压 | 增长预期走弱，估值风险溢价上升。 |
 """
         self.assertEqual(writer._scenario_target_price_errors(valid, key_data), [])
         invalid = valid.replace(
-            "仅作敏感性判断，不提供目标价",
+            "增长预期上修，估值中枢获得支撑。",
             "EPS＝3.91元 × PE＝18.3x ＝71.55元",
             1,
         )
@@ -86,14 +86,49 @@ class AShareWriterRegressionTests(unittest.TestCase):
         valid, issues = writer._validate_a_share_risk_body(result)
         self.assertTrue(valid, issues)
         self.assertNotIn("**因此**", result)
+        self.assertIn("若终端需求或订单兑现弱于预期", result)
+        self.assertIn("重点跟踪", result)
         self.assertEqual(result.count("**"), 6)
+    def test_risk_fallback_deduplicates_same_risk_theme(self):
+        original = writer._collect_a_share_risk_evidence
+        writer._collect_a_share_risk_evidence = lambda *_args, **_kwargs: [
+            {"risk_title": "需求不及预期", "text": "风险提示：需求不及预期", "ref": 1},
+            {"risk_title": "销量不及预期", "text": "风险提示：销量不及预期", "ref": 2},
+            {"risk_title": "价格竞争加剧", "text": "风险提示：价格竞争加剧", "ref": 3},
+            {"risk_title": "原材料价格波动", "text": "风险提示：原材料价格波动", "ref": 4},
+        ]
+        try:
+            result = writer._build_a_share_risk_fallback({"name": "测试公司"})
+        finally:
+            writer._collect_a_share_risk_evidence = original
+        self.assertEqual(result.count("重点跟踪订单、出货和渠道库存"), 1)
+        self.assertTrue(writer._validate_a_share_risk_body(result)[0])
     def test_risk_gate_accepts_two_source_backed_company_risks(self):
         body = (
-            "• **核心产品需求放缓风险**：客户订单节奏放缓可能影响收入兑现[1]\n"
-            "• **行业价格竞争风险**：主要产品降价可能压缩公司毛利率[2]"
+            "• **核心产品需求放缓风险**：若客户订单节奏放缓，收入兑现与产能利用率可能承压；重点跟踪订单、出货和渠道库存。[1]\n"
+            "• **行业价格竞争风险**：若行业供给释放或价格竞争加剧，产品价格与盈利空间可能承压；重点跟踪产品价格、毛利率和市场份额。[2]"
         )
         valid, issues = writer._validate_a_share_risk_body(body)
         self.assertTrue(valid, issues)
+
+    def test_risk_json_requires_trigger_impact_and_monitor(self):
+        payload = {"risks": [{
+            "title": "库存减值风险",
+            "trigger": "下游去化弱于备货节奏",
+            "impact": "库存周转承压并可能增加减值压力",
+            "monitor": "库存、周转天数和资产减值损失",
+            "source_refs": [3],
+        }, {
+            "title": "价格竞争加剧",
+            "trigger": "行业供给释放或价格竞争加剧",
+            "impact": "产品价格与盈利空间可能承压",
+            "monitor": "产品价格、毛利率和市场份额",
+            "source_refs": [4],
+        }]}
+        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 3}, "b": {"n": 4}})
+        self.assertEqual(issues, [])
+        self.assertIn("重点跟踪库存、周转天数和资产减值损失", rendered)
+        self.assertTrue(writer._validate_a_share_risk_body(rendered)[0])
 
 
     def test_section_nine_rejects_heading_only_fragment(self):
@@ -245,6 +280,15 @@ class AShareWriterRegressionTests(unittest.TestCase):
         no_baseline = writer._validate_peer_table(table.replace("[3]", "[9]"), "贵州茅台", "600519", peers, {"000858": [4]}, {3})
         self.assertNotIn("相关业务进展", no_baseline)
         self.assertNotIn("市值", no_baseline)
+    def test_peer_progress_keeps_complete_business_sentence_and_rejects_financial_only_or_truncated_text(self):
+        complete = "第八代产品推进渠道分类运营并优化终端触达[4]"
+        financial_only = "2026年营业总收入同比下降，归属于母公司股东的净利润承压[4]"
+        overlong = "新品发布后持续推进渠道分类运营、终端建设、客户导入和市场拓展，后续仍将优化产品组合以提升经营质量和品牌势能，并同步加快区域市场覆盖和终端运营能力建设[4]"
+        multi_sentence = "新品发布并完成首批渠道铺货。后续将围绕核心产品持续推进终端建设、客户导入、区域市场拓展、运营能力升级和渠道精细化管理，并加快重点区域市场覆盖节奏[4]"
+        self.assertEqual(writer._compact_peer_progress(complete), complete)
+        self.assertEqual(writer._compact_peer_progress(financial_only), "—")
+        self.assertEqual(writer._compact_peer_progress(overlong), "—")
+        self.assertEqual(writer._compact_peer_progress(multi_sentence), "新品发布并完成首批渠道铺货。[4]")
     def test_peer_material_reference_resolves_to_original_source(self):
         data = {"peer_materials": [{"peer_name": "五粮液", "peer_code": "000858", "id": "m1", "title": "五粮液进展", "text": "五粮液渠道反馈"}]}
         refs = writer.build_ref_map(data)
@@ -522,5 +566,7 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("**i茅台相关指标**：44%[4]", result)
         self.assertIn("**基酒**：4.1万吨[22]", result)
         self.assertEqual(writer._scenario_target_price_errors(result, key_data), [])
+        self.assertNotIn("目标价", result)
+        self.assertNotIn("×", result)
 if __name__ == "__main__":
     unittest.main()
