@@ -1,5 +1,11 @@
 # Changelog
 
+## v1.2.38
+
+- Rebuild A-share §9.4 fact-card labels from the numeric indicator context, preventing product-mix and ASP figures from being mislabeled as capacity or shipment; deterministic scenarios now use factor-specific operating links instead of generic templates.
+- Keep the peer-progress column when target-company evidence exists: if the model omits the baseline progress or writes a finance-only summary, derive one short, complete, cited business sentence from the same target report; peer cells without their own evidence still remain blank.
+- Strengthen §10 as a 3–4 item investor checklist: exclude non-target source material, normalize duplicate “重点跟踪跟踪”, prioritize source-backed quantitative baselines where directly relevant, and keep risk-theme matching consistent for cost versus price risks.
+- Suppress fact-marker insertion when it would concatenate two numeric assertions, preventing OCR/model artifacts such as `14.9%537.9万`.
 ## v1.2.37
 
 - 行业池兜底：正则/覆盖名单候选经精确验证不足两家时，用 `getEquIndustry`（申万 2021 三级行业）成分股生成 peer 候选，走既有 stock_search 名称路径验证，解锁 §8.2 生成。

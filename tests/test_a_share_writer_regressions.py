@@ -103,33 +103,31 @@ class AShareWriterRegressionTests(unittest.TestCase):
             writer._collect_a_share_risk_evidence = original
         self.assertEqual(result.count("重点跟踪订单、出货和渠道库存"), 1)
         self.assertTrue(writer._validate_a_share_risk_body(result)[0])
-    def test_risk_gate_accepts_two_source_backed_company_risks(self):
+    def test_risk_gate_requires_three_source_backed_company_risks(self):
         body = (
             "• **核心产品需求放缓风险**：若客户订单节奏放缓，收入兑现与产能利用率可能承压；重点跟踪订单、出货和渠道库存。[1]\n"
-            "• **行业价格竞争风险**：若行业供给释放或价格竞争加剧，产品价格与盈利空间可能承压；重点跟踪产品价格、毛利率和市场份额。[2]"
+            "• **行业价格竞争风险**：若行业供给释放或价格竞争加剧，产品价格与盈利空间可能承压；重点跟踪产品价格、毛利率和市场份额。[2]\n"
+            "• **原材料成本波动风险**：若核心原材料价格波动超预期，成本传导滞后可能压缩盈利能力；重点跟踪原材料价格、采购成本和毛利率。[3]"
         )
         valid, issues = writer._validate_a_share_risk_body(body)
         self.assertTrue(valid, issues)
-
     def test_risk_json_requires_trigger_impact_and_monitor(self):
         payload = {"risks": [{
-            "title": "库存减值风险",
-            "trigger": "下游去化弱于备货节奏",
-            "impact": "库存周转承压并可能增加减值压力",
-            "monitor": "库存、周转天数和资产减值损失",
-            "source_refs": [3],
+            "title": "库存减值风险", "trigger": "下游去化弱于备货节奏", "impact": "库存周转承压并可能增加减值压力",
+            "monitor": "库存、周转天数和资产减值损失", "source_refs": [3],
         }, {
-            "title": "价格竞争加剧",
-            "trigger": "行业供给释放或价格竞争加剧",
-            "impact": "产品价格与盈利空间可能承压",
-            "monitor": "产品价格、毛利率和市场份额",
-            "source_refs": [4],
+            "title": "价格竞争加剧", "trigger": "行业供给释放或价格竞争加剧", "impact": "产品价格与盈利空间可能承压",
+            "monitor": "重点跟踪产品价格、毛利率和市场份额", "source_refs": [4],
+        }, {
+            "title": "原材料成本波动", "trigger": "核心原材料价格波动超预期", "impact": "成本传导滞后可能压缩盈利能力",
+            "monitor": "原材料价格、采购成本和毛利率", "source_refs": [5],
         }]}
-        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 3}, "b": {"n": 4}})
+        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 3}, "b": {"n": 4}, "c": {"n": 5}})
         self.assertEqual(issues, [])
         self.assertIn("重点跟踪库存、周转天数和资产减值损失", rendered)
+        self.assertIn("重点跟踪产品价格、毛利率和市场份额", rendered)
+        self.assertNotIn("重点跟踪重点跟踪", rendered)
         self.assertTrue(writer._validate_a_share_risk_body(rendered)[0])
-
 
     def test_section_nine_rejects_heading_only_fragment(self):
         self.assertEqual(writer._normalize_section9_llm_fragment("## 9 一致预期、盈利预测与估值"), "")
@@ -568,5 +566,34 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertEqual(writer._scenario_target_price_errors(result, key_data), [])
         self.assertNotIn("目标价", result)
         self.assertNotIn("×", result)
+    def test_fact_label_uses_numeric_indicator_context(self):
+        capacity_share = "12英寸晶圆收入占比达到77.4%，产品结构继续优化。"
+        asp = "平均售价为6,667元/片，同比增长2.9%。"
+        self.assertEqual(
+            writer._infer_operating_fact_label(capacity_share, capacity_share.index("77.4"), "77.4%", "产能"),
+            "12英寸晶圆收入占比",
+        )
+        self.assertEqual(
+            writer._infer_operating_fact_label(asp, asp.index("2.9"), "2.9%", "出货"),
+            "平均售价同比",
+        )
+
+    def test_fact_marker_does_not_glue_two_numeric_assertions(self):
+        facts = {"F1": {"value": "537.9万", "ref": 8}}
+        self.assertEqual(writer._render_fact_markers("同比增长14.9%{{FACT:F1}}", facts), "同比增长14.9%")
+        self.assertEqual(writer._render_fact_markers("产能{{FACT:F1}}", facts), "产能537.9万[8]")
+
+    def test_peer_progress_keeps_column_with_source_bound_target_fallback(self):
+        peers = [{"code": "000858", "current_name": "五粮液"}, {"code": "000568", "current_name": "泸州老窖"}]
+        table = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| —（基准） | 贵州茅台（600519） | A股 | 白酒 | 龙头 | — | 品牌驱动 | 高端消费 | 茅台酒 |
+| 直接竞争 | 五粮液（000858） | A股 | 白酒 | 龙头 | 第八代产品推进渠道分类运营[4] | 品牌驱动 | 商务消费 | 五粮液酒 |
+| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | 品牌厂商 | — | 品牌驱动 | 商务消费 | 国窖1573 |"""
+        result = writer._validate_peer_table(
+            table, "贵州茅台", "600519", peers, {"000858": [4]}, {3}, "渠道改革推进并优化终端触达[3]"
+        )
+        self.assertIn("相关业务进展", result)
+        self.assertIn("渠道改革推进并优化终端触达[3]", result)
 if __name__ == "__main__":
     unittest.main()

@@ -2597,9 +2597,9 @@ def _scenario_factor(label: str) -> str:
     label = str(label or '')
     if any(word in label for word in ('直销', '经销', '渠道', 'i茅台', '直营')):
         return '渠道与消费者触达'
-    if any(word in label for word in ('产能', '产量', '基酒', '系列酒')):
+    if any(word in label for word in ('收入占比', '产品结构', '产能', '产量', '基酒', '系列酒')):
         return '供给与产品结构'
-    if any(word in label for word in ('销量', '出货', '单价', '吨价', '价格', '批价')):
+    if any(word in label for word in ('销量', '出货', '单价', '吨价', '价格', '批价', '售价')):
         return '量价表现'
     if '市占率' in label:
         return '竞争份额'
@@ -2646,6 +2646,17 @@ def _scenario_driver_label(fact: dict, factor: str) -> str:
     return factor
 
 
+def _scenario_operating_link(label: str, factor: str) -> str:
+    links = {
+        '渠道与消费者触达': '反映终端触达和渠道动销对收入兑现的影响。',
+        '供给与产品结构': '反映供给释放与产品结构对收入和盈利的支撑。',
+        '量价表现': '反映销量与定价变化对收入和利润弹性的传导。',
+        '竞争份额': '反映订单获取与竞争格局对增长预期的影响。',
+        '盈利质量': '反映产品结构与成本传导对利润质量的影响。',
+    }
+    return links.get(factor, f'反映{label}变化对经营预期的影响。')
+
+
 def _build_deterministic_section94(key_data: dict) -> str:
     """在 LLM 结构或溯源失败时，以同一批真实事实卡重建安全情景表。"""
     facts = _scenario_fact_candidates(key_data, max_items=2)
@@ -2655,11 +2666,11 @@ def _build_deterministic_section94(key_data: dict) -> str:
     for marker, fact, factor in facts:
         label = _scenario_driver_label(fact, factor)
         value = f"{fact['value']}[{int(fact['ref'])}]"
-        core_lines.append(f'• **{label}**：{value}；反映{factor}的当前经营基础。')
+        core_lines.append(f'• **{label}**：{value}；{_scenario_operating_link(label, factor)}')
         assumptions.append(label)
-    good = '<br>'.join(f'{item}优于当前基础' for item in assumptions)
-    base = '<br>'.join(f'{item}大体延续当前基础' for item in assumptions)
-    bad = '<br>'.join(f'{item}弱于当前基础' for item in assumptions)
+    good = '<br>'.join(f'{item}改善并好于当前基础' for item in assumptions)
+    base = '<br>'.join(f'{item}维持当前运行节奏' for item in assumptions)
+    bad = '<br>'.join(f'{item}走弱并低于当前基础' for item in assumptions)
     return f'''### 9.4 情景推演
 
 **核心变量**
@@ -2669,9 +2680,9 @@ def _build_deterministic_section94(key_data: dict) -> str:
 
 | 情景 | 核心假设 | 经营含义 | 估值含义 |
 |:-----|:---------|:---------|:---------|
-| 乐观（概率~25%） | {good} | 经营条件改善，收入、利润与现金流预期边际改善。 | 增长预期上修，估值中枢获得支撑。 |
-| 中性（概率~50%） | {base} | 当前经营节奏大体延续，收入、利润与现金流按既有预期演变。 | 当前预期大体兑现，估值预期保持稳定。 |
-| 悲观（概率~25%） | {bad} | 经营条件承压，收入、利润与现金流预期面临下修压力。 | 增长预期走弱，估值风险溢价上升。 |
+| 乐观（概率~25%） | {good} | 订单与产品结构协同改善，收入增速和利润释放具备向上弹性。 | 盈利预期上修，市场愿意给予更高的估值中枢。 |
+| 中性（概率~50%） | {base} | 供需与产品结构按当前节奏演进，经营表现围绕既有预期兑现。 | 基本面预期稳定，估值围绕当前中枢波动。 |
+| 悲观（概率~25%） | {bad} | 需求兑现或供给节奏承压，收入与利润预期面临下修压力。 | 风险偏好下降，估值中枢承受收缩压力。 |
 '''
 
 
@@ -2878,6 +2889,18 @@ def _explicit_risk_titles(sentence: str) -> list:
     return titles
 
 
+def _source_mentions_risk_target(text: str, key_data: dict) -> bool:
+    """Do not let multi-company or unrelated reports supply a target-company risk."""
+    source = str(text or '')
+    names = {
+        str(key_data.get('name') or '').strip(),
+        str(key_data.get('short_name') or '').strip(),
+        str(key_data.get('ticker') or '').strip(),
+    }
+    names.discard('')
+    return not names or any(name in source for name in names)
+
+
 def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
     """Collect source-backed risk evidence, prioritising explicit risk disclosures."""
     ref_map = key_data.get("ref_map", {}) or {}
@@ -2905,7 +2928,13 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
             str(report.get(field) or "")
             for field in ("title", "detail_text", "abstract", "text")
         )
-        add(report_text, report_ref, "研报")
+        report_title = str(report.get("title") or "")
+        target_aliases = [str(key_data.get(k) or '').strip() for k in ('name', 'short_name', 'ticker')]
+        target_aliases = [alias for alias in target_aliases if alias]
+        # 多股票覆盖研报即便正文提及标的，也不能为标的单独背书风险；标题必须以标的名或代码起始。
+        title_is_target_report = any(re.match(r'^\s*' + re.escape(alias), report_title) for alias in target_aliases)
+        if _source_mentions_risk_target(report_text, key_data) and title_is_target_report:
+            add(report_text, report_ref, "研报")
 
     for meeting in (key_data.get("meetings", []) or [])[:4]:
         meeting_key = "meeting_" + str(meeting.get("date", "")) + "_" + str(meeting.get("title", ""))[:20]
@@ -2914,11 +2943,14 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
             str(meeting.get(field) or "")
             for field in ("title", "overview", "qa", "text")
         )
-        add(meeting_text, meeting_ref, "纪要")
+        if _source_mentions_risk_target(meeting_text, key_data):
+            add(meeting_text, meeting_ref, "纪要")
 
     for survey in (key_data.get("surveys", []) or [])[:4]:
         survey_ref = _risk_ref_no(ref_map, "survey_" + str(survey.get("event_id", "")))
-        add(str(survey.get("content") or ""), survey_ref, "调研")
+        survey_text = str(survey.get("content") or "")
+        if _source_mentions_risk_target(survey_text, key_data):
+            add(survey_text, survey_ref, "调研")
 
     return (explicit + general)[:max_items]
 
@@ -3014,8 +3046,8 @@ def _risk_theme_key(title: str) -> str:
     themes = (
         (r'库存|减值', 'inventory'),
         (r'需求|订单|客户|销量|出货', 'demand'),
-        (r'价格|批价|竞争', 'price_competition'),
         (r'原材料|成本', 'input_cost'),
+        (r'价格|批价|竞争', 'price_competition'),
         (r'产能|延期|延迟', 'capacity_execution'),
         (r'政策|监管|税|合规|审批', 'policy'),
         (r'汇率|海外|贸易', 'overseas'),
@@ -3033,8 +3065,8 @@ def _risk_tracking_profile(title: str) -> tuple:
     profiles = (
         (r'库存|减值', ('下游去化弱于备货节奏', '库存周转承压并可能增加减值压力', '库存、周转天数和资产减值损失')),
         (r'需求|订单|客户|销量|出货', ('终端需求或订单兑现弱于预期', '出货节奏放缓可能拖累收入与产能利用率', '订单、出货和渠道库存')),
-        (r'价格|批价|竞争', ('行业供给释放或价格竞争加剧', '产品价格与盈利空间可能承压', '产品价格、毛利率和市场份额')),
         (r'原材料|成本', ('核心原材料价格波动超预期', '成本传导滞后可能压缩盈利能力', '原材料价格、采购成本和毛利率')),
+        (r'价格|批价|竞争', ('行业供给释放或价格竞争加剧', '产品价格与盈利空间可能承压', '产品价格、毛利率和市场份额')),
         (r'产能|延期|延迟', ('项目建设或产能投放进度不及预期', '新增供给释放放缓并影响业务兑现节奏', '项目进度、产能利用率和投产安排')),
         (r'政策|监管|税|合规|审批', ('政策规则或审批节奏出现变化', '业务推进成本或市场准入预期可能承压', '政策落地、审批进度和公司应对措施')),
         (r'汇率|海外|贸易', ('海外政策或汇率波动超预期', '海外业务盈利与扩张节奏可能受扰动', '政策进展、汇率和海外订单')),
@@ -3051,6 +3083,7 @@ def _compose_investor_risk_explanation(trigger: str, impact: str, monitor: str) 
     trigger = re.sub(r'\s+', ' ', str(trigger or '')).strip('，,；;。：: ')
     impact = re.sub(r'\s+', ' ', str(impact or '')).strip('，,；;。：: ')
     monitor = re.sub(r'\s+', ' ', str(monitor or '')).strip('，,；;。：: ')
+    monitor = re.sub(r'^(?:重点)?跟踪(?:项)?\s*', '', monitor).strip('，,；;。：: ')
     if not trigger or not impact or not monitor:
         return ''
     if not re.match(r'^(?:若|当|在|受)', trigger):
@@ -3084,7 +3117,7 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
 def _validate_a_share_risk_body(body: str) -> tuple:
     issues = []
     lines = [line.strip() for line in str(body or "").splitlines() if _A_SHARE_RISK_BULLET_RE.match(line)]
-    if not 2 <= len(lines) <= 5:
+    if not 3 <= len(lines) <= 4:
         issues.append(f"risk_bullet_count:{len(lines)}")
     if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
         issues.append("generic_risk_template")
@@ -3143,7 +3176,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
     issues = []
     valid_nums = _valid_ref_numbers(ref_map)
     risks = payload.get("risks") if isinstance(payload, dict) else None
-    if not isinstance(risks, list) or not (2 <= len(risks) <= 5):
+    if not isinstance(risks, list) or not (3 <= len(risks) <= 4):
         return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = []
     for i, risk in enumerate(risks):
@@ -3186,7 +3219,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
 
 
 def gen_section10(client, key_data: dict) -> str:
-    """10 风险提示（JSON schema，2-5条；失败则交 fallback 证据重建）。"""
+    """10 风险提示（JSON schema，3-4条；失败则交 fallback 证据重建）。"""
     reports = key_data["reports"]
     fin = key_data["fin"]
     name = key_data["name"]
@@ -3200,7 +3233,7 @@ def gen_section10(client, key_data: dict) -> str:
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
-Rules: output 2-5 source-backed risks. For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪跟踪项”。Use only the context refs below. A monitor may be a qualitative observable (for example, order, inventory, project progress or policy implementation), but never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
+Rules: output exactly 3-4 source-backed risks. For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪〈指标或事件〉”。The monitor field must be a noun phrase only and must not start with “跟踪/重点跟踪/关注”. Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
@@ -3283,6 +3316,30 @@ def _target_progress_materials(key_data: dict, max_items: int = 2) -> tuple:
     return refs, '\n'.join(lines)
 
 
+def _derive_target_peer_progress(key_data: dict) -> str:
+    """在模型漏填基准行时，从标的自身研报提取一条短的、可审计业务进展。"""
+    refs = key_data.get('ref_map') or {}
+    business_terms = r'新品|产品|渠道|价格|产能|订单|客户|出货|项目|技术|市场|份额|组织|改革|投产|发布|上市|推进|导入|认证|扩张|布局|运营|经营'
+    finance_terms = r'营业总收入|营业收入|归属于母公司股东的净利润|归母净利润|净利润|毛利率|净利率'
+    for report in key_data.get('reports') or []:
+        ref_no = refs.get(f"report_{str(report.get('id') or '')}", {}).get('n')
+        source = ' '.join(str(report.get(key) or '') for key in ('detail_text', 'abstract', 'text'))
+        if not ref_no or not source:
+            continue
+        for sentence in re.split(r'(?<=[。！？；;])', re.sub(r'\s+', ' ', source)):
+            body = sentence.strip(' ，,;；')
+            if not (16 <= len(body) <= _PEER_PROGRESS_MAX_CHARS):
+                continue
+            if (not re.search(business_terms, body)
+                    or re.search(r'投资者|我们认为|担忧|风险|有望|预计|预期', body)
+                    or (re.search(finance_terms, body) and not re.search(business_terms, body))):
+                continue
+            candidate = _compact_peer_progress(f'{body}[{int(ref_no)}]')
+            if candidate != '—':
+                return candidate
+    return '—'
+
+
 def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
     """保留短而完整的来源化业务进展；超长或财务化单元格不作硬截断。"""
     raw = re.sub(r'\s+', ' ', str(cell or '')).strip()
@@ -3325,7 +3382,7 @@ def _render_peer_table(rows: list, include_progress: bool) -> str:
     ])
 
 
-def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict, target_progress_refs=None) -> str:
+def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: list, progress_refs: dict, target_progress_refs=None, target_progress_fallback: str = '—') -> str:
     """仅约束公司身份和进展来源；非进展列保留模型的定性研究画像。"""
     parsed = _parse_markdown_table(table_md or '')
     if not parsed or parsed.get('col_count') != len(_A_SHARE_PEER_HEADERS):
@@ -3343,6 +3400,10 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         cleaned_rows[0][5] = _compact_peer_progress(cleaned_rows[0][5])
     else:
         cleaned_rows[0][5] = '—'
+    # 基准材料已采集时不能因为单次 LLM 漏填或写成纯财务摘要而整列消失；
+    # 仅使用同一批标的研报的短句兜底。
+    if cleaned_rows[0][5] == '—':
+        cleaned_rows[0][5] = _compact_peer_progress(target_progress_fallback)
 
     allowed = {str(item.get('code')): str(item.get('current_name')) for item in allowed_peers}
     found = set()
@@ -3381,6 +3442,7 @@ def gen_peer_table(client, key_data: dict) -> str:
     primary_biz = '、'.join(list(mc.get('segments') or {})[:3])
     progress_refs = _peer_progress_refs(key_data)
     target_progress_refs, target_materials = _target_progress_materials(key_data)
+    target_progress_fallback = _derive_target_peer_progress(key_data)
     materials_by_code = {}
     for index, item, _peer_name, peer_code in _peer_material_entries(key_data.get('_raw_data') or {}):
         ref_no = (key_data.get('ref_map') or {}).get(_peer_material_ref_key(index, item), {}).get('n')
@@ -3419,7 +3481,7 @@ def gen_peer_table(client, key_data: dict) -> str:
 5. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
-    return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs)
+    return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs, target_progress_fallback)
 
 
 def _fmt_s3_source(ref_map: dict) -> str:
@@ -5074,6 +5136,27 @@ _QUANTITATIVE_TOKEN_RE = re.compile(
 _FACT_MARKER_RE = re.compile(r'\{\{FACT:([A-Z]\d+)\}\}')
 
 
+def _infer_operating_fact_label(sentence: str, pos: int, display: str, fallback: str) -> str:
+    """Return the indicator phrase governed by a numeric token, not merely its nearest keyword."""
+    context = str(sentence or '')[max(0, pos - 90):pos + len(str(display or '')) + 90]
+    if re.search(r'(?:12英寸|先进制程|成熟制程|晶圆)?.{0,12}(?:收入|营收).{0,8}(?:占比|比重)', context):
+        match = re.search(r'((?:12英寸|先进制程|成熟制程|晶圆)?[^，。；;]{0,8}(?:收入|营收)(?:占比|比重))', context)
+        return re.sub(r'^(?:公司|其)', '', match.group(1).strip()) if match else '收入占比'
+    if re.search(r'产能利用率|稼动率', context):
+        return '产能利用率'
+    if re.search(r'平均售价|ASP|平均单价', context, re.I):
+        return '平均售价同比' if '同比' in context else '平均售价'
+    if re.search(r'月产能|产能(?:达到|提升|扩至|为)', context):
+        return '产能'
+    if re.search(r'出货(?:量|量同比|同比)?', context):
+        return '出货量'
+    if re.search(r'销量(?:同比|增速)?', context):
+        return '销量'
+    if re.search(r'(?:产品|业务|渠道).{0,8}(?:占比|比重)', context):
+        return '业务结构占比'
+    return str(fallback or '经营指标')
+
+
 def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     """从原始来源提取可程序化渲染的高风险事实卡。
 
@@ -5090,7 +5173,7 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     grouped_re = re.compile(r'([-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?){1,5})\s*' + unit_re)
     # §9.4 的核心变量必须是经营驱动，而不是营收、净利润或券商预测结果。
     # 这些卡同时作为确定性情景兜底的唯一数值来源。
-    fact_terms = ("销量", "产量", "出货", "吨价", "单价", "直销", "经销", "渠道占比", "市占率", "产能", "系列酒", "基酒", "渠道", "直营", "i茅台", "毛利率", "价格", "批价")
+    fact_terms = ("销量", "产量", "出货", "吨价", "单价", "平均售价", "ASP", "直销", "经销", "渠道占比", "市占率", "产能利用率", "稼动率", "产能", "收入占比", "系列酒", "基酒", "渠道", "直营", "i茅台", "毛利率", "价格", "批价")
     primary_terms = set(fact_terms)
 
     candidates, seen = [], set()
@@ -5142,7 +5225,7 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
                 candidates.append({
                     "score": score, "ref": int(ref_no), "value": display,
                     "api": src.get("api", ""), "snippet": snippet,
-                    "label": nearest_term,
+                    "label": _infer_operating_fact_label(sentence, pos, display, nearest_term),
                 })
 
     # 相同来源的同一个数值只保留相关性最高的一张卡，避免 61% 等重复事实挤掉唯一数据。
@@ -5193,13 +5276,19 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
     return "\n".join(cards) if cards else "（无可核验经营事实卡；不得编造经营数字）", fact_map
 
 def _render_fact_markers(md_content: str, fact_map: dict) -> str:
-    """把 LLM 输出的事实标记替换为程序绑定的“数值[N]”。"""
+    """把 LLM 输出的事实标记替换为程序绑定的“数值[N]”，拒绝拼接到另一数值后。"""
+    content = str(md_content or "")
     def replace(match):
         fact = (fact_map or {}).get(match.group(1))
         if not fact:
             return match.group(0)
+        # OCR 噪声或模型复述已有数字时，继续插入事实卡会形成“14.9%537.9万”式伪数字。
+        left = content[max(0, match.start() - 18):match.start()]
+        right = content[match.end():match.end() + 12]
+        if re.search(r'\d(?:[\d.,]*)(?:%|pct|万片|万吨|万台|亿元|万元|万|亿|元|片|吨)\s*$', left, re.I) or re.match(r'\s*\d', right):
+            return ''
         return f"{fact['value']}[{fact['ref']}]"
-    return _FACT_MARKER_RE.sub(replace, str(md_content or ""))
+    return _FACT_MARKER_RE.sub(replace, content)
 
 
 def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
