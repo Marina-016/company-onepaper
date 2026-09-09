@@ -278,13 +278,13 @@ class AShareWriterRegressionTests(unittest.TestCase):
         no_baseline = writer._validate_peer_table(table.replace("[3]", "[9]"), "贵州茅台", "600519", peers, {"000858": [4]}, {3})
         self.assertNotIn("相关业务进展", no_baseline)
         self.assertNotIn("市值", no_baseline)
-    def test_peer_progress_keeps_complete_business_sentence_and_rejects_financial_only_or_truncated_text(self):
+    def test_peer_progress_keeps_complete_sentences_without_finance_word_blacklist(self):
         complete = "第八代产品推进渠道分类运营并优化终端触达[4]"
         financial_only = "2026年营业总收入同比下降，归属于母公司股东的净利润承压[4]"
         overlong = "新品发布后持续推进渠道分类运营、终端建设、客户导入和市场拓展，后续仍将优化产品组合以提升经营质量和品牌势能，并同步加快区域市场覆盖和终端运营能力建设[4]"
         multi_sentence = "新品发布并完成首批渠道铺货。后续将围绕核心产品持续推进终端建设、客户导入、区域市场拓展、运营能力升级和渠道精细化管理，并加快重点区域市场覆盖节奏[4]"
         self.assertEqual(writer._compact_peer_progress(complete), complete)
-        self.assertEqual(writer._compact_peer_progress(financial_only), "—")
+        self.assertEqual(writer._compact_peer_progress(financial_only), financial_only)
         self.assertEqual(writer._compact_peer_progress(overlong), "—")
         self.assertEqual(writer._compact_peer_progress(multi_sentence), "新品发布并完成首批渠道铺货。[4]")
     def test_peer_material_reference_resolves_to_original_source(self):
@@ -595,5 +595,39 @@ class AShareWriterRegressionTests(unittest.TestCase):
         )
         self.assertIn("相关业务进展", result)
         self.assertIn("渠道改革推进并优化终端触达[3]", result)
+    def test_scenario_cells_allow_year_and_product_generation_numbers(self):
+        section = """### 9.4 情景推演
+**核心变量**
+• **12英寸晶圆收入占比**：77.4%[1]；反映产品结构变化。
+• **平均售价同比**：2.9%[2]；反映定价变化。
+
+**情景推演表**：
+| 情景 | 核心假设 | 经营含义 | 估值含义 |
+|:-----|:---------|:---------|:---------|
+| 乐观（概率~25%） | 2027年12英寸产品占比继续提升 | 产品结构改善带动利润释放 | 增长预期上修，估值中枢获得支撑。 |
+| 中性（概率~50%） | 12英寸产品维持当前推进节奏 | 经营表现围绕既有预期兑现 | 基本面预期稳定，估值围绕当前中枢波动。 |
+| 悲观（概率~25%） | 12英寸产品导入节奏放缓 | 收入与利润预期面临下修压力 | 风险偏好下降，估值中枢承受压力。 |
+"""
+        self.assertEqual(writer._scenario_target_price_errors(section, {}), [])
+
+    def test_risk_length_allows_detailed_source_backed_bullet_up_to_180(self):
+        explanation = "若新增产能投放节奏慢于规划，固定成本摊薄和客户导入可能延后，进而影响收入兑现与毛利率改善；重点跟踪新增产能投放、产能利用率、客户认证进度和毛利率指引。"
+        line = f"• **产能投放不及预期**：{explanation}[1]"
+        self.assertLessEqual(len(__import__('re').sub(r'\[\d+\]|\*\*|\s+', '', line)), 180)
+        self.assertTrue(writer._validate_a_share_risk_body("\n".join([line, line.replace('产能投放不及预期', '订单兑现不及预期'), line.replace('产能投放不及预期', '成本传导不及预期')]))[0])
+
+    def test_target_progress_materials_excludes_multi_company_coverage_report(self):
+        key_data = {
+            "name": "中芯国际集成电路制造有限公司", "short_name": "中芯国际", "ticker": "688981",
+            "reports": [
+                {"id": "a", "title": "FII：工业富联与中芯国际覆盖报告", "text": "运营费用率下降。"},
+                {"id": "b", "title": "中芯国际（688981）：产能利用率维持高位", "text": "公司新增产能投放。"},
+            ],
+            "ref_map": {"report_a": {"n": 1}, "report_b": {"n": 2}},
+        }
+        refs, materials = writer._target_progress_materials(key_data)
+        self.assertEqual(refs, {2})
+        self.assertIn("[2]", materials)
+        self.assertNotIn("[1]", materials)
 if __name__ == "__main__":
     unittest.main()

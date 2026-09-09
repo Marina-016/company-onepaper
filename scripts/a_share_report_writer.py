@@ -2717,7 +2717,7 @@ def _gen_section94(client, key_data: dict) -> str:
 1. 只选2个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，每条核心变量只保留该一个标记和定性传导说明，不得自行填写任何其他数字或引用。
 2. 三档假设只写相对当前基准的方向与触发条件，如“订单兑现快于当前预期”“毛利率维持/承压”；不得编造新的销量、收入、利润、EPS、PE或股价数字。
 3. 经营含义只写收入、利润、现金流的方向和传导路径，不写没有来源的预测值。
-4. 核心假设、经营含义和估值含义都必须是纯文字判断；不得出现公式、EPS、PE、股价、目标价、估值倍数或任何数字。估值含义只讨论估值中枢、风险溢价和市场预期的方向性变化。
+4. 核心假设、经营含义和估值含义不得出现公式、EPS、PE、股价、目标价或估值倍数。年份、日期、产品代际和来源已支持的经营数字可以保留；估值含义只讨论估值中枢、风险溢价和市场预期的方向性变化。
 5. 严格输出4列表格，顺序为乐观/中性/悲观；概率分别25%/50%/25%，合计100%。
 6. 不输出任何解释、注释、内部测算或额外章节。
 
@@ -2795,8 +2795,8 @@ def _scenario_target_price_errors(section: str, key_data: dict) -> list:
             plain_cell = re.sub(r'<br\s*/?>', '', cell, flags=re.I).strip()
             if not plain_cell:
                 errors.append(f"{row[0]}档{cell_name}不能为空")
-            if re.search(r"\d|(?:EPS|PE|PB|PS|目标价|股价|每股|[＝=×*])", plain_cell, re.I):
-                errors.append(f"{row[0]}档{cell_name}必须为纯文字判断")
+            if re.search(r"(?:EPS|PE|PB|PS|目标价|股价|每股|[＝=×*])", plain_cell, re.I):
+                errors.append(f"{row[0]}档{cell_name}不得包含公式、估值倍数或目标价")
     return errors
 
 def _normalize_section9_llm_fragment(fragment: str) -> str:
@@ -3135,7 +3135,7 @@ def _validate_a_share_risk_body(body: str) -> tuple:
         if not re.search(r'\[\d+\]', line):
             issues.append(f"risk[{idx}].missing_citation")
         plain_len = len(re.sub(r'\[\d+\]|\*\*|\s+', '', line))
-        if plain_len > 140:
+        if plain_len > 180:
             issues.append(f"risk[{idx}].too_long:{plain_len}")
     if len(set(titles)) != len(titles):
         issues.append("duplicate_risk_titles")
@@ -3213,7 +3213,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         ):
             ref_str = "".join(f"[{n}]" for n in refs)
             lines.append(f"• **{title}**：{explanation}{ref_str}")
-    if len(lines) < 2:
+    if len(lines) < 3:
         issues.append(f"valid_lines:{len(lines)}")
     return ("\n".join(lines), []) if lines and not issues else ("", issues)
 
@@ -3233,7 +3233,7 @@ def gen_section10(client, key_data: dict) -> str:
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
-Rules: output exactly 3-4 source-backed risks. For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪〈指标或事件〉”。The monitor field must be a noun phrase only and must not start with “跟踪/重点跟踪/关注”. Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
+Rules: output exactly 3-4 source-backed risks. Keep each rendered bullet to about 80-160 Chinese characters (hard maximum 180 after removing citation and Markdown). For every risk, trigger / impact / monitor are all required and must form a concise investor checklist after rendering: “若触发条件，影响路径；重点跟踪〈指标或事件〉”。The monitor field must be a noun phrase only and must not start with “跟踪/重点跟踪/关注”. Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
@@ -3300,10 +3300,20 @@ def _peer_progress_refs(key_data: dict) -> dict:
     return grouped
 
 
+def _is_target_progress_report(report: dict, key_data: dict) -> bool:
+    """Only a report headed by the target itself may support the target peer-progress cell."""
+    title = str((report or {}).get('title') or '').strip()
+    aliases = [str(key_data.get(key) or '').strip() for key in ('short_name', 'name', 'ticker')]
+    aliases = [alias for alias in aliases if alias]
+    return bool(title and any(re.match(r'^\s*' + re.escape(alias), title) for alias in aliases))
+
+
 def _target_progress_materials(key_data: dict, max_items: int = 2) -> tuple:
     """返回标的公司进展列可使用的研报证据及其引用编号。"""
     refs, lines = set(), []
     for report in key_data.get('reports') or []:
+        if not _is_target_progress_report(report, key_data):
+            continue
         report_id = str(report.get('id') or '')
         ref_no = (key_data.get('ref_map') or {}).get(f'report_{report_id}', {}).get('n')
         source = ' '.join(str(report.get(key) or '') for key in ('title', 'detail_text', 'abstract', 'text'))
@@ -3322,6 +3332,8 @@ def _derive_target_peer_progress(key_data: dict) -> str:
     business_terms = r'新品|产品|渠道|价格|产能|订单|客户|出货|项目|技术|市场|份额|组织|改革|投产|发布|上市|推进|导入|认证|扩张|布局|运营|经营'
     finance_terms = r'营业总收入|营业收入|归属于母公司股东的净利润|归母净利润|净利润|毛利率|净利率'
     for report in key_data.get('reports') or []:
+        if not _is_target_progress_report(report, key_data):
+            continue
         ref_no = refs.get(f"report_{str(report.get('id') or '')}", {}).get('n')
         source = ' '.join(str(report.get(key) or '') for key in ('detail_text', 'abstract', 'text'))
         if not ref_no or not source:
@@ -3360,11 +3372,23 @@ def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS)
         if not complete_sentences:
             return '—'
         body = complete_sentences[0]
-    finance_terms = r'营业总收入|营业收入|归属于母公司股东的净利润|归母净利润|净利润|毛利率|净利率|同比|环比|EPS|PE|亿元|万元'
-    business_terms = r'新品|产品|渠道|价格|产能|订单|客户|出货|项目|技术|市场|份额|组织|改革|投产|发布|上市|推进|导入|认证|扩张|布局|运营|经营'
-    if re.search(finance_terms, body, re.I) and not re.search(business_terms, body):
-        return '—'
+    # 进展列的写法由 prompt 引导为业务优先；后验只校验完整性和引用归属，
+    # 不因“运营/同比/金额”等词作主观删减，避免把真实、简短的进展误删。
     return body + ''.join(f'[{ref}]' for ref in refs)
+
+
+def _keep_owned_progress_refs(cell: str, allowed_refs: set) -> str:
+    """Keep one or more owned citations while avoiding an all-or-nothing table rejection."""
+    allowed = {int(ref) for ref in (allowed_refs or set())}
+    present = [int(ref) for ref in re.findall(r'\[(\d+)\]', str(cell or ''))]
+    kept = []
+    for ref in present:
+        if ref in allowed and ref not in kept:
+            kept.append(ref)
+    if not kept:
+        return '—'
+    body = re.sub(r'\[\d+\]', '', str(cell or '')).strip()
+    return _compact_peer_progress(body + ''.join(f'[{ref}]' for ref in kept))
 
 
 def _render_peer_table(rows: list, include_progress: bool) -> str:
@@ -3396,8 +3420,8 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
     target_allowed_refs = {int(n) for n in (target_progress_refs or [])}
     cleaned_rows = [list(rows[0])]
     target_actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', cleaned_rows[0][5])}
-    if target_allowed_refs and target_actual_refs and target_actual_refs.issubset(target_allowed_refs):
-        cleaned_rows[0][5] = _compact_peer_progress(cleaned_rows[0][5])
+    if target_allowed_refs and target_actual_refs:
+        cleaned_rows[0][5] = _keep_owned_progress_refs(cleaned_rows[0][5], target_allowed_refs)
     else:
         cleaned_rows[0][5] = '—'
     # 基准材料已采集时不能因为单次 LLM 漏填或写成纯财务摘要而整列消失；
@@ -3419,8 +3443,8 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         found.add(code)
         required_refs = set(progress_refs.get(code) or [])
         actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', progress_cell)}
-        if required_refs and actual_refs and actual_refs.issubset(required_refs):
-            cleaned[5] = _compact_peer_progress(progress_cell)
+        if required_refs and actual_refs:
+            cleaned[5] = _keep_owned_progress_refs(progress_cell, required_refs)
         else:
             cleaned[5] = '—'
         cleaned_rows.append(cleaned)
@@ -6195,6 +6219,7 @@ def main():
     # key_data 传递给所有 LLM 生成函数
     key_data = {
         "name":              name,
+        "short_name":        _short_name,
         "ticker":            ticker,
         "fin":               fin,
         "mc":                mc,

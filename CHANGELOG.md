@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.2.39
+
+- Make risk-length policy explicit: 3–4 source-backed bullets, target 80–160 Chinese characters each and a hard 180-character limit after removing citations and Markdown; the writer passes `short_name` into risk evidence and fallback paths so a full legal company name cannot empty the fallback.
+- Let §9.4 scenario cells retain years, dates, product generations, and other source-supported operating numbers. The guard still blocks formulas, valuation multiples, prices, and target prices, fixing deterministic fallback rejection for labels such as “12英寸晶圆收入占比”.
+- Relax peer-progress post-validation to structural/source-ownership checks only. Financial wording no longer deletes an otherwise complete cited sentence; target baseline material is limited to reports whose titles start with the target short name or code, excluding multi-company coverage reports.
 ## v1.2.38
 
 - Rebuild A-share §9.4 fact-card labels from the numeric indicator context, preventing product-mix and ASP figures from being mislabeled as capacity or shipment; deterministic scenarios now use factor-specific operating links instead of generic templates.
