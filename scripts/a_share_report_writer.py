@@ -1270,6 +1270,18 @@ def gen_financial_table(fin: dict, q1_text: str = "", company_name: str = "") ->
     return "\n".join(lines)
 
 
+# 金融股 mgmt_discussion 营收构成的抽取规格：(取值键, 数值正则, 同比键, 同比正则)。
+# v1.3：此前同一套“逐行 re.search + 首match优先”逻辑按指标复制了 11 遍；收敛为单一规格表，
+# 与下方表格行共用同一组取值键，避免指标增删时抽取与展示两处不同步。
+_FIN_REVENUE_METRIC_SPECS = (
+    ("net_int", r'利息净收入\s*([\d,]+\.?\d*)\s*亿', "net_int_yoy", r'利息净收入.*?([+-]?\d+\.?\d*)%'),
+    ("fee", r'手续费及佣金净收入\s*([\d,]+\.?\d*)\s*亿', "fee_yoy", r'手续费及佣金净收入.*?([+-]?\d+\.?\d*)%'),
+    ("other_nonint", r'其他非利息收益\s*([\d,]+\.?\d*)\s*亿', None, None),
+    ("nonint_total", r'非利息收入\s*([\d,]+\.?\d*)\s*亿', None, None),
+    ("revenue", r'营业收入\s*([\d,]+\.?\d*)\s*亿', None, None),
+)
+
+
 def gen_maincomp_fallback(key_data: dict) -> str:
     """当 getFdmtMoStdItem classifCD=2 无数据时（银行/保险/券商等金融股常见），
     从 mgmt_discussion 管理层讨论中提取营收构成数据生成替代表格。"""
@@ -1288,38 +1300,20 @@ def gen_maincomp_fallback(key_data: dict) -> str:
         end_date = item.get("endDate", "")
         if not desc or not end_date:
             continue
-        # 提取: 利息净收入、手续费及佣金净收入、营业收入
+        # 提取: 利息净收入、手续费及佣金净收入、营业收入等（规格见 _FIN_REVENUE_METRIC_SPECS）
         rec = {"endDate": end_date}
         for line in desc.replace("\\n", "").split("。"):
             line = line.strip()
-            # 利息净收入
-            m = re.search(r'利息净收入\s*([\d,]+\.?\d*)\s*亿', line)
-            if m and "net_int" not in rec:
-                rec["net_int"] = float(m.group(1).replace(",", ""))
-            # 手续费及佣金净收入
-            m = re.search(r'手续费及佣金净收入\s*([\d,]+\.?\d*)\s*亿', line)
-            if m and "fee" not in rec:
-                rec["fee"] = float(m.group(1).replace(",", ""))
-            # 其他非利息收益
-            m = re.search(r'其他非利息收益\s*([\d,]+\.?\d*)\s*亿', line)
-            if m and "other_nonint" not in rec:
-                rec["other_nonint"] = float(m.group(1).replace(",", ""))
-            # 非利息收入（总额）
-            m = re.search(r'非利息收入\s*([\d,]+\.?\d*)\s*亿', line)
-            if m and "nonint_total" not in rec:
-                rec["nonint_total"] = float(m.group(1).replace(",", ""))
-            # 营业收入
-            m = re.search(r'营业收入\s*([\d,]+\.?\d*)\s*亿', line)
-            if m and "revenue" not in rec:
-                rec["revenue"] = float(m.group(1).replace(",", ""))
-            # 利息净收入 YoY
-            m = re.search(r'利息净收入.*?([+-]?\d+\.?\d*)%', line)
-            if m and "net_int_yoy" not in rec:
-                rec["net_int_yoy"] = float(m.group(1))
-            # 手续费 YoY
-            m = re.search(r'手续费及佣金净收入.*?([+-]?\d+\.?\d*)%', line)
-            if m and "fee_yoy" not in rec:
-                rec["fee_yoy"] = float(m.group(1))
+            for value_key, value_re, yoy_key, yoy_re in _FIN_REVENUE_METRIC_SPECS:
+                # 首 match 优先：同一指标在该行多次出现时只取第一次。
+                if value_key not in rec:
+                    m = re.search(value_re, line)
+                    if m:
+                        rec[value_key] = float(m.group(1).replace(",", ""))
+                if yoy_key and yoy_key not in rec:
+                    m = re.search(yoy_re, line)
+                    if m:
+                        rec[yoy_key] = float(m.group(1))
 
         if rec.get("revenue"):
             records.append(rec)
@@ -1846,6 +1840,7 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
   1. 近况 3-5 条：每条严格用 `• **[具体事件 + 判断]**：[事实、数字与一句克制的市场含义][N]`。标题必须写清事件和判断，并**把事件里最有信息量的数字锚点写进标题**（金额/规模/占比/增速/份额/产能/排产等，用下方材料的真实数字）——例如“200-400亿注销式回购落地”“40万吨铜箔产能战略签约”“全球首台200kW增程器获RINA认证”，形成“事件+数字+判断”；禁止“业绩更新/业务进展/回购/扩产/订单”等无数字的空泛标题（示例数字仅为示范，严禁照搬，必须用该公司自己的数字）。
   2. 独立一行：`**机构观点与估值**：[主流机构评级方向、目标价或区间、当前PE/PB][N]`。
   3. 独立一行：`**市场一致预期**：[未来两年营业收入、归母净利润及增长方向][N]`。
+- **事件日期倾向**：近况条目若描述的是一个**已发生的具体事件**（获批/受理/签约/到账/临床读出/业绩发布/政策落地等），正文尽可能带上该事件的日期（如“8月首付款到账”“9月9日NDA获受理”“2026年上半年”），让读者能判断事件新鲜度；标题仍以“事件+数字+判断”为主，日期不强制进标题。此为写作倾向，不是硬性要求：来源未给出日期、或条目本身是持续状态/业务方向而非单一时点事件时，不要为了凑日期而臆造或用模糊措辞代替。
 - **有个股资讯时**：直接把上方标注了唯一引用[N]的资讯写入“近况”要点，不得遗漏、不得重写成另一段监控块。优先顺序：客户自研/砍单/监管/事故/重大产品变化/股价异动 > 一般业务进展；若资讯明确归因了近期下跌/板块承压，标题或正文必须呈现“市场表现 + 来源已明示的归因”。
 - **无个股资讯时**：才从研报、公告中选取里程碑/突破性数字，普通同比数据不单独成点。
 - 对异动归因只能使用来源已明示的事实；来源未证明单一因果时写“市场关注/市场担忧”，不得写成唯一涨跌原因，不得自行补写股价、涨跌幅或传导结论。
@@ -2884,7 +2879,7 @@ def _gen_section93(key_data: dict) -> str:
 
 def _scenario_factor(label: str) -> str:
     label = str(label or '')
-    if any(word in label for word in ('直销', '经销', '渠道', 'i茅台', '直营')):
+    if any(word in label for word in ('直销', '经销', '渠道', 'i茅台', '直营', '零售终端', '医院覆盖')):
         return '渠道与消费者触达'
     if any(word in label for word in ('预付款项', '存货', '采购')):
         return '供应链备货与营运资本'
@@ -3026,7 +3021,7 @@ def _gen_section94(client, key_data: dict) -> str:
 {valuation_context}
 
 【硬规则】
-1. 只选2个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，每条核心变量只保留该一个标记和定性传导说明，不得自行填写任何其他数字或引用。
+1. 只选2个真实业务驱动变量。当前基准值必须原样使用{{{{FACT:F编号}}}}，每条核心变量只保留该一个标记和定性传导说明，不得自行填写任何其他数字或引用。标记后的数值**必须自带完整量纲**（如“25万家”“93.48%”“166.71亿元”），禁止输出“25万”这类去掉量纲的裸数字——读者需能从基准值本身判断它衡量的是什么。变量名必须直接采用该事实卡 `指标:` 字段给出的名称，不得改写、不得用同句其他指标替换（同一句常含多个指标，只有 `指标:` 字段指明的那一个是该卡的值）。
 2. 三档假设只写相对当前基准的方向与触发条件，如“订单兑现快于当前预期”“毛利率维持/承压”；不得编造新的销量、收入、利润、EPS、PE或股价数字。
 3. 经营含义只写收入、利润、现金流的方向和传导路径，不写没有来源的预测值。
 4. 核心假设、经营含义和估值含义不得出现公式、EPS、PE、股价、目标价或估值倍数。年份、日期、产品代际和来源已支持的经营数字可以保留；估值含义只讨论估值中枢、风险溢价和市场预期的方向性变化。
@@ -3375,7 +3370,9 @@ def _derive_a_share_risk_title(sentence: str, company_name: str = "") -> str:
     if len(candidate) < 4:
         candidate = clean
     candidate = re.sub(r'[，,。；;：:].*$', '', candidate).strip()
-    return candidate[:24].rstrip("的") or "公司特有风险"
+    # v1.3：统一走边界感知截断。此前 candidate[:24] 会把标题切在词中间
+    # （如“仿制药2026-2028年每年下滑15%的缺口风”丢掉了“险”）。
+    return _truncate_risk_title(candidate) or "公司特有风险"
 
 
 def _is_valid_a_share_risk_title(title: str) -> bool:
@@ -3536,12 +3533,54 @@ def _truncate_risk_title(title: str, max_len: int = 24) -> str:
     title = str(title or "").strip()
     if len(title) <= max_len:
         return title
+    # v1.3：截断不得切在词中间。优先保住结尾的风险名词——删去可省的助词“的”
+    # 比硬截更少损失信息（“…每年下滑15%的缺口风险”→“…每年下滑15%缺口风险”）。
+    if '的' in title:
+        squeezed = title.replace('的', '', 1)
+        if len(squeezed) <= max_len:
+            return squeezed
     cut = title[:max_len]
     for sep in ('，', '：', '；', '、', '/', '（', '('):
         pos = cut.rfind(sep)
         if pos >= 8:
             return cut[:pos]
+    # 结尾已是完整风险名词则直接保留；否则回退到语义边界。
+    if re.search(r'(?:风险|压力|敞口|拖累|承压|下滑|缺口|延期|减值|波动|竞争)$', cut):
+        return cut
+    pos = cut.rfind('的')
+    if pos >= 8:
+        return cut[:pos]  # 砍掉悬空的定语，落点是完整短语
+    number_end = None
+    for match in re.finditer(r'\d+(?:\.\d+)?\s*(?:%|％|pct|万吨|万台|万家|吨|亿元|亿|万元|万|元|家|项|名|人)', cut):
+        number_end = match.end()
+    if number_end and number_end >= 8:
+        return cut[:number_end]
     return cut
+
+
+# 悬空尾字：虚词或半截词无法收束一个标题，出现即说明被硬切。
+_TITLE_DANGLING_TAIL_RE = re.compile(
+    r'(?:的|与|和|及|为|在|将|使|对|从|向|并|或|因|由|而|则|若|如|以|是|有|不|未|待)$'
+)
+_TITLE_HALFWORD_TAIL_RE = re.compile(r'(?:不确|可能|预计|尚未|预)$')
+# “……调价的风”这类“的+单个汉字”收尾，中文标题里必为硬切（正常应为“的风险”）。
+_TITLE_DANGLING_DE_RE = re.compile(r'的[一-龥]$')
+
+
+def _has_dangling_title_tail(title: str) -> bool:
+    """标题是否在词中间被截断（如“……上市与临床不确”“……调价的风”）。
+
+    只做结构判据，不检查风险关键词——合法标题未必含“风险”二字。
+    曾用“标题末两字是否出现在证据池”兜底，但在真实产出上误杀严重
+    （`…下半年准入兑现`、`…部分产品利润率` 均被误判——risk_context 只含前 16 条
+    且被截断，而合法标题的用词可来自任意证据），该判据不可用，已移除。
+    """
+    text = str(title or "").strip()
+    if not text:
+        return True
+    return bool(_TITLE_DANGLING_TAIL_RE.search(text)
+                or _TITLE_HALFWORD_TAIL_RE.search(text)
+                or _TITLE_DANGLING_DE_RE.search(text))
 
 
 def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
@@ -3573,6 +3612,13 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         explanation = _compose_investor_risk_explanation(trigger, impact, monitor)
         if len(title) < 3 or not explanation or len(explanation) < 12:
             issues.append(f"risk[{i}].invalid_structure")
+            continue
+        # v1.3：模型在 24 字预算内自行硬切会产生“……上市与临床不确”这类词中截断。
+        # 只拦结构性问题，不套用 _is_valid_a_share_risk_title 的关键词白名单——
+        # 该白名单面向 fallback 的碎片化标题提炼，会误杀“仿制药2026-2028年收入年降约15%”
+        # 这类合法但未含风险词的标题。
+        if _has_dangling_title_tail(title):
+            issues.append(f"risk[{i}].truncated_title")
             continue
         if any(len(field_value) < 3 for field_value in (trigger, impact, monitor)):
             issues.append(f"risk[{i}].field_too_short")
@@ -5795,7 +5841,8 @@ _FINANCIAL_ONLY_APIS = {
     "diagnosis_valuation_rank", "diagnosis_pe_valuation",
 }
 _QUANTITATIVE_TOKEN_RE = re.compile(
-    r'(?<!\d)(\d+(?:\.\d+)?)\s*(%|pct|万吨|万台|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
+    r'(?<!\d)(?<!\d,)((?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)\s*'
+    r'(%|pct|万吨|万台|万家|万人|万户|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
 )
 _FACT_MARKER_RE = re.compile(r'\{\{FACT:([A-Z]\d+)\}\}')
 
@@ -5822,6 +5869,16 @@ def _infer_operating_fact_label(sentence: str, pos: int, display: str, fallback:
         return '销量'
     if re.search(r'(?:产品|业务|渠道).{0,8}(?:占比|比重)', context):
         return '业务结构占比'
+    # v1.3：渠道覆盖类数值若退化为裸数字（如“25万”“93%”），读者无从判断基准含义。
+    # 覆盖数必须带量纲落为“零售终端覆盖/医院覆盖”，毛利率指标须显式命名。
+    if re.search(r'零售药店|零售终端|药店|终端门店', context):
+        return '零售终端覆盖'
+    if re.search(r'(?:医院|医疗机构)(?:数量|覆盖|家)', context):
+        return '医院覆盖'
+    if re.search(r'毛利率', context):
+        return '毛利率'
+    if re.search(r'(?:价格|售价|单价)(?:累计)?(?:降幅|跌幅)|降价', context):
+        return '产品价格降幅'
     return str(fallback or '经营指标')
 
 
@@ -5836,8 +5893,11 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
         "batchGetReportContent", "getMeetingSummaryDetail",
         "management_discussion", "getFdmtMoStdItem",
     }
-    unit_re = r'(%|pct|万吨|万台|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
-    token_re = re.compile(r'(?<!\d)([-+]?\d+(?:\.\d+)?)\s*' + unit_re)
+    # v1.3：单位交替必须“先长后短”，否则 "25万家" 会先命中 "万" 而丢掉量纲；
+    # 数字须容纳千分位，并用 (?<!\d,) 排除从 "200,000家" 中间切出的 "000家" 残片。
+    unit_re = r'(%|pct|万吨|万台|万家|万人|万户|吨|亿元|亿|万元|万|元/吨|元|名|人|家|项)'
+    number_re = r'(?<!\d)(?<!\d,)([-+]?(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?)'
+    token_re = re.compile(number_re + r'\s*' + unit_re)
     grouped_re = re.compile(r'([-+]?\d+(?:\.\d+)?(?:\s*/\s*[-+]?\d+(?:\.\d+)?){1,5})\s*' + unit_re)
     # §9.4 的核心变量必须是经营驱动，而不是营收、净利润或券商预测结果。
     # 这些卡同时作为确定性情景兜底的唯一数值来源。
@@ -5954,8 +6014,12 @@ def _build_operating_fact_cards(key_data: dict, max_cards: int = 30) -> tuple:
             "value": item["value"], "ref": item["ref"], "api": item["api"],
             "label": item.get("label", "经营指标"),
         }
+        # v1.3：必须把程序推断的指标名随卡下发。此前只给数值+原文片段，
+        # 模型在“毛利率持平于85%……而销售与营销费用率从33%降至32%”这类同句多指标
+        # 片段上会把 85% 错标成费用率，导致 §9.4 基准值标签张冠李戴。
         cards.append(
             f"{{{{FACT:{marker}}}}} = {item['value']}[{item['ref']}] | "
+            f"指标:{item.get('label') or '经营指标'} | "
             f"来源:{item['api']} | 原文:{item['snippet'][:300]}"
         )
     return "\n".join(cards) if cards else "（无可核验经营事实卡；不得编造经营数字）", fact_map
@@ -5971,6 +6035,13 @@ def _render_fact_markers(md_content: str, fact_map: dict) -> str:
         left = content[max(0, match.start() - 18):match.start()]
         right = content[match.end():match.end() + 12]
         if re.search(r'\d(?:[\d.,]*)(?:%|pct|万片|万吨|万台|亿元|万元|万|亿|元|片|吨)\s*$', left, re.I) or re.match(r'\s*\d', right):
+            return ''
+        # v1.3：模型把标记落在小句末尾、而该数值已在小句中陈述过时，就地落引会形成
+        # “……DTP药房等渠道25万家[11]”式悬空数字。同一小句已含该数值即丢弃标记，
+        # 由既有死引用清理回收未再被使用的来源，绝不把引用贴到错误位置。
+        clause = re.split(r'[。；;！？\n]', content[:match.start()])[-1][-150:]
+        token = re.sub(r'[,\s]', '', str(fact.get('value') or ''))
+        if token and re.search(r'(?<![\d.])' + re.escape(token), re.sub(r'[,\s]', '', clause)):
             return ''
         return f"{fact['value']}[{fact['ref']}]"
     rendered = _FACT_MARKER_RE.sub(replace, content)
@@ -6143,7 +6214,7 @@ def _validate_numeric_source_claims(md_content: str, key_data: dict) -> list:
             is_base_liquor_output = "基酒" in plain and "产量" in plain
             if not (operational_terms or is_roe_claim or is_base_liquor_output):
                 continue
-            measures = [(float(v), unit) for v, unit in _QUANTITATIVE_TOKEN_RE.findall(plain)]
+            measures = [(float(str(v).replace(',', '')), unit) for v, unit in _QUANTITATIVE_TOKEN_RE.findall(plain)]
             sources = []
             for ref_no in refs:
                 src = evidence.get(ref_no)
