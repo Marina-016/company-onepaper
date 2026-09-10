@@ -3537,7 +3537,9 @@ def gen_section10(client, key_data: dict) -> str:
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
 Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
-Rules: output exactly 3-4 source-backed risks from distinct transmission themes (for example demand/orders, price/competition, input cost, capacity/depreciation, technology/customer validation, policy/equipment, overseas/region, inventory/impairment). Every title, trigger and impact must be supported by the cited target-company excerpt; do not use a source that only mentions the company incidentally.
+你是覆盖该公司的买方研究员。请通读输入材料，自主识别未来6–12个月最可能改变公司业绩、估值或市场预期的公司特有风险。优先选择近期出现、可能改变市场预期的重要事件；有清晰传导链（事件或变化→经营变量→收入、利润率、现金流或估值影响）的事项；以及有来源支撑的具体事实、经营数据或管理层表述。按影响重要性排序，输出恰好3–4条彼此实质不同的风险。
+
+风险主题可结合材料自行判断，例如客户、产品、技术、供给、价格、库存、资产、政策、海外、治理或其他公司特有事项；仅在材料确有支持时采用。不要机械复述研报末尾的“风险提示”。Every title, trigger and impact must be supported by the cited target-company excerpt; do not use a source that only mentions the company incidentally.
 
 ⚠️ STRICT LENGTH LIMITS — model MUST count characters before outputting:
   • title: ≤20 Chinese characters (no Markdown)
@@ -3547,7 +3549,7 @@ Rules: output exactly 3-4 source-backed risks from distinct transmission themes 
   The rendered bullet “若trigger，impact；重点跟踪monitor” must be ≤160 Chinese characters after stripping citations and Markdown (absolute hard limit 180). If your draft is over limit, shorten trigger and impact first.
 
 The monitor field must NOT start with “跟踪/重点跟踪/关注” and must NOT use vague phrases such as “相关经营指标” or “公司后续披露”.
-Use only the context refs below. When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Competition, demand and macro risks are allowed only when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
+Use only the context refs below. 每条均须体现“触发事实或条件→对经营/财务/估值的具体影响路径→可观察的跟踪项”。标题必须是公司特有的业务判断，禁止“行业竞争风险”“宏观风险”等泛化标题；材料涉及客户自研、份额变化、订单调整、产能延期、库存或减值、政策变化等事项时，应判断其是否足以构成重要风险。When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Do not use a fixed sentence pattern: the trigger, impact and monitor must be specific to the underlying risk. Competition, demand and macro risks are allowed only when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
 
 ⚠️ FORBIDDEN generic risk patterns:
   - "核心业务需求若放缓"
