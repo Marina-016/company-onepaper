@@ -28,3 +28,7 @@ __pycache__/
 # Local archives and logs
 *.zip
 *.log
+
+# One-off local scratch/maintenance scripts
+fix_quotes.py
+fix_quotes2.py

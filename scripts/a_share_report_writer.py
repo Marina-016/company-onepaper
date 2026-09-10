@@ -1055,6 +1055,25 @@ def build_ref_map(data: dict) -> dict:
         }
         idx += 1
 
+    # 近期公告：主要供 §3、§10 使用。保留原始索引，便于风险数字回查公告全文。
+    for ann_index, ann in enumerate(data.get("announcements") or []):
+        if not isinstance(ann, dict):
+            continue
+        title = str(ann.get("title") or ann.get("annTitle") or ann.get("name") or "").strip()
+        ann_id = str(ann.get("id") or ann.get("annId") or ann_index)
+        if not title:
+            continue
+        refs[f"announcement_{ann_index}"] = {
+            "n": idx,
+            "type": "公告",
+            "id": ann_id,
+            "date": str(ann.get("publishTime") or ann.get("date") or ann.get("annDate") or TODAY)[:10],
+            "org": "上市公司公告",
+            "title": title,
+            "api_name": "announcement/getAnnouncementDetail",
+            "source_index": ann_index,
+        }
+        idx += 1
     # 同业定向材料：仅作为 §8.2 “相关业务进展”的来源，保留公司代码和原始索引以便审计。
     for material_index, item, peer_name, peer_code in _peer_material_entries(data):
         source_id = str(item.get("id") or item.get("materialId") or item.get("docId") or material_index)
@@ -1136,6 +1155,10 @@ def refs_to_markdown(ref_map: dict) -> str:
         elif ref_type == "个股资讯":
             lines.append(
                 f"[{n}]Datayes个股资讯 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：stockSentimentNews"
+            )
+        elif ref_type == "公告":
+            lines.append(
+                f"[{n}]Datayes公告 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：announcement/getAnnouncementDetail"
             )
         elif ref_type == "同业材料":
             lines.append(
@@ -1785,18 +1808,27 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 【公告列表】
 {json.dumps(announcements[:5], ensure_ascii=False)[:500] if announcements else "（无）"}
 
-【最近两个交易日个股资讯（最高优先级，仅能按原文陈述并使用唯一引用）】
+【最近两个交易日个股资讯（⚠️ 这是 §1 的直接输出素材，不是辅助参考）】
 {monitoring_context}
+
+⚠️ §1 写作规则（资讯整合）：
+- 上方【最近两个交易日个股资讯】中每条均已标注”唯一引用[N]”。
+- 你必须将这些资讯**直接写入 §1 要点**，每条资讯对应一个 • 要点，句末引用对应的[N]。
+- **不得在 §1 之外另起一个”监控块”或”资讯摘要”段落**——组装层不会再叠加任何监控块，§1 即是最终唯一输出。
+- 若资讯超过3条，取时间最新且价值最高的3条；若无可用资讯，才从研报和公告中补充要点。
 
 【市场一致预期】
 {con_summary}
+
+【当前估值锚（§2 的估值影响必须锚定此处，不得另造倍数或目标价）】
+PE(TTM)={pe}x、PB={pb}x；未来两年一致预期：{con_summary}
 
 【可核验经营事实卡（经营数字必须仅使用此处的标记）】
 {key_data.get("operating_fact_cards", "（无可核验经营事实卡；不得编造经营数字）")}
 
 【事实卡硬规则】
 - 涉及销量、产量、出货、单价、渠道占比、市占率、产能、系列酒、基酒、客户数等经营数字时，正文必须直接输出对应的 `{{{{FACT:F编号}}}}`，不要手写数字、不要手写[N]。
-- 渲染程序会把标记替换成该来源原文中的“数字[N]”；没有事实卡就删去该经营数字，不得根据主题联想或自行换算。
+- 渲染程序会把标记替换成该来源原文中的”数字[N]”；没有事实卡就删去该经营数字，不得根据主题联想或自行换算。
 - 不得把 fdmtNew、consensus、估值接口当作经营事实来源；它们只能支撑财务、预测或估值字段。
 
 【引用映射（正文中用[N]标注）】
@@ -1808,36 +1840,39 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 
 ## 第1节：公司近况跟踪
 
-**字数上限：220字**
+**字数上限：380字**
 
-- 2-3个 • 要点，每条单独一行，每点仅1句话；⚠️ **不要对要点内容加粗**，仅陈述事实+数字
-- 若“最近两个交易日个股资讯”有内容，第一条必须使用其中最新一条，优先呈现客户自研、砍单、监管、事故、重大产品/产业链变化或股价异动相关事件；若个股资讯或研报材料明确指向近期下跌/板块承压及来源已明示的原因（如政策、竞争、价格、需求），必须呈现“近期市场表现+来源已明示的归因”，不得回避；其余要点才从研报、公告中选取。
+- 固定由三部分构成，依次输出，不另加小标题：
+  1. 近况 3-5 条：每条严格用 `• **[具体事件 + 判断]**：[事实、数字与一句克制的市场含义][N]`。标题必须写清事件和判断，并**把事件里最有信息量的数字锚点写进标题**（金额/规模/占比/增速/份额/产能/排产等，用下方材料的真实数字）——例如“200-400亿注销式回购落地”“40万吨铜箔产能战略签约”“全球首台200kW增程器获RINA认证”，形成“事件+数字+判断”；禁止“业绩更新/业务进展/回购/扩产/订单”等无数字的空泛标题（示例数字仅为示范，严禁照搬，必须用该公司自己的数字）。
+  2. 独立一行：`**机构观点与估值**：[主流机构评级方向、目标价或区间、当前PE/PB][N]`。
+  3. 独立一行：`**市场一致预期**：[未来两年营业收入、归母净利润及增长方向][N]`。
+- **有个股资讯时**：直接把上方标注了唯一引用[N]的资讯写入“近况”要点，不得遗漏、不得重写成另一段监控块。优先顺序：客户自研/砍单/监管/事故/重大产品变化/股价异动 > 一般业务进展；若资讯明确归因了近期下跌/板块承压，标题或正文必须呈现“市场表现 + 来源已明示的归因”。
+- **无个股资讯时**：才从研报、公告中选取里程碑/突破性数字，普通同比数据不单独成点。
 - 对异动归因只能使用来源已明示的事实；来源未证明单一因果时写“市场关注/市场担忧”，不得写成唯一涨跌原因，不得自行补写股价、涨跌幅或传导结论。
-- 没有近两日个股资讯时，才优先提炼里程碑/突破性数字；普通同比数据不单独成点。
-- 只陈述事实+数字，不展开任何分析或判断（分析留给第2节）
-- 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
-- 最后一段（独立行，1句）：市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润关键数字，标注[N]
+- 判断只能由资讯、公告、研报或一致预期直接支持；不能把市场担忧写成已验证结论。近况不展开完整投资逻辑，详细传导留给第2节。
 - 所有数字标注[N]，不介绍商业模式，不重复历史背景
-
 {_S123_SEP}
 
 ## 第2节：核心投资逻辑
 
 **总字数700字以内（2.1+2.2合计）**
 
-⚠️ 第2节不重复第1节的事件描述和数字，而是把已发生变化转化为可交易的投资判断。
+⚠️ 第2节不重复第1节的事件描述和数字，而是把已发生变化转化为可交易的投资判断。**每条要点必须体现「变化→预期差→验证点」三段式传导**，禁止只用概括性语言说"有望改善/支撑估值"而给不出对象、方向或幅度。
 
 ### 2.1 短期逻辑（3-12个月催化剂）
-• 每条标题必须写成“**具体变化/事件 + 投资判断**”，而不是“需求验证/产品升级/盈利兑现”等抽象类别；例如“注销式回购落地，股东回报支撑估值下沿”“头部客户自研扰动有限，份额担忧有望缓释”。
-• 优先围绕近期异动、订单/排产、价格、回购、政策、客户、产品导入、产能爬坡等边际变化，说明该变化如何影响预期差、业绩兑现或估值。
-• 输出3个要点，统一格式：`• **[具体变化 + 判断]**：[来源支持的事实、关键数据与传导逻辑][N]`。
+• 每条标题=**一句带观点与证据的投资判断**，允许且鼓励把来源数字锚点写进标题（金额/规模/占比/份额/增速/排产等，用下方材料真实数字），并尽量点出预期差或市场分歧（“市场预期过于悲观”“利空出尽”“尚未定价”等锐度词）——例如“200-400亿注销式回购落地，EPS增厚托底估值下沿”“Q4储能出货爆发，8月采招93GWh创历史新高”“客户自研占比不足3%，份额担忧被高估”；而不是"需求验证/产品升级/盈利兑现"等抽象类别。示例数字仅为示范，严禁照搬，必须用该公司自己的数字。
+• 优先围绕近期异动、订单/排产、价格、回购、政策、客户、产品导入、产能爬坡等边际变化。**每条正文必须依次回答三个问题**：
+  ① 变化是什么——写清事件主体、时间、金额/规模/比例等来源数字（用事实卡或研报[N]）；
+  ② 预期差在哪——市场当前预期是什么、该变化如何修正预期或驱动重估，明确指向收入/利润/估值哪个科目；
+  ③ 何时验证、影响多大——写可观察的验证信号（月度装机/排产/库存/订单/政策节点等具体时点或信号），并用上方一致预期或估值锚给出方向性影响；可写"若验证则盈利预期上修/估值中枢上移"这类方向，禁止自造倍数、目标价或未来源的幅度。
+• 输出3个要点，统一格式：`• **[具体变化 + 判断]**：[事实、关键数据、预期差、验证点与影响的完整传导][N]`。每条至少含一个具体来源数字。
 
 ### 2.2 长期逻辑（核心竞争力）
-• 每条标题必须写成“**具体竞争位置/结构性变化 + 中长期判断**”，而不是“核心壁垒/成长驱动力/商业模式优势”等模板词；例如“海外储能份额持续提升，第二增长曲线打开天花板”“供应链一体化深化，成本优势穿越价格周期”。
-• 聚焦份额、产品代际、新业务商业化、成本曲线、客户粘性、渠道、产能与商业模式等可持续变量，说明未来2-3年增长或估值重估的原因。
+• 每条标题=**一句带观点与证据的中长期判断**，鼓励把份额/产能/增速/新业务规模等数字锚点写进标题，并点出与市场共识的差异——例如“全球动储需求增速20%+，市场预期过于悲观”“全球份额40.2%持续提升，龙头地位穿越竞争扰动”“AIDC算力储能，尚未定价的长期增量期权”；而不是"核心壁垒/成长驱动力/商业模式优势"等模板词。示例数字仅为示范，严禁照搬，必须用该公司自己的数字。
+• 聚焦份额、产品代际、新业务商业化、成本曲线、客户粘性、渠道、产能与商业模式等可持续变量，说明未来2-3年增长或估值重估的原因。**每条正文同样写清**：①结构性变化的具体证据（份额%/产能GWh/产品代际/商业化订单等来源数字）；②对2-3年收入利润弹性或估值重估的量级判断（有来源数字时给出方向与受益环节，无来源则只写方向与传导路径）；③与同业/历史相比的差异化位置。
 • 输出3个要点，统一格式：`• **[具体竞争位置/变化 + 判断]**：[来源支持的事实、关键数据与中长期传导逻辑][N]`。
 
-• 标题要有明确观点、完整句意和具体对象；不要为凑格式强行套用示例，也不要使用无来源的绝对化结论。
+• 标题要有明确观点、完整句意和具体对象；正文必须能指出"什么信号出现会验证/证伪这个判断"，不得以"有望""或将""未来可期"等空泛词收尾；不要为凑格式强行套用示例，也不要使用无来源的绝对化结论。
 
 {_S123_SEP}
 
@@ -1862,7 +1897,7 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 请直接开始输出第1节内容（不要重复上面的章节标题）："""
 
     for attempt in range(3):
-        raw = call_claude(client, prompt, max_tokens=3800)
+        raw = call_claude(client, prompt, max_tokens=4800)
         # 检查是否包含失败标记
         if raw.startswith("[生成失败:"):
             if attempt < 2:
@@ -1892,10 +1927,10 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
     latest_np = _fmt(latest.get("NPAttrP"))
     report_title = (reports[0].get("title") or reports[0].get("articleTitle") or "近期研报") if reports else "近期研报"
     s1 = (
-        f"- **业绩高增**：{latest_year}年公司营业收入约{latest_rev}、归母净利润约{latest_np}{fdref}。\n"
-        f"- **业务主线**：主营业务围绕{segs_pct or '核心产品'}展开，最新主营构成来自分产品披露{mcref}。\n\n"
-        f"主流机构继续围绕{profile['business']}景气度评估公司成长性，当前PE约{pe}x/PB约{pb}x{ref1}。\n\n"
-        f"市场一致预期显示未来两年收入和利润仍处增长通道{conref}。"
+        f"• **业绩表现与盈利韧性**：{latest_year}年公司营业收入约{latest_rev}、归母净利润约{latest_np}{fdref}。\n"
+        f"• **核心业务进展待验证**：主营业务围绕{segs_pct or '核心产品'}展开，后续重点观察产品结构与订单兑现{mcref}。\n\n"
+        f"**机构观点与估值**：主流机构继续围绕{profile['business']}景气度评估公司成长性，当前PE约{pe}x/PB约{pb}x{ref1}。\n\n"
+        f"**市场一致预期**：未来两年收入和利润仍处增长通道{conref}。"
     )
     s2 = (
         "### 2.1 短期逻辑（3-12个月催化剂）\n\n"
@@ -3185,12 +3220,12 @@ def _source_mentions_risk_target(text: str, key_data: dict) -> bool:
     return not names or any(name in source for name in names)
 
 
-def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
+def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 18) -> list:
     """Collect source-backed risk evidence, prioritising explicit risk disclosures."""
     ref_map = key_data.get("ref_map", {}) or {}
     explicit, general, seen = [], [], set()
 
-    def add(text: str, ref_no: int, source: str) -> None:
+    def add(text: str, ref_no: int, source: str, include_context: bool = False) -> None:
         if ref_no <= 0:
             return
         for sentence in _risk_sentences(text):
@@ -3204,6 +3239,8 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
                     explicit.append({"text": sentence, "risk_title": title, "ref": ref_no, "source": source})
                 continue
             if re.search(r'风险|不及预期|承压|下滑|下降|减值|回款|库存|延期|延迟|诉讼|合规|竞争加剧|不确定', sentence):
+                general.append({"text": sentence, "ref": ref_no, "source": source})
+            elif include_context:
                 general.append({"text": sentence, "ref": ref_no, "source": source})
 
     for report in (key_data.get("reports", []) or [])[:8]:
@@ -3235,6 +3272,32 @@ def _collect_a_share_risk_evidence(key_data: dict, max_items: int = 10) -> list:
         survey_text = str(survey.get("content") or "")
         if _source_mentions_risk_target(survey_text, key_data):
             add(survey_text, survey_ref, "调研")
+
+
+    # 近期个股资讯可揭示客户自研、砍单、异动等事件性风险；保留原始表述，不将情绪标签直接视为结论。
+    for event in _select_monitor_events(key_data.get("monitoring_events", []) or [], max_dates=2, max_items=5):
+        event_ref = _risk_ref_no(ref_map, _monitoring_event_ref_key(event))
+        event_text = " ".join(str(event.get(field) or "") for field in ("title", "text"))
+        if event_ref and event_text.strip():
+            add(event_text, event_ref, "个股资讯", include_context=True)
+
+    # MD&A 与公告是公司直接披露材料：有风险语义时进入证据池，公告同时保留其全文供数字回查。
+    raw_data = key_data.get("_raw_data") or {}
+    mgmt_ref = _risk_ref_no(ref_map, "mgmt_discussion")
+    mgmt_text = _compact_mgmt(raw_data)
+    if mgmt_ref and mgmt_text:
+        add(mgmt_text, mgmt_ref, "管理层讨论")
+    for ann_index, ann in enumerate(key_data.get("announcements", []) or []):
+        if not isinstance(ann, dict):
+            continue
+        ann_ref = _risk_ref_no(ref_map, f"announcement_{ann_index}")
+        detail = ann.get("detail") or {}
+        ann_text = " ".join((
+            str(ann.get("title") or ann.get("annTitle") or ""),
+            json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else str(detail or ""),
+        ))
+        if ann_ref and ann_text.strip():
+            add(ann_text, ann_ref, "公告", include_context=True)
 
     return (explicit + general)[:max_items]
 
@@ -3378,7 +3441,7 @@ def _compose_investor_risk_explanation(trigger: str, impact: str, monitor: str) 
     return f'{trigger}，{impact}；重点跟踪{monitor}。'
 
 
-def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
+def _build_a_share_risk_fallback(key_data: dict, max_items: int = 7) -> str:
     """以真实风险标题为锚，重建含触发、影响和跟踪项的来源化风险。"""
     name = str(key_data.get("short_name") or key_data.get("name") or "")
     lines = []
@@ -3407,7 +3470,7 @@ def _build_a_share_risk_fallback(key_data: dict, max_items: int = 4) -> str:
 def _validate_a_share_risk_body(body: str) -> tuple:
     issues = []
     lines = [line.strip() for line in str(body or "").splitlines() if _A_SHARE_RISK_BULLET_RE.match(line)]
-    if not 3 <= len(lines) <= 4:
+    if not 5 <= len(lines) <= 7:
         issues.append(f"risk_bullet_count:{len(lines)}")
     if any(re.search(pattern, body) for pattern in _A_SHARE_GENERIC_RISK_PATTERNS):
         issues.append("generic_risk_template")
@@ -3463,12 +3526,34 @@ def _valid_ref_numbers(ref_map: dict) -> set:
     return nums
 
 
+def _truncate_risk_title(title: str, max_len: int = 24) -> str:
+    """就地截断超长风险标题：优先在标点处断句，避免截断数字或半截词。
+
+    v1.2.49：模型在具体化标题要求下会写出 25–30 字的标题，此前 title_len 超限
+    会硬性打回整段 §10，进而 fallback 无证据时阻断整篇报告。现改为在不超过 max_len
+    的范围内优先在中文标点后断句，保证标题完整可读。
+    """
+    title = str(title or "").strip()
+    if len(title) <= max_len:
+        return title
+    cut = title[:max_len]
+    for sep in ('，', '：', '；', '、', '/', '（', '('):
+        pos = cut.rfind(sep)
+        if pos >= 8:
+            return cut[:pos]
+    return cut
+
+
 def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
-    """从 JSON payload 校验并渲染 A 股 §10 风险提示。返回 (markdown, issues)。"""
+    """从 JSON payload 校验并渲染 A 股 §10 风险提示。返回 (markdown, issues)。
+
+    v1.2.49：单条风险不合格（标题过长/泛化/重复主题/缺引用）只跳过该条，
+    不再整体打回整段——否则 fallback 无证据时会把整篇报告阻断；仅当有效风险不足 5 条才失败。
+    """
     issues = []
     valid_nums = _valid_ref_numbers(ref_map)
     risks = payload.get("risks") if isinstance(payload, dict) else None
-    if not isinstance(risks, list) or not (3 <= len(risks) <= 4):
+    if not isinstance(risks, list) or not (5 <= len(risks) <= 7):
         return "", [f"risk_count:{0 if not isinstance(risks, list) else len(risks)}"]
     lines = []
     titles_seen, themes_seen = set(), set()
@@ -3476,9 +3561,7 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         if not isinstance(risk, dict):
             issues.append(f"risk[{i}].not_object")
             continue
-        title = str(risk.get("title") or "").strip()
-        if len(title) < 3 or len(title) > 24:
-            issues.append(f"risk[{i}].title_len:{len(title)}")
+        title = _truncate_risk_title(str(risk.get("title") or "").strip())
         trigger = str(risk.get("trigger") or "").strip()
         impact = str(risk.get("impact") or "").strip()
         monitor = str(risk.get("monitor") or "").strip()
@@ -3488,11 +3571,12 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         impact  = re.split(r'[；;]重点跟踪', impact)[0].strip('，,；;。')[:55]
         monitor = re.sub(r'^(?:重点)?跟踪\s*', '', monitor).strip('，,；;。')[:25]
         explanation = _compose_investor_risk_explanation(trigger, impact, monitor)
-        for field_name, field_value in (("trigger", trigger), ("impact", impact), ("monitor", monitor)):
-            if len(field_value) < 3:
-                issues.append(f"risk[{i}].{field_name}_len:{len(field_value)}")
-        if len(explanation) < 12:
-            issues.append(f"risk[{i}].invalid_investor_explanation")
+        if len(title) < 3 or not explanation or len(explanation) < 12:
+            issues.append(f"risk[{i}].invalid_structure")
+            continue
+        if any(len(field_value) < 3 for field_value in (trigger, impact, monitor)):
+            issues.append(f"risk[{i}].field_too_short")
+            continue
         refs = risk.get("source_refs")
         if not isinstance(refs, list) or not refs or not all(isinstance(n, int) and n > 0 for n in refs):
             issues.append(f"risk[{i}].invalid_refs")
@@ -3506,51 +3590,55 @@ def _validate_render_section_10(payload: dict, ref_map: dict) -> tuple:
         combined = title + explanation
         if any(re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS):
             issues.append(f"risk[{i}].generic")
+            continue
         if any(phrase in combined for phrase in _A_SHARE_GENERIC_RISK_PHRASES):
             issues.append(f"risk[{i}].generic_operating_language")
+            continue
         theme = _risk_theme_key(title)
         if title in titles_seen:
             issues.append(f"risk[{i}].duplicate_title")
+            continue
         if theme in themes_seen:
             issues.append(f"risk[{i}].duplicate_theme")
-        if title:
-            titles_seen.add(title)
-            themes_seen.add(theme)
-        if title and explanation and refs and not any(
-            re.search(p, combined) for p in _A_SHARE_GENERIC_RISK_PATTERNS
-        ) and not any(phrase in combined for phrase in _A_SHARE_GENERIC_RISK_PHRASES):
-            ref_str = "".join(f"[{n}]" for n in refs)
-            lines.append(f"• **{title}**：{explanation}{ref_str}")
-    if len(lines) < 3:
+            continue
+        if not refs:
+            continue
+        titles_seen.add(title)
+        themes_seen.add(theme)
+        ref_str = "".join(f"[{n}]" for n in refs)
+        lines.append(f"• **{title}**：{explanation}{ref_str}")
+    if len(lines) < 5:
         issues.append(f"valid_lines:{len(lines)}")
-    return ("\n".join(lines), []) if lines and not issues else ("", issues)
+    return ("\n".join(lines), []) if len(lines) >= 5 else ("", issues)
 
 
 def gen_section10(client, key_data: dict) -> str:
-    """10 风险提示（JSON schema，3-4条；失败则交 fallback 证据重建）。"""
+    """10 风险提示（JSON schema，目标5-7条；失败则交 fallback 证据重建）。"""
     reports = key_data["reports"]
     fin = key_data["fin"]
     name = key_data["name"]
     ref_map = key_data["ref_map"]
     risk_evidence = _collect_a_share_risk_evidence(key_data)
-    risk_context = "\n".join(f"- {item['text']}[{item['ref']}]" for item in risk_evidence[:8])
+    risk_context = "\n".join(f"- {item['text']}[{item['ref']}]" for item in risk_evidence[:16])
     event_context = _build_a_share_event_context(key_data)
     fin_snapshot = _latest_a_share_financial_snapshot(fin, ref_map)
 
     issues = []
     for call_name in ("risk_json", "risk_json_repair"):
         prompt = f"""Return ONLY JSON for A-share report §10 risk section of {name}.
-Schema: {{"risks": [{{"title": "不超过20个中文字的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
-你是覆盖该公司的买方研究员。请通读输入材料，自主识别未来6–12个月最可能改变公司业绩、估值或市场预期的公司特有风险。优先选择近期出现、可能改变市场预期的重要事件；有清晰传导链（事件或变化→经营变量→收入、利润率、现金流或估值影响）的事项；以及有来源支撑的具体事实、经营数据或管理层表述。按影响重要性排序，输出恰好3–4条彼此实质不同的风险。
+Schema: {{"risks": [{{"title": "不超过24个中文字、写清具体对象+变化的风险小标题", "trigger": "触发条件", "impact": "对经营或估值的影响路径", "monitor": "后续跟踪的指标或事件", "source_refs": [1]}}]}}
+你是覆盖该公司的买方研究员。请通读输入材料，自主识别未来6–12个月最可能改变公司业绩、估值或市场预期的公司特有风险。优先选择近期出现、可能改变市场预期的重要事件；有清晰传导链（事件或变化→经营变量→收入、利润率、现金流或估值影响）的事项；以及有来源支撑的具体事实、经营数据或管理层表述。按影响重要性排序，输出5–7条彼此实质不同的风险。
 
 风险主题可结合材料自行判断，例如客户、产品、技术、供给、价格、库存、资产、政策、海外、治理或其他公司特有事项；仅在材料确有支持时采用。不要机械复述研报末尾的“风险提示”。Every title, trigger and impact must be supported by the cited target-company excerpt; do not use a source that only mentions the company incidentally.
 
 ⚠️ STRICT LENGTH LIMITS — model MUST count characters before outputting:
-  • title: ≤20 Chinese characters (no Markdown)
-  • trigger: ≤35 Chinese characters — one short conditional clause only, e.g. “若产能利用率明显回落”
+  • title: ≤24 Chinese characters, NO Markdown
+  • trigger: ≤35 Chinese characters — one short conditional clause only, e.g. “若存货1308亿元去化弱于备货节奏”
   • impact: ≤45 Chinese characters — one consequence clause, e.g. “固定成本摊薄不足将压缩毛利率和利润”
   • monitor: ≤20 Chinese characters — concrete noun phrase only, e.g. “产能利用率、折旧费用及毛利率”
   The rendered bullet “若trigger，impact；重点跟踪monitor” must be ≤160 Chinese characters after stripping citations and Markdown (absolute hard limit 180). If your draft is over limit, shorten trigger and impact first.
+
+🎯 **标题必须写清“具体对象 + 变化”，并尽量嵌入关键数字**：例如“存货1308亿元同比+81%的备货去化风险”“高毛利海外业务的政策与汇率敞口”“在建产能764GWh投产高峰的折旧摊薄风险”。禁止只写抽象类别（如“库存风险”“海外风险”“政策风险”“产能风险”“回购风险”）；若材料给出直接相关的经营或财务数字，优先把数字写进标题。标题是对该条风险最凝练的索引，读者应能只看标题就知道“什么东西、怎么了”。
 
 The monitor field must NOT start with “跟踪/重点跟踪/关注” and must NOT use vague phrases such as “相关经营指标” or “公司后续披露”.
 Use only the context refs below. 每条均须体现“触发事实或条件→对经营/财务/估值的具体影响路径→可观察的跟踪项”。标题必须是公司特有的业务判断，禁止“行业竞争风险”“宏观风险”等泛化标题；材料涉及客户自研、份额变化、订单调整、产能延期、库存或减值、政策变化等事项时，应判断其是否足以构成重要风险。When the cited target-company report or financial snapshot contains a directly relevant operating or financial figure, retain one such figure in the trigger or impact for 1-2 risks and include that source in source_refs; do not force a number where no directly related evidence exists. Never invent a number, threshold, customer or product detail absent from the cited evidence. Do not use a fixed sentence pattern: the trigger, impact and monitor must be specific to the underlying risk. Competition, demand and macro risks are allowed only when the cited evidence explicitly ties them to this company; reject unsupported generic boilerplate.
@@ -3560,6 +3648,7 @@ Use only the context refs below. 每条均须体现“触发事实或条件→�
   - "行业竞争加剧可能压缩"
   - "原材料、渠道或费用投入"
   - "宏观环境和政策变化"
+  - 仅剩抽象类别的标题，如“库存高企风险”“海外政策风险”“产能扩张风险”“回购不及预期”等没有写清对象、变化或数字的标题
 
 Risk evidence (cite only real refs here):
 {risk_context or "（no risk evidence extracted — do not fabricate）"}
@@ -3583,7 +3672,7 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}]
         if call_name.endswith("repair") and issues:
             prompt += f"\nSchema issues to fix:\n" + "\n".join(issues)
 
-        raw = call_claude(client, prompt, max_tokens=1000)
+        raw = call_claude(client, prompt, max_tokens=1400)
         payload = None
         try:
             payload = json.loads(raw)
@@ -3672,6 +3761,19 @@ def _derive_target_peer_progress(key_data: dict) -> str:
     return '—'
 
 
+def _is_generic_direction_sentence(cell: str) -> bool:
+    """判定进展单元格是否为无具体事件的泛化方向句。
+
+    典型形态：“围绕消费电子电池等业务方向推进产品迭代与应用拓展”。
+    这类句子是"peer 没有自身材料时"的降级写法，不构成真实业务进展；
+    即使模型给它贴了自有引用，也应视为不合格，用确定性提炼替换。
+    """
+    body = re.sub(r'\[\d+\]|\*\*', '', str(cell or '')).strip()
+    return bool(re.search(r'围绕.{0,24}等业务方向推进产品迭代与应用拓展', body)) or bool(
+        re.search(r'围绕.{0,24}等(?:领域|方向).{0,12}(?:推进|持续).{0,10}(?:迭代|拓展|升级)', body)
+    )
+
+
 def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS) -> str:
     """保留短而完整的来源化业务进展；超长或财务化单元格不作硬截断。"""
     raw = re.sub(r'\s+', ' ', str(cell or '')).strip()
@@ -3698,15 +3800,36 @@ def _compact_peer_progress(cell: str, max_chars: int = _PEER_PROGRESS_MAX_CHARS)
     return body + ''.join(f'[{ref}]' for ref in refs)
 
 
+def _is_passive_peer_mention(sentence: str, peer_name: str, markers: tuple) -> bool:
+    """判定句子是否把 peer 当作他人客户/供应商/名单成员被动提及（主语非该 peer）。
+
+    命中模式：句中出现"客户/供应商/包括/标的/建议关注"等归属性或罗列性标记，
+    且 peer 名出现在该标记之后 24 字内——典型如"公司手机电池板的主要客户为东莞新能德、
+    欣旺达、德赛电池等全球知名锂电池制造商"，此时句子主语是第三方，进展归属错误。
+    """
+    pos = sentence.find(peer_name)
+    if pos < 0:
+        return False
+    head = sentence[:pos]
+    for marker in markers:
+        idx = head.find(marker)
+        if idx >= 0 and (pos - idx) <= 24:
+            return True
+    return False
+
+
 def _derive_peer_progress(materials, peer_name: str, peer_code: str, refs: list, max_chars: int = 60, query_name: str = '') -> str:
     """从该 peer 自身材料确定性提取一条业务进展，避免模型漏填造成空白。"""
     ref_text = ''.join(f'[{int(ref)}]' for ref in refs if str(ref).isdigit())
     if not ref_text:
         return '—'
-    event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|Fab|fab')
+    event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|推进|优化|升级|换代|加快|深化|拓展|延伸|整合|迭代|签署|合作|放量|中标|加速|出货|Fab|fab')
     # 标题允许更宽松的匹配（含业绩/增长/ASP/超预期等摘要性词汇即可）
-    title_event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|业绩|超预期|指引|ASP|增长|拓展|落地|布局|营收|盈利')
+    title_event_terms = re.compile(r'发布|推出|投产|量产|导入|验证|订单|产能|扩产|新品|客户|项目|交付|工艺|收购|涨价|价格|建设|爬坡|业绩|超预期|指引|ASP|增长|拓展|落地|布局|营收|盈利|推进|优化|升级|换代|加快|深化|聚焦|延伸|整合|迭代|签署|合作|放量|中标|加速|出货')
     reject_terms = re.compile(r'风险|不及预期|股价|涨跌|估值|推荐历史|免责声明|市值|行业表现|行业排名|若.*承压|可能导致|管制|不确定|下行风险|风险包括')
+    # v1.2.49：peer 若被当作他人客户/供应商/名单成员被动提及（如"客户为…德赛电池等"），
+    # 该句主语并非该 peer，误入进展列会造成张冠李戴；此类句子一律排除。
+    passive_markers = ('客户', '供应商', '合作伙伴', '供货商', '参股公司', '投资方', '包括', '包含', '涵盖', '覆盖', '涉及', '标的', '建议关注', '推荐', '名单', '体系')
     candidates = []
     for item in materials or []:
         source = ' '.join(str(item.get(k) or '') for k in ('title', 'text', 'content', 'summary', 'abstract'))
@@ -3718,10 +3841,16 @@ def _derive_peer_progress(materials, peer_name: str, peer_code: str, refs: list,
         name_aliases = {n for n in (peer_name, peer_code, query_name, str(item.get('peer_query') or '')) if n}
         title_hit = any(a in title for a in name_aliases)
         # 标题优先级：去除"公司（代码）：" 前缀后取核心描述；按信息量评分排在最前
-        if title_hit and title_event_terms.search(title) and not reject_terms.search(title) and 10 <= len(title) <= 80:
+        # v1.2.49 修订：标题含 peer 名本身即是"该研报主体为该 peer"的强信号，
+        # 不再硬性要求标题含事件词（title_event_terms 从硬过滤降为评分加分），
+        # 让“第八代产品推进渠道分类运营并优化终端触达”这类真实事件标题也能入选；
+        # 误收由 reject_terms + 标题长度 + 含 peer 名 + 被动提及守卫共同兜住。
+        if title_hit and not reject_terms.search(title) and 10 <= len(title) <= 80:
             core = re.sub(r'^.*?[）)]\s*[：:]\s*', '', title).strip() or title
-            # 含 ASP/毛利率/产能等指标的标题评分更高，用 score 标记，最后排序
+            # 含 ASP/毛利率/产能等指标的标题评分更高；含事件词再额外加分，用 score 排序
             score = sum(1 for w in ('ASP', '产能', '毛利率', '指引', '超预期', '投产', '量产') if w in core)
+            if title_event_terms.search(core):
+                score += 1
             candidates.append(('title', score, core))
         for sentence in re.split(r'(?<=[。！？])\s*', re.sub(r'\s+', ' ', source)):
             sentence = sentence.strip()
@@ -3732,6 +3861,8 @@ def _derive_peer_progress(materials, peer_name: str, peer_code: str, refs: list,
             if not event_terms.search(sentence):
                 continue
             if not (peer_name in sentence or peer_code in sentence or any(k in sentence for k in ('公司', '产能', '产品', '订单', '客户', '工艺', '平台', '晶圆'))):
+                continue
+            if _is_passive_peer_mention(sentence, peer_name, passive_markers):
                 continue
             candidates.append(('body', 0, sentence))
     if not candidates:
@@ -3842,16 +3973,32 @@ def _validate_peer_table(table_md: str, name: str, ticker: str, allowed_peers: l
         found.add(code)
         required_refs = set(progress_refs.get(code) or [])
         actual_refs = {int(n) for n in re.findall(r'\[(\d+)\]', progress_cell)}
-        if required_refs and actual_refs:
-            cleaned[5] = _keep_owned_progress_refs(progress_cell, required_refs)
+        query_name = str(next((p.get('query') for p in allowed_peers if str(p.get('code')) == code), '') or '')
+        if required_refs:
+            # 该 peer 有自身定向材料：信任 LLM 优先 + 判定式兜底。
+            # v1.2.49 初版"有材料一律先 _derive_peer_progress 并覆盖 LLM"属于过度兜底——
+            # LLM 若已写出真实业务事件且带自有合法引用，不应被规则词表提炼覆盖。
+            # 现改为：LLM 单元格含自有合法引用且正文是真实事件句（非泛化方向句）→ 直接保留；
+            # 仅当 LLM 漏写/错引用/写泛化方向句时才用 _derive_peer_progress 确定性提炼兜底。
+            kept = _keep_owned_progress_refs(progress_cell, required_refs) if actual_refs else '—'
+            if kept != '—' and not _is_generic_direction_sentence(kept):
+                cleaned[5] = kept
+            else:
+                derived = _derive_peer_progress(
+                    peer_materials or [],
+                    allowed[code], code, sorted(required_refs),
+                    query_name=query_name,
+                )
+                cleaned[5] = derived if derived != '—' else kept
         elif str(progress_cell or '').strip() not in {'', '—', '-'}:
-            # 无自身材料时保留 LLM 基于本行业务画像写出的“业务方向”，不得伪装成具体事件。
+            # 无自身材料且 LLM 有文本 → 只允许无数字/无具体事件的克制业务方向句
             cleaned[5] = _compact_peer_profile_progress(progress_cell)
         else:
+            # 无自身材料且 LLM 填空 → 尝试从全局 peer_materials 提取
             cleaned[5] = _derive_peer_progress(
                 peer_materials or [],
                 allowed[code], code, sorted(required_refs),
-                query_name=str(next((p.get('query') for p in allowed_peers if str(p.get('code')) == code), '') or ''),
+                query_name=query_name,
             )
         if cleaned[5] == '—':
             cleaned[5] = _derive_peer_profile_progress(cleaned)
@@ -3895,7 +4042,7 @@ def gen_peer_table(client, key_data: dict) -> str:
     peer_lines = []
     for peer in peers:
         code, peer_name = str(peer.get('code') or ''), str(peer.get('current_name') or '')
-        evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填”—“。'
+        evidence = '\n'.join(materials_by_code.get(code, [])[:2]) or '无可核验进展材料：相关业务进展列必须填"—"。'
         profile = _peer_profile_hint(peer)
         hint = f'（业务提示：{profile}）' if profile else ''
         peer_lines.append(f'【{peer_name}（{code}）{hint}】\n{evidence}')
@@ -3925,8 +4072,9 @@ def gen_peer_table(client, key_data: dict) -> str:
    - 禁止编造精确财务数字、排名或具体客户名单；
    - 确实没有任何依据时填”—“，不要对有业务材料的公司整行清空为”—“。
 3. “相关业务进展”是唯一需要引用的列。基准行只可使用标的定向材料，peer 行只可使用自身定向材料。每格仅一句完整业务进展，正文控制在20–60个汉字、引用置末尾；不得用省略号或截断句。优先新品、产品结构、渠道、价格、产能、订单、客户导入、技术、组织改革或市场份额。
-4. 有自身定向材料时，相关业务进展以业务事件为主并在句末引用，财务数据只能作短背景；不得以“事项：/事件：”开头。若该 peer 没有任何自身材料，可基于本行已写明的可比业务、商业模式和核心产品，写一句不带数字、日期、订单、客户或“发布/获得”等具体事件的克制“业务方向”；此类方向句不需要引用，且不得伪装成最新进展。
-5. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
+4. ⚠️ **引用归属铁律**：每个 peer 的“相关业务进展”只能引用其自身材料块中以 `[{{编号}}]` 标注的编号；引用其它 peer、标的研报或结构化接口的编号一律视为违规，该格会被程序强制用该 peer 自身材料重写。优先从材料标题提炼一句具体业务事件（如“AI端侧电池+固态战略快速推进”），不要把他人研报中的客户名单、行业列表或标的公司内容写进 peer 进展。
+5. 有自身定向材料时，相关业务进展以业务事件为主并在句末引用，财务数据只能作短背景；不得以“事项：/事件：”开头。若该 peer 确实没有任何自身材料，可基于本行已写明的可比业务、商业模式和核心产品，写一句不带数字、日期、订单、客户或“发布/获得”等具体事件的克制“业务方向”；此类方向句不需要引用，且不得伪装成最新进展。
+6. 不要使用目标公司研报、常识或推测为可比公司补写业务进展；不要把多篇观点、正反判断或整段研报塞进一个单元格。
 """
     result = re.sub(r'\[research\]', '', call_claude(client, prompt, max_tokens=1500) or '')
     return _validate_peer_table(result, name, ticker, peers, progress_refs, target_progress_refs, target_progress_fallback, key_data.get('_raw_data', {}).get('peer_materials') or [])
@@ -4677,8 +4825,10 @@ def _dedup_section_titles(md_text: str) -> str:
         stripped = line.strip()
         if re.match(r'^##\s+', stripped):
             norm = _normalize(stripped)
-            if norm in seen_titles and seen_titles[norm] == i - 2:
-                # 前一个 H2 已存在相同标准化标题且距离很近 → 删除这个重复
+            # v1.2.49：H2 全局去重——一页纸的 10 个 H2 标准化后各不相同，
+            # 任何重复都来自 LLM 章节内容偶发嵌入的同类标题（如 §7 自带的
+            # "## 7 公司调研大纲"），直接删除后续重复，避免自检"重复H2"阻断整篇。
+            if norm in seen_titles:
                 continue
             seen_titles[norm] = i
         elif re.match(r'^###\s+', stripped):
@@ -5408,7 +5558,13 @@ def _strip_bold_from_markdown_headings(md_text: str) -> str:
 
 
 def _normalize_section1_recent_format(md_text: str) -> str:
-    """§1 recent updates should not bold the whole bullet."""
+    """§1 近况 bullet 只保留冒号前小标题加粗，正文不加粗。
+
+    v1.2.49：原逻辑整体去除 bullet 加粗，导致近况每条的「事件+判断」小标题丢失强调。
+    现改为规范化——无论模型输出为整行加粗、无加粗还是已加粗小标题，统一还原为
+    `• **标题**：正文`：去掉全部 `**` 后按第一个冒号切分，冒号前小标题重新加粗。
+    无冒号的行保持纯文本（不加粗），避免把整行判断句整体加粗。
+    """
     marker = "## 1 公司近况跟踪"
     start = md_text.find(marker)
     if start < 0:
@@ -5419,10 +5575,49 @@ def _normalize_section1_recent_format(md_text: str) -> str:
     block = md_text[start:end]
     fixed_lines = []
     for line in block.splitlines():
-        if re.match(r'^\s*[•·●►-]\s+', line):
-            line = re.sub(r'\*\*([^*\n]+?)\*\*', r'\1', line)
-        fixed_lines.append(line)
+        m = re.match(r'^(\s*[•·●►-]\s+)(.*)$', line)
+        if not m:
+            fixed_lines.append(line)
+            continue
+        prefix, body = m.group(1), m.group(2)
+        body = re.sub(r'\*\*', '', body).strip()
+        colon = body.find('：')
+        if colon < 0:
+            colon = body.find(':')
+        if 0 < colon < len(body) - 1:
+            title, rest = body[:colon].strip(), body[colon:]
+            fixed_lines.append(f"{prefix}**{title}**{rest}")
+        else:
+            fixed_lines.append(f"{prefix}{body}")
     return md_text[:start] + "\n".join(fixed_lines) + md_text[end:]
+
+
+def _normalize_section2_bullets(md_text: str) -> str:
+    """§2 核心投资逻辑中，把失去 bullet 标记的裸段落补成 • 列表项。
+
+    v1.2.49：模型按「变化→预期差→验证点」展开时偶发把某条要点写成无标记裸段落
+    （如“全固态电池2027年有望实现小批量生产…[8]。”）。2.1/2.2 下不应有游离正文，
+    将长度足够、以中文/数字开头且非标题/表格/图片/已有 bullet 的段落统一补上 `• `，
+    保证每条要点以列表项呈现；不做加粗（标题加粗仅由 §1 规范化负责）。
+    """
+    marker = "## 2 核心投资逻辑"
+    start = md_text.find(marker)
+    if start < 0:
+        return md_text
+    end = md_text.find("\n## ", start + len(marker))
+    if end < 0:
+        end = len(md_text)
+    block = md_text[start:end]
+    fixed = []
+    for line in block.splitlines():
+        s = line.strip()
+        if (len(s) >= 15
+                and not s.startswith(('#', '|', '![', '`', '•', '-', '*', '**'))
+                and re.match(r'^[一-鿿\d]', s)):
+            fixed.append('• ' + s)
+        else:
+            fixed.append(line)
+    return md_text[:start] + "\n".join(fixed) + md_text[end:]
 
 
 def _dedent_body_paragraphs(md_text: str) -> str:
@@ -5469,7 +5664,7 @@ def _fix_truncated_chinese(md_text: str) -> str:
         """中文正常结尾：标点、英文、数字、右括号、空白"""
         if not end_char:
             return True
-        if end_char in '。！？；）」】…\'"”':
+        if end_char in '。！？；）」】…\'""':
             return True
         if 'a' <= end_char.lower() <= 'z' or '0' <= end_char <= '9':
             return True
@@ -5549,6 +5744,7 @@ def _normalize_final_markdown_format(md_text: str) -> str:
         return md_text
     md_text = _strip_bold_from_markdown_headings(md_text)
     md_text = _normalize_section1_recent_format(md_text)
+    md_text = _normalize_section2_bullets(md_text)
     # v1.2.9: 清理 LLM 输出的 "第X节：..." 占位文本（prompt 要求不输出但 LLM 仍可能泄漏）
     # 覆盖两种变体：纯文本 "第1节：公司近况跟踪"/"第1节：公司近况跟踪…" 和加粗 "**第1节：公司近况跟踪**"
     md_text = re.sub(r'(?m)^\*{0,2}第\d节：[一-龥A-Za-z]+…?\*{0,2}\s*$', '', md_text)
@@ -5840,6 +6036,17 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
             item = monitoring_events.get(str(entry.get("source_index")), {})
             source = " ".join(str(item.get(k, "") or "") for k in ("date", "title", "text"))
             api_name = "stockSentimentNews"
+        elif source_type == "公告":
+            ann_index = entry.get("source_index")
+            announcements = raw.get("announcements") or []
+            item = announcements[ann_index] if isinstance(ann_index, int) and 0 <= ann_index < len(announcements) else {}
+            detail = item.get("detail") if isinstance(item, dict) else {}
+            source = " ".join((
+                str(item.get("title") or item.get("annTitle") or "") if isinstance(item, dict) else "",
+                json.dumps(detail, ensure_ascii=False) if isinstance(detail, (dict, list)) else str(detail or ""),
+            ))
+            api_name = "announcement/getAnnouncementDetail"
+
         elif source_type == "同业材料":
             material_index = entry.get("source_index")
             materials = raw.get("peer_materials") or []
@@ -5864,7 +6071,7 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
                 candidates = [x for x in original_entries if x.get("type") == "结构化数据" and x.get("api_name") == api_name]
             else:
                 id_match = re.search(r'ID：([^|\s]+)', rendered)
-                source_type = "同业材料" if "Materials V2" in rendered else ("研报" if "Datayes研报" in rendered else ("纪要" if "Datayes纪要" in rendered else ("调研" if "Datayes调研" in rendered else "")))
+                source_type = "公告" if "Datayes公告" in rendered else ("个股资讯" if "Datayes个股资讯" in rendered else ("同业材料" if "Materials V2" in rendered else ("研报" if "Datayes研报" in rendered else ("纪要" if "Datayes纪要" in rendered else ("调研" if "Datayes调研" in rendered else "")))))
                 if id_match and source_type:
                     candidates = [x for x in original_entries if x.get("type") == source_type and str(x.get("id", "")) == id_match.group(1)]
             if len(candidates) == 1:
@@ -5897,7 +6104,7 @@ def _source_has_number(source: str, value: float) -> bool:
 
 
 def _citation_claim_groups(line: str) -> list:
-    """把一行拆为“紧邻事实片段 + 对应引用组”，避免多来源整句互相误判。"""
+    """把一行拆为"紧邻事实片段 + 对应引用组"，避免多来源整句互相误判。"""
     groups = []
     matches = list(re.finditer(r'\[(\d+)\]', line))
     pos = 0
@@ -6791,8 +6998,8 @@ def main():
     elif "s123" in sections:
         sections["s1"] = sections.pop("s123")
 
-    # §1 近况监控块由组装层确定性渲染，与 LLM 的 s1 正文解耦（杜绝重复 H2）
-    sections["s1_monitoring"] = _render_s1_monitoring_block(key_data.get("monitoring_events", []), ref_map)
+    # v1.2.47: 资讯块不再由组装层单独渲染；LLM §1 已把资讯整合进正文，s1_monitoring 置空。
+    sections["s1_monitoring"] = ""
 
     # s4 合并生成结果 unpack → s4_profit_model / s4_survey_qa
     if isinstance(sections.get("s4"), dict):

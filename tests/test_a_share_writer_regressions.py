@@ -77,7 +77,9 @@ class AShareWriterRegressionTests(unittest.TestCase):
             {"risk_title": "需求不及预期", "text": "风险提示：需求不及预期", "ref": 1},
             {"risk_title": "价格竞争加剧", "text": "风险提示：价格竞争加剧", "ref": 2},
             {"risk_title": "产能投放延期", "text": "风险提示：产能投放延期", "ref": 3},
-            {"risk_title": "因此", "text": "因此，需要持续跟踪", "ref": 4},
+            {"risk_title": "库存减值风险", "text": "风险提示：库存减值风险", "ref": 4},
+            {"risk_title": "海外贸易风险", "text": "风险提示：海外贸易风险", "ref": 5},
+            {"risk_title": "因此", "text": "因此，需要持续跟踪", "ref": 6},
         ]
         try:
             result = writer._build_a_share_risk_fallback({"name": "测试公司"})
@@ -88,7 +90,7 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertNotIn("**因此**", result)
         self.assertIn("若终端需求或订单兑现弱于预期", result)
         self.assertIn("重点跟踪", result)
-        self.assertEqual(result.count("**"), 6)
+        self.assertEqual(result.count("**"), 10)
     def test_risk_fallback_deduplicates_same_risk_theme(self):
         original = writer._collect_a_share_risk_evidence
         writer._collect_a_share_risk_evidence = lambda *_args, **_kwargs: [
@@ -96,6 +98,8 @@ class AShareWriterRegressionTests(unittest.TestCase):
             {"risk_title": "销量不及预期", "text": "风险提示：销量不及预期", "ref": 2},
             {"risk_title": "价格竞争加剧", "text": "风险提示：价格竞争加剧", "ref": 3},
             {"risk_title": "原材料价格波动", "text": "风险提示：原材料价格波动", "ref": 4},
+            {"risk_title": "库存减值风险", "text": "风险提示：库存减值风险", "ref": 5},
+            {"risk_title": "海外贸易风险", "text": "风险提示：海外贸易风险", "ref": 6},
         ]
         try:
             result = writer._build_a_share_risk_fallback({"name": "测试公司"})
@@ -103,32 +107,29 @@ class AShareWriterRegressionTests(unittest.TestCase):
             writer._collect_a_share_risk_evidence = original
         self.assertEqual(result.count("重点跟踪订单、出货和渠道库存"), 1)
         self.assertTrue(writer._validate_a_share_risk_body(result)[0])
-    def test_risk_gate_requires_three_source_backed_company_risks(self):
+    def test_risk_gate_requires_five_source_backed_company_risks(self):
         body = (
             "• **核心产品需求放缓风险**：若客户订单节奏放缓，收入兑现与产能利用率可能承压；重点跟踪订单、出货和渠道库存。[1]\n"
             "• **行业价格竞争风险**：若行业供给释放或价格竞争加剧，产品价格与盈利空间可能承压；重点跟踪产品价格、毛利率和市场份额。[2]\n"
             "• **原材料成本波动风险**：若核心原材料价格波动超预期，成本传导滞后可能压缩盈利能力；重点跟踪原材料价格、采购成本和毛利率。[3]"
         )
         valid, issues = writer._validate_a_share_risk_body(body)
-        self.assertTrue(valid, issues)
+        self.assertFalse(valid)
+        self.assertIn("risk_bullet_count:3", issues)
     def test_risk_json_requires_trigger_impact_and_monitor(self):
-        payload = {"risks": [{
-            "title": "库存减值风险", "trigger": "下游去化弱于备货节奏", "impact": "库存周转承压并可能增加减值压力",
-            "monitor": "库存、周转天数和资产减值损失", "source_refs": [3],
-        }, {
-            "title": "价格竞争加剧", "trigger": "行业供给释放或价格竞争加剧", "impact": "产品价格与盈利空间可能承压",
-            "monitor": "重点跟踪产品价格、毛利率和市场份额", "source_refs": [4],
-        }, {
-            "title": "原材料成本波动", "trigger": "核心原材料价格波动超预期", "impact": "成本传导滞后可能压缩盈利能力",
-            "monitor": "原材料价格、采购成本和毛利率", "source_refs": [5],
-        }]}
-        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 3}, "b": {"n": 4}, "c": {"n": 5}})
+        payload = {"risks": [
+            {"title": "库存减值风险", "trigger": "下游去化弱于备货节奏", "impact": "库存周转承压并可能增加减值压力", "monitor": "库存、周转天数和资产减值损失", "source_refs": [3]},
+            {"title": "价格竞争加剧", "trigger": "行业供给释放或价格竞争加剧", "impact": "产品价格与盈利空间可能承压", "monitor": "重点跟踪产品价格、毛利率和市场份额", "source_refs": [4]},
+            {"title": "原材料成本波动", "trigger": "核心原材料价格波动超预期", "impact": "成本传导滞后可能压缩盈利能力", "monitor": "原材料价格、采购成本和毛利率", "source_refs": [5]},
+            {"title": "客户订单不及预期", "trigger": "主要客户订单兑现慢于预期", "impact": "出货节奏放缓可能拖累收入兑现", "monitor": "客户订单、出货和渠道库存", "source_refs": [6]},
+            {"title": "海外贸易风险", "trigger": "海外政策或贸易环境出现变化", "impact": "海外业务收入与盈利结构可能受扰动", "monitor": "海外订单、区域收入和政策进展", "source_refs": [7]},
+        ]}
+        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 3}, "b": {"n": 4}, "c": {"n": 5}, "d": {"n": 6}, "e": {"n": 7}})
         self.assertEqual(issues, [])
         self.assertIn("重点跟踪库存、周转天数和资产减值损失", rendered)
         self.assertIn("重点跟踪产品价格、毛利率和市场份额", rendered)
         self.assertNotIn("重点跟踪重点跟踪", rendered)
         self.assertTrue(writer._validate_a_share_risk_body(rendered)[0])
-
     def test_section_nine_rejects_heading_only_fragment(self):
         self.assertEqual(writer._normalize_section9_llm_fragment("## 9 一致预期、盈利预测与估值"), "")
         fragment = "## 9 一致预期、盈利预测与估值\n\n### 9.3 估值分析\n\nPB显著偏离行业均值[1]。"
@@ -595,6 +596,95 @@ class AShareWriterRegressionTests(unittest.TestCase):
         )
         self.assertIn("相关业务进展", result)
         self.assertIn("渠道改革推进并优化终端触达[3]", result)
+    def test_normalize_section1_bold_only_title_v1249(self):
+        md = """## 1 公司近况跟踪
+
+• **注销式回购叠加中期分红，股东回报预期强化：公司同步公告回购计划[2][3]。
+• 头部客户自研扰动有限，份额担忧有望缓释：摩根士丹利指出切换成本高[4]。
+• 产能利用率94.9%，全年有望满产
+
+**机构观点与估值**：主流机构维持买入评级[2]。
+**市场一致预期**：2026E营收6107亿元[8]。
+"""
+        result = writer._normalize_section1_recent_format(md)
+        # 整行加粗 → 仅标题加粗
+        self.assertIn("• **注销式回购叠加中期分红，股东回报预期强化**：公司同步公告回购计划[2][3]。", result)
+        # 未加粗 → 标题补加粗
+        self.assertIn("• **头部客户自研扰动有限，份额担忧有望缓释**：摩根士丹利指出切换成本高[4]。", result)
+        # 无冒号 bullet 保持纯文本
+        self.assertIn("• 产能利用率94.9%，全年有望满产", result)
+        # 非 bullet 行（机构观点/一致预期）的加粗保留
+        self.assertIn("**机构观点与估值**：", result)
+        self.assertIn("**市场一致预期**：", result)
+    def test_normalize_section1_numeric_title_bold_v1249(self):
+        # 标题带数字锚点（金额/规模/百分比）同样正确加粗
+        md = "## 1 公司近况跟踪\n\n• 200-400亿注销式回购落地：公司公告回购计划[2]。\n\n**机构观点与估值**：维持买入[2]。\n"
+        result = writer._normalize_section1_recent_format(md)
+        self.assertIn("• **200-400亿注销式回购落地**：公司公告回购计划[2]。", result)
+    def test_is_passive_peer_mention_v1249(self):
+        markers = ('客户', '供应商', '合作伙伴', '包括', '标的', '建议关注')
+        self.assertTrue(writer._is_passive_peer_mention(
+            "公司手机电池板的主要客户为东莞新能德、欣旺达、德赛电池等全球知名锂电池制造商",
+            "德赛电池", markers,
+        ))
+        self.assertTrue(writer._is_passive_peer_mention(
+            "相关标的包括豪鹏科技、欣旺达等消费电池厂商", "豪鹏科技", markers,
+        ))
+        # peer 作为主语叙述自身进展 → 不判定为被动提及
+        self.assertFalse(writer._is_passive_peer_mention(
+            "豪鹏科技推进AI端侧电池新品导入并完成量产验证", "豪鹏科技", markers,
+        ))
+        self.assertFalse(writer._is_passive_peer_mention(
+            "国轩高科全球化布局再上新台阶", "国轩高科", markers,
+        ))
+    def test_validate_peer_table_forces_derive_when_llm_wrong_ref_or_generic_v1249(self):
+        peers = [{"code": "000858", "current_name": "五粮液", "query": "五粮液"}, {"code": "000568", "current_name": "泸州老窖"}]
+        materials = [{
+            "peer_name": "五粮液", "peer_code": "000858",
+            "title": "五粮液（000858）：第八代产品推进渠道分类运营并优化终端触达",
+            "text": "五粮液第八代产品持续推进渠道分类运营并优化终端触达。",
+        }]
+        # LLM 写了错误引用（[3] 是标的研报编号）且正文是泛化方向句
+        wrong_ref = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| —（基准） | 贵州茅台（600519） | A股 | 白酒 | 龙头 | 渠道改革推进并优化终端触达[3] | 品牌驱动 | 高端消费 | 茅台酒 |
+| 直接竞争 | 五粮液（000858） | A股 | 白酒 | 龙头 | 围绕白酒等业务方向推进产品迭代与应用拓展[3] | 品牌驱动 | 商务消费 | 五粮液酒 |
+| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | 品牌厂商 | — | 品牌驱动 | 商务消费 | 国窖1573 |"""
+        result = writer._validate_peer_table(
+            wrong_ref, "贵州茅台", "600519", peers, {"000858": [4]}, {3}, "渠道改革推进并优化终端触达[3]", materials
+        )
+        self.assertIn("相关业务进展", result)
+        # 有自身材料 → 强制提炼真实事件，泛化方向句不得保留在五粮液行
+        wulang_row = next(line for line in result.splitlines() if "五粮液（000858）" in line)
+        self.assertIn("第八代产品推进渠道分类运营并优化终端触达[4]", wulang_row)
+        self.assertNotIn("围绕白酒等业务方向", wulang_row)
+        # LLM 写了带自有引用（[4]）的泛化方向句 → 仍被强制替换为真实事件
+        owned_generic = wrong_ref.replace("围绕白酒等业务方向推进产品迭代与应用拓展[3]", "围绕白酒等业务方向推进产品迭代与应用拓展[4]")
+        result2 = writer._validate_peer_table(
+            owned_generic, "贵州茅台", "600519", peers, {"000858": [4]}, {3}, "渠道改革推进并优化终端触达[3]", materials
+        )
+        wulang_row2 = next(line for line in result2.splitlines() if "五粮液（000858）" in line)
+        self.assertIn("第八代产品推进渠道分类运营并优化终端触达[4]", wulang_row2)
+        self.assertNotIn("围绕白酒等业务方向", wulang_row2)
+    def test_validate_peer_table_keeps_high_quality_llm_progress_v1249(self):
+        """LLM 写出带自有引用的真实业务事件 → 信任 LLM，不被确定性提炼覆盖。"""
+        peers = [{"code": "000858", "current_name": "五粮液", "query": "五粮液"}, {"code": "000568", "current_name": "泸州老窖"}]
+        materials = [{
+            "peer_name": "五粮液", "peer_code": "000858",
+            "title": "五粮液（000858）：第八代产品推进渠道分类运营并优化终端触达",
+            "text": "五粮液第八代产品持续推进渠道分类运营并优化终端触达。",
+        }]
+        good = """| 竞争关系 | 公司（代码） | 市场 | 可比业务 | 行业地位 | 相关业务进展 | 商业模式 | 目标客户群体 | 核心产品 |
+|:---|:---|:---|:---|:---|:---|:---|:---|:---|
+| —（基准） | 贵州茅台（600519） | A股 | 白酒 | 龙头 | 渠道改革推进并优化终端触达[3] | 品牌驱动 | 高端消费 | 茅台酒 |
+| 直接竞争 | 五粮液（000858） | A股 | 白酒 | 龙头 | 五粮液推进第八代产品终端分类运营并优化渠道触达[4] | 品牌驱动 | 商务消费 | 五粮液酒 |
+| 直接竞争 | 泸州老窖（000568） | A股 | 白酒 | 品牌厂商 | — | 品牌驱动 | 商务消费 | 国窖1573 |"""
+        result = writer._validate_peer_table(
+            good, "贵州茅台", "600519", peers, {"000858": [4]}, {3}, "渠道改革推进并优化终端触达[3]", materials
+        )
+        wulang_row = next(line for line in result.splitlines() if "五粮液（000858）" in line)
+        self.assertIn("五粮液推进第八代产品终端分类运营并优化渠道触达[4]", wulang_row)
+        self.assertNotIn("第八代产品推进渠道分类运营并优化终端触达[4]", wulang_row)
     def test_scenario_cells_allow_year_and_product_generation_numbers(self):
         section = """### 9.4 情景推演
 **核心变量**
@@ -639,11 +729,12 @@ class AShareWriterRegressionTests(unittest.TestCase):
             {"title": "需求不及预期", "trigger": "终端订单兑现弱于预期", "impact": "出货节奏放缓可能拖累收入", "monitor": "订单、出货和渠道库存", "source_refs": [1]},
             {"title": "销量下滑风险", "trigger": "终端销量低于预期", "impact": "产能利用率和收入承压", "monitor": "销量、产能利用率和库存", "source_refs": [2]},
             {"title": "价格竞争加剧", "trigger": "行业供给释放加快", "impact": "产品价格与盈利空间承压", "monitor": "产品价格、毛利率和市场份额", "source_refs": [3]},
+            {"title": "库存减值风险", "trigger": "渠道去化慢于预期", "impact": "库存周转承压并可能增加减值", "monitor": "库存、周转天数和减值损失", "source_refs": [4]},
+            {"title": "海外贸易风险", "trigger": "海外贸易政策出现变化", "impact": "海外业务收入与盈利结构可能受扰动", "monitor": "海外订单、区域收入和政策进展", "source_refs": [5]},
         ]}
-        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 1}, "b": {"n": 2}, "c": {"n": 3}})
+        rendered, issues = writer._validate_render_section_10(payload, {"a": {"n": 1}, "b": {"n": 2}, "c": {"n": 3}, "d": {"n": 4}, "e": {"n": 5}})
         self.assertEqual(rendered, "")
         self.assertTrue(any("duplicate_theme" in issue for issue in issues))
-
     def test_risk_profiles_use_concrete_company_indicators(self):
         profile = writer._risk_tracking_profile("产能爬坡与折旧压力")
         self.assertIsNotNone(profile)
@@ -655,7 +746,7 @@ class AShareWriterRegressionTests(unittest.TestCase):
         explanation = "若新增产能投放节奏慢于规划，固定成本摊薄和客户导入可能延后，进而影响收入兑现与毛利率改善；重点跟踪新增产能投放、产能利用率、客户认证进度和毛利率指引。"
         line = f"• **产能投放不及预期**：{explanation}[1]"
         self.assertLessEqual(len(__import__('re').sub(r'\[\d+\]|\*\*|\s+', '', line)), 180)
-        self.assertTrue(writer._validate_a_share_risk_body("\n".join([line, line.replace('产能投放不及预期', '订单兑现不及预期'), line.replace('产能投放不及预期', '成本传导不及预期')]))[0])
+        self.assertTrue(writer._validate_a_share_risk_body("\n".join([line, line.replace('产能投放不及预期', '订单兑现不及预期'), line.replace('产能投放不及预期', '成本传导不及预期'), line.replace('产能投放不及预期', '库存减值风险'), line.replace('产能投放不及预期', '海外贸易风险')]))[0])
 
     def test_target_progress_materials_excludes_multi_company_coverage_report(self):
         key_data = {
@@ -731,7 +822,7 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertTrue(rendered.startswith("• 2026-09-08，头部客户宣布自研电池"))
         self.assertIn(f"[{ref_no}]", rendered)
 
-    def test_fetch_monitoring_events_uses_bounded_recent_window(self):
+    def test_fetch_sentiment_news_uses_bounded_recent_window(self):
         original = fetch.call
         captured = {}
         def fake_call(method, url, token, params=None, body=None, timeout=None):
@@ -739,8 +830,8 @@ class AShareWriterRegressionTests(unittest.TestCase):
             return {"code": 1, "data": []}, 200, None
         fetch.call = fake_call
         try:
-            result, err = fetch.fetch_monitoring_events(
-                {"Stock_Monitoring_Events": {"url": "https://gw.datayes.com/aladdin_proxy/kgraph_aigc_api/getTickerHot", "method": "GET"}},
+            result, err = fetch.fetch_sentiment_news(
+                {"stockSentimentNews": {"url": "https://gw.datayes.com/stockSentimentNews", "method": "GET"}},
                 "300750", "token",
             )
         finally:
@@ -748,10 +839,10 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIsNone(err)
         self.assertEqual(result["data"], [])
         self.assertEqual(captured["params"]["ticker"], "300750")
-        self.assertEqual(len(captured["params"]["startDate"]), 8)
-        self.assertEqual(len(captured["params"]["endDate"]), 8)
+        self.assertEqual(len(captured["params"]["startDate"]), 10)
+        self.assertEqual(len(captured["params"]["endDate"]), 10)
         self.assertEqual(captured["timeout"], 12)
-        self.assertIn("Stock_Monitoring_Events", fetch.ALL_API_NAMES)
+        self.assertIn("stockSentimentNews", fetch.ALL_API_NAMES)
     def test_monitoring_event_source_is_available_to_provenance_validator(self):
         raw = {"monitoring_events": {"data": [{
             "eventDate": "20260908", "id": "evt-1", "title": "客户自研方案引发市场关注", "content": "客户宣布采用自研方案。"
@@ -765,5 +856,62 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("客户宣布采用自研方案", source[ref_no]["text"])
     def test_render_fact_markers_removes_bare_marker(self):
         self.assertEqual(writer._render_fact_markers("构建高壁垒生态{{FACT:}}[2]", {}), "构建高壁垒生态[2]")
+    def test_normalize_section2_bullets_restores_bare_paragraph_v1249(self):
+        md = """## 2 核心投资逻辑
+
+### 2.1 短期逻辑（3-12个月催化剂）
+
+• **回购落地，股东回报支撑估值下沿**：2026年7月公告200-400亿元回购计划[8]。
+
+全固态电池2027年有望实现小批量生产，技术处于行业领先水平[6]。
+
+### 2.2 长期逻辑（核心竞争力）
+
+• **储能全球第一，打开第二增长曲线**：2026H1储能收入532.61亿元、同比+87.54%[7]。
+
+*数据来源：研报及公告*
+"""
+        result = writer._normalize_section2_bullets(md)
+        self.assertIn("• 全固态电池2027年有望实现小批量生产，技术处于行业领先水平[6]。", result)
+        # 已有 bullet、斜体来源行、标题行保持不变
+        self.assertIn("• **回购落地，股东回报支撑估值下沿**：", result)
+        self.assertIn("*数据来源：研报及公告*", result)
+        self.assertIn("### 2.1 短期逻辑", result)
+    def test_truncate_risk_title_breaks_at_punctuation_v1249(self):
+        self.assertEqual(writer._truncate_risk_title("存货1308亿元同比+81%的备货去化风险"), "存货1308亿元同比+81%的备货去化风险")
+        long_title = "存货1308亿元同比+81%的备货去化风险，以及海外高毛利业务的政策与汇率敞口叠加"
+        cut = writer._truncate_risk_title(long_title)
+        self.assertLessEqual(len(cut), 24)
+        self.assertIn("存货1308亿元", cut)
+        self.assertNotIn("，", cut[-1:])
+    def test_dedup_section_titles_removes_far_duplicate_h2_v1249(self):
+        md = """## 1 公司近况跟踪
+
+正文
+
+## 2 核心投资逻辑
+
+正文
+
+## 3 催化事件时间表
+
+正文
+
+## 4 公司业务拆分
+
+正文
+
+## 7 公司调研大纲
+
+**议题1：渠道库存**
+背景：库存待跟踪[1]
+
+## 7 公司调研大纲
+
+**议题1：渠道库存**
+背景：库存待跟踪[1]
+"""
+        result = writer._dedup_section_titles(md)
+        self.assertEqual(result.count("## 7 公司调研大纲"), 1)
 if __name__ == "__main__":
     unittest.main()
