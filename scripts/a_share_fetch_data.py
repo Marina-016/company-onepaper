@@ -116,7 +116,7 @@ ALL_API_NAMES = [
     "research_sec_coredata", "research_sec_foredata",
     "diagnosis_pe_valuation", "diagnosis_valuation_rank",
     "Org_survey", "institution_research_detail",
-    "Stock_Monitoring_Events",
+    "stockSentimentNews",
     "Ashare_tenHolders", "Ashare_orgHoldingdetail",
     "Executive_information", "Ashare_info", "Ashare_bonus",
     "getMaterialsV2",
@@ -627,63 +627,63 @@ _MONITOR_TEXT_KEYS = ("title", "eventTitle", "eventName", "name", "summary", "co
                      "desc", "description", "reason", "eventReason")
 
 
-def _normalize_monitoring_payload(rj):
-    """把 Stock_Monitoring_Events 原始响应归一化为稳定内部 schema（date/title/text/type/id）。
-
-    schema 在数据入口收敛：writer 端只消费这里的字段，不再猜测上游字段名，
-    避免日期解析遗漏（如 publish_date）导致时效性失效或低价值信号稀释 §1。
-    """
-    payload = rj.get("data") if isinstance(rj, dict) else None
-    if not isinstance(payload, list):
-        return rj
-    norm = []
-    for index, item in enumerate(payload):
+def _normalize_sentiment_news_payload(rj, ticker):
+    """Normalize stockSentimentNews hits for the existing section-1 event pipeline."""
+    payload = rj.get("data") if isinstance(rj, dict) else {}
+    hits = payload.get("hits") if isinstance(payload, dict) else []
+    if not isinstance(hits, list):
+        hits = []
+    normalized = []
+    tz = datetime.timezone(datetime.timedelta(hours=8))
+    for index, item in enumerate(hits):
         if not isinstance(item, dict):
             continue
-        raw_date = str(next((item.get(k) for k in _MONITOR_DATE_KEYS if item.get(k)), "") or "")[:10]
-        if len(raw_date) == 8 and raw_date.isdigit():
-            raw_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
-        title = str(next((item.get(k) for k in _MONITOR_TEXT_KEYS if item.get(k)), "") or "").strip()
-        text = re.sub(r"\s+", " ", " ".join(str(item.get(k) or "") for k in _MONITOR_TEXT_KEYS)).strip()
-        if not title and not text:
+        raw_time = item.get("effectiveTime") or item.get("publishTimeStm") or item.get("insertTime")
+        timestamp = int(raw_time) if isinstance(raw_time, (int, float)) else 0
+        if timestamp:
+            event_time = datetime.datetime.fromtimestamp(timestamp / 1000, tz=tz).strftime("%Y-%m-%d %H:%M")
+            date = event_time[:10]
+        else:
+            event_time = str(raw_time or "")[:16]
+            date = event_time[:10]
+        title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+        summary = re.sub(r"\s+", " ", str(item.get("summary") or "")).strip()
+        if not title and not summary:
             continue
-        norm.append({
-            "date": raw_date,
-            "title": title[:500] or text[:500],
-            "text": text[:3000],
-            "type": str(item.get("type") or ""),
-            "id": str(item.get("id") or item.get("eventId") or item.get("newsId") or index),
+        sentiment_row = next((x for x in (item.get("newsSentiment") or []) if str(x.get("ticker") or "") == str(ticker)), {})
+        sentiment = sentiment_row.get("sentiment") if isinstance(sentiment_row, dict) else None
+        source = str(item.get("sourceName") or item.get("siteName") or "通联数据").strip()
+        type_ = "负面资讯" if sentiment == -1 else "正面资讯" if sentiment == 1 else "个股资讯"
+        text = f"来源：{source}。标题：{title or summary}。"
+        if summary:
+            text += f"摘要：{summary}"
+        normalized.append({
+            "date": date, "event_time": event_time, "title": title[:500] or summary[:500],
+            "text": text[:3000], "type": type_, "id": str(item.get("id") or item.get("clusterId") or index),
+            "source": source[:120], "url": str(item.get("url") or "")[:1000], "sentiment": sentiment,
+            "sentiment_score": sentiment_row.get("sentimentScore") if isinstance(sentiment_row, dict) else None,
+            "cluster_id": str(item.get("clusterId") or ""),
         })
-    rj["data"] = norm
-    return rj
+    return {"data": normalized, "total": payload.get("total") if isinstance(payload, dict) else 0}
 
 
-def fetch_monitoring_events(meta, ticker, token):
-    """拉取最近市场监控事件，供 §1 优先呈现近两日异动与产业链动态。"""
-    url = meta.get("Stock_Monitoring_Events", {}).get("url", "")
+def fetch_sentiment_news(meta, ticker, token):
+    """Fetch recent stock news for section 1; writer keeps only the latest two event dates."""
+    url = meta.get("stockSentimentNews", {}).get("url", "")
     if not url:
-        return None, "Stock_Monitoring_Events URL缺失"
-
-    # 不依赖工作日历：多取 4 个自然日，writer 再严格只使用最新两个事件日期，
-    # 避免周末/节假日使“最近两个交易日”窗口漏数。
+        return None, "stockSentimentNews URL缺失"
     end_date = datetime.date.today()
     start_date = end_date - datetime.timedelta(days=4)
-    method = meta.get("Stock_Monitoring_Events", {}).get("method", "GET")
-    params = {
-        "ticker": ticker,
-        "startDate": start_date.strftime("%Y%m%d"),
-        "endDate": end_date.strftime("%Y%m%d"),
-    }
+    method = meta.get("stockSentimentNews", {}).get("method", "GET")
+    params = {"ticker": ticker, "startDate": start_date.strftime("%Y-%m-%d"), "endDate": end_date.strftime("%Y-%m-%d"), "sortField": "effectiveTime", "sortOrder": "desc", "pageNow": 1, "pageSize": 50}
     rj, _, err = call(method, url, token, params=params, timeout=12)
     if err:
-        # 监控事件是 §1 近况关键数据，偶发超时直接重试一次，避免近况缺失。
         rj, _, err = call(method, url, token, params=params, timeout=20)
     if err:
         return None, err
     if not _api_ok(rj):
         return None, f"API返回失败: code={rj.get('code')}, msg={rj.get('message', '')[:80]}"
-    return _normalize_monitoring_payload(rj), None
-
+    return _normalize_sentiment_news_payload(rj, ticker), None
 
 def fetch_pe_valuation(meta, ticker, token):
     url = meta.get("diagnosis_pe_valuation", {}).get("url", "")
@@ -1805,12 +1805,12 @@ def run(ticker_input, token, output_path):
                 print(f"  公司名称补全: {company_name}")
 
     # 公告、研报、会议纪要和市场监控事件并行启动；市场监控采用 12 秒限时，不串行拖慢主链。
-    print("  → 公告/研报/会议/市场监控四链并行...")
+    print("  → 公告/研报/会议/个股资讯四链并行...")
     ex3 = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     ann_fut = ex3.submit(fetch_announcements, meta, ticker, token)
     rep_fut = ex3.submit(fetch_research_reports, meta, ticker, company_name, token)
     mtg_fut = ex3.submit(fetch_meetings, meta, ticker, token, company_name=company_name)
-    monitor_fut = ex3.submit(fetch_monitoring_events, meta, ticker, token)
+    monitor_fut = ex3.submit(fetch_sentiment_news, meta, ticker, token)
 
     anns, err = ann_fut.result()
     result["announcements"] = anns
@@ -1874,18 +1874,18 @@ def run(ticker_input, token, output_path):
 
     peer_data, peer_err = peer_fut.result()
 
-    # 最后读取已在后台执行的市场监控结果，避免其慢响应打断同业发现和材料采集。
+    # 最后读取已在后台执行的个股资讯结果，避免其慢响应打断同业发现和材料采集。
     monitoring_events, err = monitor_fut.result()
     result["monitoring_events"] = monitoring_events
     if err:
-        record_error("Stock_Monitoring_Events", err,
-                     meta.get("Stock_Monitoring_Events", {}).get("url", ""), "GET",
+        record_error("stockSentimentNews", err,
+                     meta.get("stockSentimentNews", {}).get("url", ""), "GET",
                      {"ticker": ticker})
-        print(f"  △ monitoring_events: 无数据 | {err}")
+        print(f"  △ stockSentimentNews: 无数据 | {err}")
     else:
         event_data = monitoring_events.get("data") if isinstance(monitoring_events, dict) else monitoring_events
         event_count = len(event_data) if isinstance(event_data, list) else 1 if event_data else 0
-        print(f"  ✓ monitoring_events: {event_count} 条（近4个自然日）")
+        print(f"  ✓ stockSentimentNews: {event_count} 条（近4个自然日）")
 
     ex3.shutdown(wait=False)
     # 取到真实 peer 材料后回填 business_evidence，再对行业池候选做业务可比过滤。

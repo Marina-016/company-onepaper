@@ -814,6 +814,10 @@ def extract_monitoring_events(data: dict) -> list:
             "type": type_,
             "title": title[:500] or text[:500],
             "text": text[:3000],
+            "event_time": str(item.get("event_time") or date),
+            "source": str(item.get("source") or "通联数据"),
+            "url": str(item.get("url") or ""),
+            "sentiment": item.get("sentiment"),
         })
 
     result.sort(key=lambda x: (x["date"], x["source_index"]), reverse=True)
@@ -847,10 +851,10 @@ def _rank_monitoring_events(events: list) -> list:
         body = " ".join(str(e.get(k) or "") for k in ("title", "text"))
         negative = any(m in body for m in _MONITOR_NEGATIVE_MARKERS)
         return (
-            str(e.get("date") or ""),
+            str(e.get("event_time") or e.get("date") or ""),
             negative,  # reverse=True 时 True（负面/异动）排前
             -_MONITOR_TYPE_PRIORITY.get(str(e.get("type") or ""), 5),
-            e.get("source_index", 0),
+            -int(e.get("source_index", 0) or 0),
         )
     return sorted(events, key=key, reverse=True)
 
@@ -917,7 +921,7 @@ def _compact_monitoring_events(events: list, ref_map: dict, max_dates: int = 2, 
     """向 §1 LLM 暴露最近两个事件日期内的原始监控材料（经 _select_monitor_events 统一收敛）。"""
     picked = _select_monitor_events(events, max_dates, max_items)
     if not picked:
-        return "（最近两个交易日无市场监控事件）"
+        return "（最近两个交易日无个股资讯）"
     lines = []
     for event in picked:
         body = re.sub(r"\s+", " ", str(event.get("text") or event.get("title") or "")).strip()
@@ -925,7 +929,7 @@ def _compact_monitoring_events(events: list, ref_map: dict, max_dates: int = 2, 
         if not ref_no:
             continue
         lines.append(f"【唯一引用[{ref_no}] | {event.get('date') or '日期未披露'}】{_snip(body, 700)}")
-    return "\n".join(lines) if lines else "（最近两个交易日无可引用市场监控事件）"
+    return "\n".join(lines) if lines else "（最近两个交易日无可引用个股资讯）"
 
 
 def _render_s1_monitoring_block(events: list, ref_map: dict, max_items: int = 3) -> str:
@@ -1037,17 +1041,17 @@ def build_ref_map(data: dict) -> dict:
             }
             idx += 1
 
-    # 近两日市场监控事件：仅供 §1 追踪当日异动/产业链突发事件，独立于同业材料。
+    # 近两日个股资讯：仅供 §1 追踪当日异动/产业链突发事件，独立于同业材料。
     for event in extract_monitoring_events(data):
         refs[_monitoring_event_ref_key(event)] = {
             "n": idx,
-            "type": "市场监控事件",
+            "type": "个股资讯",
             "id": event["id"],
             "date": event["date"] or TODAY,
-            "org": "通联数据",
+            "org": event.get("source") or "通联数据",
             "title": event["title"],
             "source_index": event["source_index"],
-            "api_name": "Stock_Monitoring_Events",
+            "api_name": "stockSentimentNews",
         }
         idx += 1
 
@@ -1129,9 +1133,9 @@ def refs_to_markdown(ref_map: dict) -> str:
                 lines.append(
                     f"[{n}]Datayes结构化接口 | {ref_date} | {ref_title} | API：{api_name}"
                 )
-        elif ref_type == "市场监控事件":
+        elif ref_type == "个股资讯":
             lines.append(
-                f"[{n}]Datayes市场监控事件 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：Stock_Monitoring_Events"
+                f"[{n}]Datayes个股资讯 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：stockSentimentNews"
             )
         elif ref_type == "同业材料":
             lines.append(
@@ -1781,7 +1785,7 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 【公告列表】
 {json.dumps(announcements[:5], ensure_ascii=False)[:500] if announcements else "（无）"}
 
-【最近两个交易日市场监控事件（最高优先级，仅能按原文陈述并使用唯一引用）】
+【最近两个交易日个股资讯（最高优先级，仅能按原文陈述并使用唯一引用）】
 {monitoring_context}
 
 【市场一致预期】
@@ -1807,9 +1811,9 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 **字数上限：220字**
 
 - 2-3个 • 要点，每条单独一行，每点仅1句话；⚠️ **不要对要点内容加粗**，仅陈述事实+数字
-- 若“最近两个交易日市场监控事件”有内容，第一条必须使用其中最新一条，优先呈现客户自研、砍单、监管、事故、重大产品/产业链变化或股价异动相关事件；若监控或研报材料明确指向近期下跌/板块承压及来源已明示的原因（如政策、竞争、价格、需求），必须呈现“近期市场表现+来源已明示的归因”，不得回避；其余要点才从研报、公告中选取。
+- 若“最近两个交易日个股资讯”有内容，第一条必须使用其中最新一条，优先呈现客户自研、砍单、监管、事故、重大产品/产业链变化或股价异动相关事件；若个股资讯或研报材料明确指向近期下跌/板块承压及来源已明示的原因（如政策、竞争、价格、需求），必须呈现“近期市场表现+来源已明示的归因”，不得回避；其余要点才从研报、公告中选取。
 - 对异动归因只能使用来源已明示的事实；来源未证明单一因果时写“市场关注/市场担忧”，不得写成唯一涨跌原因，不得自行补写股价、涨跌幅或传导结论。
-- 没有近两日监控事件时，才优先提炼里程碑/突破性数字；普通同比数据不单独成点。
+- 没有近两日个股资讯时，才优先提炼里程碑/突破性数字；普通同比数据不单独成点。
 - 只陈述事实+数字，不展开任何分析或判断（分析留给第2节）
 - 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
 - 最后一段（独立行，1句）：市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润关键数字，标注[N]
@@ -5832,10 +5836,10 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
             item = surveys.get(str(entry.get("id", "")), {})
             source = str(item.get("content", "") or "")
             api_name = "institution_research_detail"
-        elif source_type == "市场监控事件":
+        elif source_type == "个股资讯":
             item = monitoring_events.get(str(entry.get("source_index")), {})
             source = " ".join(str(item.get(k, "") or "") for k in ("date", "title", "text"))
-            api_name = "Stock_Monitoring_Events"
+            api_name = "stockSentimentNews"
         elif source_type == "同业材料":
             material_index = entry.get("source_index")
             materials = raw.get("peer_materials") or []
