@@ -5,10 +5,10 @@
 
 为什么需要它
 ------------
-本 skill 没有测试目录，接口名只在真跑一次公司一页纸时才会被验证，而注册表
-被裁剪时不会有人通知——`batchGetReportContent` 被拆成 Domestic/Foreign 之后，
-旧名字在 warm 列表里躺了很久没人发现（缺失的 URL 只会让 meta 里少一条，
-不报错、不中断）。
+接口名只在真跑一次公司一页纸时才会被验证，而注册表被裁剪时不会有人通知——
+`batchGetReportContent` 被拆成 Domestic/Foreign 之后，旧名字在 warm 列表里躺了
+很久没人发现（缺失的 URL 只会让 meta 里少一条，不报错、不中断）。
+`tests/` 下的回归覆盖的是写作与溯源逻辑，不触网解析接口名，替代不了本检查。
 
 用法：
     DATAYES_TOKEN=... python3 scripts/check_api_registry.py
