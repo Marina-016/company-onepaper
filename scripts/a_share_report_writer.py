@@ -28,6 +28,7 @@ import sys
 import threading
 import time
 import glob
+from difflib import SequenceMatcher
 
 # Windows 控制台 GBK 编码兼容：强制 stdout/stderr 输出 UTF-8
 if sys.platform == "win32":
@@ -755,6 +756,227 @@ def extract_surveys_detail(data: dict) -> list:
     return result
 
 
+def _normalize_monitoring_date(value) -> str:
+    raw = str(value or "")[:10]
+    if re.fullmatch(r"\d{8}", raw):
+        return f"{raw[:4]}-{raw[4:6]}-{raw[6:8]}"
+    return raw
+
+
+def _monitoring_event_ref_key(event: dict) -> str:
+    return f"monitoring_event_{event.get('source_index', 0)}"
+
+
+_MONITOR_DATE_KEYS = ("publish_date", "eventDate", "tradeDate", "publishTime", "pubTime",
+                      "date", "createTime", "updateTime")
+_MONITOR_TEXT_KEYS = ("title", "eventTitle", "eventName", "name", "summary", "content",
+                     "desc", "description", "reason", "eventReason")
+
+
+def extract_monitoring_events(data: dict) -> list:
+    """提取可引用的近期监控事件。
+
+    优先消费 fetch 端已归一化的稳定 schema（date/title/text/type/id）；
+    对未归一化的历史数据/测试输入走旧字段兜底，避免上游字段名差异再次渗透到 §1。
+    """
+    raw = data.get("monitoring_events") or {}
+    payload = raw.get("data") if isinstance(raw, dict) else raw
+    if isinstance(payload, dict):
+        items = next((payload.get(key) for key in ("list", "items", "records", "data", "result", "hotList")
+                      if isinstance(payload.get(key), list)), [])
+    else:
+        items = payload if isinstance(payload, list) else []
+
+    result = []
+    for index, item in enumerate(items):
+        if not isinstance(item, dict):
+            continue
+        if isinstance(item.get("date"), str) and (item.get("title") or item.get("text")):
+            # fetch 端已归一化
+            date = item.get("date") or ""
+            title = str(item.get("title") or "").strip()
+            text = re.sub(r"\s+", " ", str(item.get("text") or item.get("title") or "")).strip()
+            type_ = str(item.get("type") or "")
+            id_ = str(item.get("id") or item.get("eventId") or item.get("newsId") or index)
+        else:
+            # 旧格式兜底
+            date = _normalize_monitoring_date(next((item.get(k) for k in _MONITOR_DATE_KEYS if item.get(k)), ""))
+            title = str(next((item.get(k) for k in _MONITOR_TEXT_KEYS if item.get(k)), "") or "").strip()
+            text = re.sub(r"\s+", " ", " ".join(str(item.get(k) or "") for k in _MONITOR_TEXT_KEYS)).strip()
+            type_ = str(item.get("type") or "")
+            id_ = str(item.get("id") or item.get("eventId") or item.get("newsId") or index)
+        if not title and not text:
+            continue
+        result.append({
+            "id": id_,
+            "source_index": index,
+            "date": date,
+            "type": type_,
+            "title": title[:500] or text[:500],
+            "text": text[:3000],
+        })
+
+    result.sort(key=lambda x: (x["date"], x["source_index"]), reverse=True)
+    return result
+
+
+_MONITOR_TYPE_PRIORITY = {
+    "个股公告": 0, "个股研报": 1, "会议纪要": 2, "个股线索": 3,
+    "行业研报": 4, "行业新闻": 5, "个股监控": 6,
+}
+_LOW_VALUE_MONITOR_MARKERS = ("盘中信号", "主力大单", "大单买入", "大单卖出",
+                              "特大单", "主力净流入", "净流入")
+# 与股价异动/产业负面变化相关的信号词：此类事件在 §1 监控块中优先呈现，
+# 保证近况跟踪覆盖“近期下跌及来源已明示的归因”，而非被正面新闻淹没。
+_MONITOR_NEGATIVE_MARKERS = (
+    "下跌", "跌幅", "下挫", "重挫", "承压", "利空", "担忧", "惨淡",
+    "回调", "杀跌", "领跌", "走弱", "价格下跌", "价格回落", "价格跌",
+)
+
+
+def _is_low_value_monitor(event: dict, body: str = "") -> bool:
+    """盘中大单/资金流等实时行情信号不属于事件，监控块与 §1 上下文都应排除。"""
+    body = body or " ".join(str(event.get(k) or "") for k in ("title", "text"))
+    return (str(event.get("type") or "") == "个股监控"
+            or any(m in body for m in _LOW_VALUE_MONITOR_MARKERS))
+
+
+def _rank_monitoring_events(events: list) -> list:
+    """监控事件统一排序：日期最新在前 → 异动/负面事件优先 → 类型优先级 → 原始序。"""
+    def key(e):
+        body = " ".join(str(e.get(k) or "") for k in ("title", "text"))
+        negative = any(m in body for m in _MONITOR_NEGATIVE_MARKERS)
+        return (
+            str(e.get("date") or ""),
+            negative,  # reverse=True 时 True（负面/异动）排前
+            -_MONITOR_TYPE_PRIORITY.get(str(e.get("type") or ""), 5),
+            e.get("source_index", 0),
+        )
+    return sorted(events, key=key, reverse=True)
+
+
+def _snip(text: str, limit: int) -> str:
+    """按句子边界截断，避免在词语中间断开产生‘正极[2]’式残句。"""
+    text = re.sub(r"\s+", " ", str(text or "")).strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for sep in ("。", "；", "！", "？"):
+        idx = cut.rfind(sep)
+        if idx > 0:
+            return cut[:idx + 1]
+    idx = cut.rfind("，")
+    if idx > 0:
+        return cut[:idx + 1]
+    return cut
+
+
+def _monitor_dedup_key(body: str) -> str:
+    """首句规整串：同源新闻被多种 type 聚合时为裁剪版，正文后半段差异大但首句一致。
+
+    取首个句号前的文本，去掉标点/数字/正负号，并将「同比减/增」等变体归一，
+    使 '-1%' 与 '减1%'、'-692%' 与 '减692%' 表述趋同后再比较。
+    """
+    head = (body or "").split("。")[0]
+    s = re.sub(r"[\s%％,，；;：:、]", "", head)
+    s = re.sub(r"[0-9.]+", "#", s)
+    s = re.sub(r"[+\-]", "", s)
+    for a, b in (("同比减", "同比"), ("同比增", "同比"), ("环比增", "环比"), ("环比减", "环比")):
+        s = s.replace(a, b)
+    return s
+
+
+def _select_monitor_events(events: list, max_dates: int = 2, max_items: int = 12) -> list:
+    """按统一规则选出监控事件：异动优先排序 → 信号过滤 → 内容去重 → 日期窗口 → 数量上限。
+
+    同一新闻常被多种 type 重复聚合（同源裁剪版），此处按首句规整串的相似度去重，
+    保证 §1 监控块与 LLM 上下文不出现重复条目。
+    """
+    if not events:
+        return []
+    picked, dates, seen = [], set(), []
+    for event in _rank_monitoring_events(events):
+        body = re.sub(r"\s+", " ", str(event.get("text") or event.get("title") or "")).strip()
+        if _is_low_value_monitor(event, body):
+            continue
+        key = _monitor_dedup_key(body)
+        if any(SequenceMatcher(None, key, prev).ratio() > 0.8 for prev in seen):
+            continue
+        date = event.get("date") or ""
+        if date not in dates and len(dates) >= max_dates:
+            continue
+        dates.add(date)
+        if len(picked) >= max_items:
+            break
+        seen.append(key)
+        picked.append(event)
+    return picked
+
+
+def _compact_monitoring_events(events: list, ref_map: dict, max_dates: int = 2, max_items: int = 12) -> str:
+    """向 §1 LLM 暴露最近两个事件日期内的原始监控材料（经 _select_monitor_events 统一收敛）。"""
+    picked = _select_monitor_events(events, max_dates, max_items)
+    if not picked:
+        return "（最近两个交易日无市场监控事件）"
+    lines = []
+    for event in picked:
+        body = re.sub(r"\s+", " ", str(event.get("text") or event.get("title") or "")).strip()
+        ref_no = (ref_map.get(_monitoring_event_ref_key(event), {}) or {}).get("n")
+        if not ref_no:
+            continue
+        lines.append(f"【唯一引用[{ref_no}] | {event.get('date') or '日期未披露'}】{_snip(body, 700)}")
+    return "\n".join(lines) if lines else "（最近两个交易日无可引用市场监控事件）"
+
+
+def _render_s1_monitoring_block(events: list, ref_map: dict, max_items: int = 3) -> str:
+    """确定性渲染 §1 近况监控块：最新两日内高价值事件，异动/负面事件优先。
+
+    监控块与 LLM 的 s1 正文解耦——由组装层置于 `## 1` 标题之后、s1 之前；
+    LLM 正文仍走统一的 _strip_header_prefix，监控块独立成块，二者互不干扰，
+    从根源杜绝“注入前缀破坏前导标题剥离 → 重复 H2 → 自检阻断”。
+    """
+    picked = _select_monitor_events(events, max_dates=2, max_items=max_items)
+    lines = []
+    for event in picked:
+        body = re.sub(r"\s+", " ", str(event.get("text") or event.get("title") or "")).strip()
+        ref_no = (ref_map.get(_monitoring_event_ref_key(event), {}) or {}).get("n")
+        if not ref_no:
+            continue
+        lines.append(f"• {event.get('date') or '近日'}，{_snip(body or event.get('title') or '', 110)}[{ref_no}]")
+    return "\n".join(lines)
+
+
+def _first_injectable_monitoring_event(events: list) -> dict:
+    """跳过盘中大单等低价值监控信号，取最新可注入事件；全部为信号时返回 None。"""
+    for event in events:
+        body = " ".join(str(event.get(k) or "") for k in ("title", "text"))
+        if _is_low_value_monitor(event, body):
+            continue
+        return event
+    return None
+
+
+def _ensure_section1_monitoring_event(section: str, events: list, ref_map: dict) -> str:
+    """[deprecated] 历史注入接口，主链路已改为 _render_s1_monitoring_block + 组装解耦。
+
+    保留仅用于兼容既有回归测试；不再被 gen_sections_1_2_3 调用。
+    """
+    if not events:
+        return section
+    event = _first_injectable_monitoring_event(events)
+    if not event:
+        return section
+    ref_no = (ref_map.get(_monitoring_event_ref_key(event), {}) or {}).get("n")
+    if not ref_no or f"[{ref_no}]" in section:
+        return section
+    date = event.get("date") or "近日"
+    title = re.sub(r"\s+", " ", str(event.get("title") or event.get("text") or "")).strip()
+    if not title:
+        return section
+    prefix = f"• {date}，{_snip(title, 100)}[{ref_no}]"
+    return prefix + "\n" + _strip_header_prefix(section)
+
+
 def _peer_material_ref_key(index: int, item: dict) -> str:
     code = re.sub(r'\D', '', str((item or {}).get('peer_code') or '')) or 'unknown'
     return f"peer_material_{code}_{index}"
@@ -814,6 +1036,20 @@ def build_ref_map(data: dict) -> dict:
                 "title": f"{sv['type'] or '投资者关系活动'}（{sv['date']}）",
             }
             idx += 1
+
+    # 近两日市场监控事件：仅供 §1 追踪当日异动/产业链突发事件，独立于同业材料。
+    for event in extract_monitoring_events(data):
+        refs[_monitoring_event_ref_key(event)] = {
+            "n": idx,
+            "type": "市场监控事件",
+            "id": event["id"],
+            "date": event["date"] or TODAY,
+            "org": "通联数据",
+            "title": event["title"],
+            "source_index": event["source_index"],
+            "api_name": "Stock_Monitoring_Events",
+        }
+        idx += 1
 
     # 同业定向材料：仅作为 §8.2 “相关业务进展”的来源，保留公司代码和原始索引以便审计。
     for material_index, item, peer_name, peer_code in _peer_material_entries(data):
@@ -893,6 +1129,10 @@ def refs_to_markdown(ref_map: dict) -> str:
                 lines.append(
                     f"[{n}]Datayes结构化接口 | {ref_date} | {ref_title} | API：{api_name}"
                 )
+        elif ref_type == "市场监控事件":
+            lines.append(
+                f"[{n}]Datayes市场监控事件 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：Stock_Monitoring_Events"
+            )
         elif ref_type == "同业材料":
             lines.append(
                 f"[{n}]Materials V2研报 | {ref_date} | ID：{ref_id} | {ref_org} | {ref_title} | API：getMaterialsV2"
@@ -1488,6 +1728,8 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
     forecasts    = key_data.get("consensus_forecasts", [])
     mc           = key_data["mc"]
     announcements= key_data.get("announcements", [])
+    monitoring_events = key_data.get("monitoring_events", [])
+    monitoring_context = _compact_monitoring_events(monitoring_events, ref_map)
     raw_data     = key_data.get("_raw_data", {})
     mgmt_text    = _compact_mgmt(raw_data)
 
@@ -1539,6 +1781,9 @@ def gen_sections_1_2_3(client, key_data: dict) -> dict:
 【公告列表】
 {json.dumps(announcements[:5], ensure_ascii=False)[:500] if announcements else "（无）"}
 
+【最近两个交易日市场监控事件（最高优先级，仅能按原文陈述并使用唯一引用）】
+{monitoring_context}
+
 【市场一致预期】
 {con_summary}
 
@@ -1562,7 +1807,9 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 **字数上限：220字**
 
 - 2-3个 • 要点，每条单独一行，每点仅1句话；⚠️ **不要对要点内容加粗**，仅陈述事实+数字
-- 优先提炼里程碑/突破性数字（首次突破某门槛、历史新高、行业第一、同比大幅超预期等）；普通同比数据不单独成点
+- 若“最近两个交易日市场监控事件”有内容，第一条必须使用其中最新一条，优先呈现客户自研、砍单、监管、事故、重大产品/产业链变化或股价异动相关事件；若监控或研报材料明确指向近期下跌/板块承压及来源已明示的原因（如政策、竞争、价格、需求），必须呈现“近期市场表现+来源已明示的归因”，不得回避；其余要点才从研报、公告中选取。
+- 对异动归因只能使用来源已明示的事实；来源未证明单一因果时写“市场关注/市场担忧”，不得写成唯一涨跌原因，不得自行补写股价、涨跌幅或传导结论。
+- 没有近两日监控事件时，才优先提炼里程碑/突破性数字；普通同比数据不单独成点。
 - 只陈述事实+数字，不展开任何分析或判断（分析留给第2节）
 - 第二段（独立行，1句）：主流机构评级方向、目标价区间、当前PE约{pe}x/PB约{pb}x
 - 最后一段（独立行，1句）：市场一致预期{base_yr+1}-{base_yr+2}年营收/净利润关键数字，标注[N]
@@ -1574,16 +1821,19 @@ fdmtNew=[{ref_map.get('fdmtNew',{}).get('n','')}], consensus=[{ref_map.get('cons
 
 **总字数700字以内（2.1+2.2合计）**
 
-⚠️ 你刚刚写完第1节，其中已提及的具体事件名称和数字——第2节**不重复陈述这些事件**，直接分析其背后的驱动机制和投资空间。
+⚠️ 第2节不重复第1节的事件描述和数字，而是把已发生变化转化为可交易的投资判断。
 
 ### 2.1 短期逻辑（3-12个月催化剂）
-• **[催化剂1标题]**：[含精确数据和逻辑链，标注引用，聚焦核心]
-• **[催化剂2标题]**：...（共3个要点）
+• 每条标题必须写成“**具体变化/事件 + 投资判断**”，而不是“需求验证/产品升级/盈利兑现”等抽象类别；例如“注销式回购落地，股东回报支撑估值下沿”“头部客户自研扰动有限，份额担忧有望缓释”。
+• 优先围绕近期异动、订单/排产、价格、回购、政策、客户、产品导入、产能爬坡等边际变化，说明该变化如何影响预期差、业绩兑现或估值。
+• 输出3个要点，统一格式：`• **[具体变化 + 判断]**：[来源支持的事实、关键数据与传导逻辑][N]`。
 
 ### 2.2 长期逻辑（核心竞争力）
-• **[核心壁垒]**：[含市占率/规模量化数据，标注引用]
-• **[成长驱动力]**：[标注引用]
-• **[商业模式优势]**：[ROE/可持续性，标注引用]
+• 每条标题必须写成“**具体竞争位置/结构性变化 + 中长期判断**”，而不是“核心壁垒/成长驱动力/商业模式优势”等模板词；例如“海外储能份额持续提升，第二增长曲线打开天花板”“供应链一体化深化，成本优势穿越价格周期”。
+• 聚焦份额、产品代际、新业务商业化、成本曲线、客户粘性、渠道、产能与商业模式等可持续变量，说明未来2-3年增长或估值重估的原因。
+• 输出3个要点，统一格式：`• **[具体竞争位置/变化 + 判断]**：[来源支持的事实、关键数据与中长期传导逻辑][N]`。
+
+• 标题要有明确观点、完整句意和具体对象；不要为凑格式强行套用示例，也不要使用无来源的绝对化结论。
 
 {_S123_SEP}
 
@@ -3935,11 +4185,17 @@ def assemble_report(meta: dict, sections: dict, ref_map: dict) -> str:
 {s4_adv}
 """
 
+    s1_monitoring_block = str(sections.get("s1_monitoring", "") or "").strip()
+    if s1_monitoring_block:
+        s1_monitoring_block += "\n"
+
     md = f"""{title_line}
 
 **日期**：{date}　｜　**PE(TTM)**：{pe_str}{pe_pb_ref}　｜　**PB**：{pb_str}{pe_pb_ref}
 
 ## 1 公司近况跟踪
+
+{s1_monitoring_block}
 
 {_strip_header_prefix(sections['s1'])}
 
@@ -5531,6 +5787,7 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
     reports = {str(x.get("id")): x for x in (key_data.get("reports") or [])}
     meetings = {str(x.get("id")): x for x in (key_data.get("meetings") or [])}
     surveys = {str(x.get("event_id")): x for x in (key_data.get("surveys") or [])}
+    monitoring_events = {str(x.get("source_index")): x for x in (key_data.get("monitoring_events") or [])}
     api_data_keys = {
         "fdmtNew": "financial", "getFdmtMoStdItem": "main_comp",
         "research_sec_coredata": "consensus", "research_sec_foredata": "profit_forecast",
@@ -5573,6 +5830,10 @@ def _build_reference_evidence(key_data: dict, md_content: str = "") -> dict:
             item = surveys.get(str(entry.get("id", "")), {})
             source = str(item.get("content", "") or "")
             api_name = "institution_research_detail"
+        elif source_type == "市场监控事件":
+            item = monitoring_events.get(str(entry.get("source_index")), {})
+            source = " ".join(str(item.get(k, "") or "") for k in ("date", "title", "text"))
+            api_name = "Stock_Monitoring_Events"
         elif source_type == "同业材料":
             material_index = entry.get("source_index")
             materials = raw.get("peer_materials") or []
@@ -6410,6 +6671,7 @@ def main():
     reports     = extract_reports_summary(data)
     meetings    = extract_meetings_summary(data)
     surveys     = extract_surveys_detail(data)
+    monitoring_events = extract_monitoring_events(data)
     anns        = data.get("announcements", [])
     company_info_raw = data.get("company_info", {})
     ci_data = company_info_raw.get("data", {}) if isinstance(company_info_raw, dict) else {}
@@ -6436,6 +6698,7 @@ def main():
         "reports":           reports,
         "meetings":          meetings,
         "surveys":           surveys,
+        "monitoring_events": monitoring_events,
         "announcements":     anns,
         "company_info":      company_info,
         "ref_map":           ref_map,
@@ -6521,6 +6784,9 @@ def main():
         sections.update(sections.pop("s123"))
     elif "s123" in sections:
         sections["s1"] = sections.pop("s123")
+
+    # §1 近况监控块由组装层确定性渲染，与 LLM 的 s1 正文解耦（杜绝重复 H2）
+    sections["s1_monitoring"] = _render_s1_monitoring_block(key_data.get("monitoring_events", []), ref_map)
 
     # s4 合并生成结果 unpack → s4_profit_model / s4_survey_qa
     if isinstance(sections.get("s4"), dict):

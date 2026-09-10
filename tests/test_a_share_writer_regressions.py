@@ -715,6 +715,54 @@ class AShareWriterRegressionTests(unittest.TestCase):
         self.assertIn("智能芯片设计与销售", result)
         self.assertNotIn("[", result)
 
+    def test_monitoring_event_is_source_backed_and_prioritized_in_section1(self):
+        data = {"monitoring_events": {"data": {"list": [
+            {"eventDate": "20260908", "eventId": "evt-1", "eventTitle": "头部客户宣布自研电池，市场关注供应链影响"},
+            {"eventDate": "20260905", "eventId": "evt-2", "eventTitle": "公司披露产能建设进展"},
+        ]}}}
+        events = writer.extract_monitoring_events(data)
+        self.assertEqual(events[0]["date"], "2026-09-08")
+        refs = writer.build_ref_map(data)
+        ref_no = refs[writer._monitoring_event_ref_key(events[0])]["n"]
+        context = writer._compact_monitoring_events(events, refs, max_dates=1)
+        self.assertIn(f"[{ref_no}]", context)
+        self.assertNotIn("2026-09-05", context)
+        rendered = writer._ensure_section1_monitoring_event("• 半年报业绩增长[9]", events, refs)
+        self.assertTrue(rendered.startswith("• 2026-09-08，头部客户宣布自研电池"))
+        self.assertIn(f"[{ref_no}]", rendered)
+
+    def test_fetch_monitoring_events_uses_bounded_recent_window(self):
+        original = fetch.call
+        captured = {}
+        def fake_call(method, url, token, params=None, body=None, timeout=None):
+            captured.update({"method": method, "url": url, "params": params, "timeout": timeout})
+            return {"code": 1, "data": []}, 200, None
+        fetch.call = fake_call
+        try:
+            result, err = fetch.fetch_monitoring_events(
+                {"Stock_Monitoring_Events": {"url": "https://gw.datayes.com/aladdin_proxy/kgraph_aigc_api/getTickerHot", "method": "GET"}},
+                "300750", "token",
+            )
+        finally:
+            fetch.call = original
+        self.assertIsNone(err)
+        self.assertEqual(result["data"], [])
+        self.assertEqual(captured["params"]["ticker"], "300750")
+        self.assertEqual(len(captured["params"]["startDate"]), 8)
+        self.assertEqual(len(captured["params"]["endDate"]), 8)
+        self.assertEqual(captured["timeout"], 12)
+        self.assertIn("Stock_Monitoring_Events", fetch.ALL_API_NAMES)
+    def test_monitoring_event_source_is_available_to_provenance_validator(self):
+        raw = {"monitoring_events": {"data": [{
+            "eventDate": "20260908", "id": "evt-1", "title": "客户自研方案引发市场关注", "content": "客户宣布采用自研方案。"
+        }]}}
+        events = writer.extract_monitoring_events(raw)
+        refs = writer.build_ref_map(raw)
+        source = writer._build_reference_evidence({
+            "_raw_data": raw, "monitoring_events": events, "ref_map": refs,
+        })
+        ref_no = refs[writer._monitoring_event_ref_key(events[0])]["n"]
+        self.assertIn("客户宣布采用自研方案", source[ref_no]["text"])
     def test_render_fact_markers_removes_bare_marker(self):
         self.assertEqual(writer._render_fact_markers("构建高壁垒生态{{FACT:}}[2]", {}), "构建高壁垒生态[2]")
 if __name__ == "__main__":

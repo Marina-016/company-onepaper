@@ -116,6 +116,7 @@ ALL_API_NAMES = [
     "research_sec_coredata", "research_sec_foredata",
     "diagnosis_pe_valuation", "diagnosis_valuation_rank",
     "Org_survey", "institution_research_detail",
+    "Stock_Monitoring_Events",
     "Ashare_tenHolders", "Ashare_orgHoldingdetail",
     "Executive_information", "Ashare_info", "Ashare_bonus",
     "getMaterialsV2",
@@ -618,6 +619,70 @@ def fetch_org_survey(meta, ticker, token):
         rj = {**rj, "data": enriched}
 
     return (rj, None)
+
+
+_MONITOR_DATE_KEYS = ("publish_date", "eventDate", "tradeDate", "publishTime", "pubTime",
+                      "date", "createTime", "updateTime")
+_MONITOR_TEXT_KEYS = ("title", "eventTitle", "eventName", "name", "summary", "content",
+                     "desc", "description", "reason", "eventReason")
+
+
+def _normalize_monitoring_payload(rj):
+    """把 Stock_Monitoring_Events 原始响应归一化为稳定内部 schema（date/title/text/type/id）。
+
+    schema 在数据入口收敛：writer 端只消费这里的字段，不再猜测上游字段名，
+    避免日期解析遗漏（如 publish_date）导致时效性失效或低价值信号稀释 §1。
+    """
+    payload = rj.get("data") if isinstance(rj, dict) else None
+    if not isinstance(payload, list):
+        return rj
+    norm = []
+    for index, item in enumerate(payload):
+        if not isinstance(item, dict):
+            continue
+        raw_date = str(next((item.get(k) for k in _MONITOR_DATE_KEYS if item.get(k)), "") or "")[:10]
+        if len(raw_date) == 8 and raw_date.isdigit():
+            raw_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:8]}"
+        title = str(next((item.get(k) for k in _MONITOR_TEXT_KEYS if item.get(k)), "") or "").strip()
+        text = re.sub(r"\s+", " ", " ".join(str(item.get(k) or "") for k in _MONITOR_TEXT_KEYS)).strip()
+        if not title and not text:
+            continue
+        norm.append({
+            "date": raw_date,
+            "title": title[:500] or text[:500],
+            "text": text[:3000],
+            "type": str(item.get("type") or ""),
+            "id": str(item.get("id") or item.get("eventId") or item.get("newsId") or index),
+        })
+    rj["data"] = norm
+    return rj
+
+
+def fetch_monitoring_events(meta, ticker, token):
+    """拉取最近市场监控事件，供 §1 优先呈现近两日异动与产业链动态。"""
+    url = meta.get("Stock_Monitoring_Events", {}).get("url", "")
+    if not url:
+        return None, "Stock_Monitoring_Events URL缺失"
+
+    # 不依赖工作日历：多取 4 个自然日，writer 再严格只使用最新两个事件日期，
+    # 避免周末/节假日使“最近两个交易日”窗口漏数。
+    end_date = datetime.date.today()
+    start_date = end_date - datetime.timedelta(days=4)
+    method = meta.get("Stock_Monitoring_Events", {}).get("method", "GET")
+    params = {
+        "ticker": ticker,
+        "startDate": start_date.strftime("%Y%m%d"),
+        "endDate": end_date.strftime("%Y%m%d"),
+    }
+    rj, _, err = call(method, url, token, params=params, timeout=12)
+    if err:
+        # 监控事件是 §1 近况关键数据，偶发超时直接重试一次，避免近况缺失。
+        rj, _, err = call(method, url, token, params=params, timeout=20)
+    if err:
+        return None, err
+    if not _api_ok(rj):
+        return None, f"API返回失败: code={rj.get('code')}, msg={rj.get('message', '')[:80]}"
+    return _normalize_monitoring_payload(rj), None
 
 
 def fetch_pe_valuation(meta, ticker, token):
@@ -1161,6 +1226,7 @@ def fetch_announcements(meta, ticker, token, max_detail=3):
         if not any(kw in (it.get("title") or "") for kw in EXCLUDE_KEYWORDS):
             merged.append(it)
 
+    merged.sort(key=lambda x: str(x.get("publishTime") or x.get("date") or x.get("annDate") or ""), reverse=True)
     to_detail = merged[:max_detail]
 
     # 并行获取全文（优先前3条）
@@ -1334,6 +1400,7 @@ def fetch_research_reports(meta, ticker, company_name, token,
         futs = [ex.submit(get_graph, it) for it in priority]
         final = [f.result() for f in concurrent.futures.as_completed(futs)]
 
+    final.sort(key=lambda x: str((x.get("_meta") or {}).get("publishTime") or ""), reverse=True)
     return final, None
 
 
@@ -1737,12 +1804,13 @@ def run(ticker_input, token, output_path):
                 result["__meta__"]["name"] = company_name
                 print(f"  公司名称补全: {company_name}")
 
-    # 公告链、研报链、会议纪要链并行启动
-    print("  → 公告/研报/会议三链并行...")
-    ex3 = concurrent.futures.ThreadPoolExecutor(max_workers=3)
+    # 公告、研报、会议纪要和市场监控事件并行启动；市场监控采用 12 秒限时，不串行拖慢主链。
+    print("  → 公告/研报/会议/市场监控四链并行...")
+    ex3 = concurrent.futures.ThreadPoolExecutor(max_workers=4)
     ann_fut = ex3.submit(fetch_announcements, meta, ticker, token)
     rep_fut = ex3.submit(fetch_research_reports, meta, ticker, company_name, token)
     mtg_fut = ex3.submit(fetch_meetings, meta, ticker, token, company_name=company_name)
+    monitor_fut = ex3.submit(fetch_monitoring_events, meta, ticker, token)
 
     anns, err = ann_fut.result()
     result["announcements"] = anns
@@ -1757,6 +1825,7 @@ def run(ticker_input, token, output_path):
         record_error("research_search", err, meta.get("research_search", {}).get("url", ""), "GET")
     else:
         print(f"  ✓ research_reports: {len(reports)} 篇（含全文）")
+
 
     # 优先用语义检索发现 peer，再由 stock_search 做证券身份核验；旧正则和行业池仅作受限兜底。
     semantic_peers, semantic_err = discover_semantic_peer_candidates(meta, company_name, ticker, token)
@@ -1804,6 +1873,20 @@ def run(ticker_input, token, output_path):
         print(f"  ✓ meetings: {len(meetings)} 条（含详情）")
 
     peer_data, peer_err = peer_fut.result()
+
+    # 最后读取已在后台执行的市场监控结果，避免其慢响应打断同业发现和材料采集。
+    monitoring_events, err = monitor_fut.result()
+    result["monitoring_events"] = monitoring_events
+    if err:
+        record_error("Stock_Monitoring_Events", err,
+                     meta.get("Stock_Monitoring_Events", {}).get("url", ""), "GET",
+                     {"ticker": ticker})
+        print(f"  △ monitoring_events: 无数据 | {err}")
+    else:
+        event_data = monitoring_events.get("data") if isinstance(monitoring_events, dict) else monitoring_events
+        event_count = len(event_data) if isinstance(event_data, list) else 1 if event_data else 0
+        print(f"  ✓ monitoring_events: {event_count} 条（近4个自然日）")
+
     ex3.shutdown(wait=False)
     # 取到真实 peer 材料后回填 business_evidence，再对行业池候选做业务可比过滤。
     if peer_data:
